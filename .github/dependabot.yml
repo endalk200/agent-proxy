@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # @effect/tsgo only supports exact typescript, oxlint, and oxlint-tsgolint
+      # versions. Update them together so the postinstall patch keeps working.
+      effect-toolchain:
+        patterns: ["@effect/tsgo", "typescript", "oxlint", "oxlint-tsgolint"]
+      effect:
+        patterns: ["effect", "@effect/*"]
+        exclude-patterns: ["@effect/tsgo"]

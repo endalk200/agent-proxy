@@ -1,0 +1,32 @@
+name: Setup
+description: Install Bun and workspace dependencies, and restore the Turbo cache for this job.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        # Reads the "packageManager" field, so CI and local use the same Bun.
+        bun-version-file: package.json
+
+    - name: Restore Bun install cache
+      uses: actions/cache@v6
+      with:
+        path: ~/.bun/install/cache
+        key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+        restore-keys: bun-${{ runner.os }}-
+
+    - name: Install dependencies
+      shell: bash
+      # Also runs the root postinstall, which patches Oxlint and TypeScript with
+      # the Effect language service rules.
+      run: bun install --frozen-lockfile
+
+    - name: Restore Turbo cache
+      uses: actions/cache@v6
+      with:
+        path: .turbo/cache
+        # One cache per job: each job only ever needs its own task outputs.
+        key: turbo-${{ runner.os }}-${{ github.job }}-${{ github.sha }}
+        restore-keys: turbo-${{ runner.os }}-${{ github.job }}-
