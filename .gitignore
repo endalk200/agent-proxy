@@ -8,6 +8,9 @@ dist/
 # Tooling caches
 .turbo/
 
+# Verification runs (sandboxes and evidence from `bun run verify`)
+.verify/
+
 # Test output
 coverage/
 playwright-report/
