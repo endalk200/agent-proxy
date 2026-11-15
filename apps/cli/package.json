@@ -1,0 +1,32 @@
+{
+  "name": "@agent-proxy/cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "agent-proxy command-line interface and daemon",
+  "bin": {
+    "agent-proxy": "./dist/bin.js"
+  },
+  "type": "module",
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "dev": "bun --watch src/bin.ts",
+    "build": "bun build ./src/bin.ts --target=bun --outdir=dist --sourcemap=linked",
+    "typecheck": "tsc --noEmit",
+    "lint": "effect-tsgo oxlint --type-aware",
+    "lint:fix": "effect-tsgo oxlint --type-aware --fix",
+    "test:unit": "bun --bun vitest run --project unit",
+    "test:integration": "bun --bun vitest run --project integration"
+  },
+  "dependencies": {
+    "@effect/platform-bun": "catalog:",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/bun": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
