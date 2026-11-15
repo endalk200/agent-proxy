@@ -54,9 +54,30 @@
       "version": "0.0.0",
       "devDependencies": {
         "@agent-proxy/cli": "workspace:*",
+        "@agent-proxy/sandbox": "workspace:*",
         "@agent-proxy/web": "workspace:*",
+        "@effect/platform-bun": "catalog:",
+        "@effect/vitest": "catalog:",
         "@playwright/test": "catalog:",
-        "@types/node": "catalog:",
+        "@types/bun": "catalog:",
+        "effect": "catalog:",
+        "typescript": "catalog:",
+        "vitest": "catalog:",
+      },
+    },
+    "packages/sandbox": {
+      "name": "@agent-proxy/sandbox",
+      "version": "0.0.0",
+      "dependencies": {
+        "@effect/platform-bun": "catalog:",
+        "@playwright/test": "catalog:",
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@agent-proxy/cli": "workspace:*",
+        "@agent-proxy/web": "workspace:*",
+        "@effect/vitest": "catalog:",
+        "@types/bun": "catalog:",
         "typescript": "catalog:",
         "vitest": "catalog:",
       },
@@ -86,6 +107,8 @@
     "@agent-proxy/cli": ["@agent-proxy/cli@workspace:apps/cli"],
 
     "@agent-proxy/e2e": ["@agent-proxy/e2e@workspace:e2e"],
+
+    "@agent-proxy/sandbox": ["@agent-proxy/sandbox@workspace:packages/sandbox"],
 
     "@agent-proxy/web": ["@agent-proxy/web@workspace:apps/web"],
 

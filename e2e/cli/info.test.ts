@@ -1,42 +1,47 @@
-import { spawnSync } from "node:child_process"
+import { defaultRepo, runCli, Sandbox } from "@agent-proxy/sandbox"
+import { BunServices } from "@effect/platform-bun"
+import { expect, layer } from "@effect/vitest"
+import { Effect, FileSystem, Schema } from "effect"
 
-import { describe, expect, it } from "vitest"
-
-import { cliBin } from "../support/paths.ts"
-
-// Black-box: run the built binary as a user would and check only stdout,
-// stderr, and the exit code.
-const agentProxy = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
-  spawnSync("bun", [cliBin, ...args], {
-    encoding: "utf8",
-    env: { PATH: process.env["PATH"], ...env },
+// Black-box: run the built binary as a user would, in a sandbox whose HOME and
+// XDG directories are throwaway, and check only stdout, stderr, and exit code.
+const agentProxy = (args: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-e2e-" })
+    const sandbox = yield* Sandbox.scoped(`${root}/sandbox`)
+    const result = yield* runCli(sandbox, defaultRepo.cliBuilt, args, { cwd: root })
+    return { sandbox, result }
   })
 
-describe("agent-proxy (built binary)", () => {
-  it("prints its version", () => {
-    const result = agentProxy(["--version"])
-    expect(result.status).toBe(0)
-    expect(result.stdout).toMatch(/agent-proxy v\d+\.\d+\.\d+/)
-  })
+const Info = Schema.fromJsonString(
+  Schema.Struct({ runtime: Schema.String, configPath: Schema.String }),
+)
 
-  it("info --json reports the runtime and resolved config path", () => {
-    const result = agentProxy(["info", "--json"], { XDG_CONFIG_HOME: "/xdg" })
-    expect(result.status).toBe(0)
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      runtime: "bun",
-      configPath: "/xdg/agent-proxy/config.json",
-    })
-  })
+layer(BunServices.layer)("agent-proxy (built binary)", (it) => {
+  it.effect("prints its version", () =>
+    Effect.gen(function* () {
+      const { result } = yield* agentProxy(["--version"])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toMatch(/agent-proxy v\d+\.\d+\.\d+/)
+    }),
+  )
 
-  it("exits non-zero with a readable error when no config location exists", () => {
-    const result = agentProxy(["info"])
-    expect(result.status).not.toBe(0)
-    expect(result.stdout + result.stderr).toContain("Could not resolve the config file path")
-  })
+  it.effect("info --json reports the runtime and the config path inside its home", () =>
+    Effect.gen(function* () {
+      const { sandbox, result } = yield* agentProxy(["info", "--json"])
+      expect(result.exitCode).toBe(0)
+      const info = yield* Schema.decodeEffect(Info)(result.stdout)
+      expect(info.runtime).toBe("bun")
+      expect(info.configPath).toBe(sandbox.configFile)
+    }),
+  )
 
-  it("exits non-zero on an unknown subcommand", () => {
-    const result = agentProxy(["bogus"])
-    expect(result.status).not.toBe(0)
-    expect(result.stdout + result.stderr).toContain('Unknown subcommand "bogus"')
-  })
+  it.effect("exits non-zero on an unknown subcommand", () =>
+    Effect.gen(function* () {
+      const { result } = yield* agentProxy(["bogus"])
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stdout + result.stderr).toContain('Unknown subcommand "bogus"')
+    }),
+  )
 })

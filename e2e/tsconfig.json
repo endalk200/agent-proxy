@@ -1,7 +1,7 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "types": ["node"]
+    "types": ["bun"]
   },
   "include": ["cli", "web", "support", "vitest.config.ts", "playwright.config.ts"]
 }
