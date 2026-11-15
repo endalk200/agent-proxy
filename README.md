@@ -51,6 +51,23 @@ The first end-to-end run needs a browser: `cd e2e && bun x playwright install ch
 | Integration | `apps/*/test/integration/` | Real platform services, run in-process                       |
 | End-to-end  | `e2e/cli`, `e2e/web`       | The built binary as a child process; the web app in Chromium |
 
+## Seeing it run
+
+`bun run verify` runs agent-proxy inside a sandbox: a directory under `.verify/runs/<id>/` that stands in for your home and XDG directories, so nothing touches your real configuration. Each command it runs and each page it loads is saved as evidence in the run's `artifacts/`.
+
+```sh
+bun run verify up                 # create a run
+bun run verify doctor             # check it is isolated and healthy
+bun run verify cli -- info        # run the CLI from source; output saved as evidence
+bun run verify web                # build and serve the web client on a free port
+bun run verify browse /           # screenshot, accessibility tree, and console errors
+bun run verify down               # stop what the run started; evidence is kept
+```
+
+To work inside the sandbox yourself, `bun run verify shell` opens your shell with the run's environment and nothing else from your session except `PATH`. Run one command with `bun run verify shell -- -c 'bun apps/cli/src/bin.ts info'`.
+
+Agents follow the same flow through the `verify-agent-proxy` skill. `docs/adr/0001-*` explains the design.
+
 ## Configuration
 
 `agent-proxy info` shows which configuration file the CLI would load. It checks, in order: `AGENT_PROXY_CONFIG`, then `$XDG_CONFIG_HOME/agent-proxy/config.json`, then `~/.config/agent-proxy/config.json`. Nothing reads the file yet.
