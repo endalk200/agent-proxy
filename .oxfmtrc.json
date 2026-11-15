@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "semi": false,
+  "sortImports": true,
+  "ignorePatterns": [
+    ".agents/",
+    ".claude/",
+    "skills-lock.json",
+    "bun.lock",
+    "**/dist/",
+    "**/coverage/",
+    "**/playwright-report/",
+    "**/test-results/"
+  ]
+}
