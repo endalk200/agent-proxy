@@ -26,7 +26,8 @@
       {
         "additionalTestBlockFunctions": ["it", "it.effect", "it.live", "it.flakyTest", "it.prop"]
       }
-    ]
+    ],
+    "typescript/consistent-return": "off"
   },
   "overrides": [
     {
