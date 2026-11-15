@@ -1,0 +1,56 @@
+{
+  "name": "agent-proxy",
+  "private": true,
+  "workspaces": {
+    "packages": [
+      "apps/*",
+      "packages/*",
+      "e2e"
+    ],
+    "catalog": {
+      "@effect/platform-bun": "4.1.4",
+      "@effect/platform-node": "4.1.4",
+      "@effect/vitest": "4.1.4",
+      "@playwright/test": "1.65.1",
+      "@testing-library/dom": "10.4.2",
+      "@testing-library/react": "16.3.3",
+      "@types/bun": "1.4.4",
+      "@types/node": "26.6.6",
+      "@types/react": "19.3.0",
+      "@types/react-dom": "19.3.0",
+      "@vitejs/plugin-react": "6.3.0",
+      "effect": "4.1.4",
+      "happy-dom": "21.0.4",
+      "react": "19.3.1",
+      "react-dom": "19.3.1",
+      "typescript": "7.0.2",
+      "vite": "8.3.8",
+      "vitest": "5.1.0"
+    }
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint:fix",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test:unit test:integration",
+    "test:unit": "turbo run test:unit",
+    "test:integration": "turbo run test:integration",
+    "test:e2e": "turbo run test:e2e",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "oxfmt --check && turbo run lint typecheck test:unit test:integration",
+    "postinstall": "effect-tsgo patch --oxlint"
+  },
+  "devDependencies": {
+    "@effect/tsgo": "0.69.0",
+    "oxfmt": "0.78.0",
+    "oxlint": "1.93.0",
+    "oxlint-tsgolint": "7.0.2007",
+    "turbo": "2.11.11",
+    "typescript": "catalog:"
+  },
+  "packageManager": "bun@1.4.4"
+}
