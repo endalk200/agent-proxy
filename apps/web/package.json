@@ -1,0 +1,34 @@
+{
+  "name": "@agent-proxy/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "agent-proxy browser client, served by the daemon",
+  "type": "module",
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "dev": "bun --bun vite",
+    "build": "bun --bun vite build",
+    "preview": "bun --bun vite preview",
+    "typecheck": "tsc --noEmit",
+    "lint": "effect-tsgo oxlint --type-aware",
+    "lint:fix": "effect-tsgo oxlint --type-aware --fix",
+    "test:unit": "bun --bun vitest run"
+  },
+  "dependencies": {
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "catalog:",
+    "@testing-library/react": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "happy-dom": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}
