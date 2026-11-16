@@ -18,7 +18,5 @@ The owner's skills catalog lives in `endalk200/skills`, and the global ones are 
 
 ## Open questions
 
-- **Where accounts live.** Accounts and their OAuth tokens could sit in the config file, which the CLI and web client then edit in place, or in the state directory, which leaves the config file to hand edits.
-- **Config format.** `config.json` is a placeholder. The format should be the one easiest to edit by hand.
 - **What usage means.** Tokens and requests per account, remaining subscription limits (such as Claude's five-hour window), or both.
 - **Providers beyond Claude and Codex.** None are planned; add one when the owner has a subscription to use.
