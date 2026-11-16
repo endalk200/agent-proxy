@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { closeSync, openSync } from "node:fs"
+import { appendFileSync, closeSync, openSync } from "node:fs"
 import { createServer } from "node:net"
 
 import { Data, Effect, Schedule } from "effect"
@@ -56,6 +56,12 @@ export const startDetached = (options: {
       child.unref()
       if (child.pid === undefined) {
         throw new Error(`spawn returned no pid for ${options.command}`)
+      }
+      // Under test, record the pid so the leak guard can find processes a
+      // test failed to stop (packages/sandbox/test/process-leak-guard.ts).
+      const ledger = process.env["AGENT_PROXY_TEST_PROCESS_LEDGER"]
+      if (ledger !== undefined) {
+        appendFileSync(ledger, `${child.pid}\n`)
       }
       return child.pid
     },

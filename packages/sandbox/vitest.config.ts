@@ -15,6 +15,7 @@ export default defineConfig({
         test: {
           name: "integration",
           include: ["test/integration/**/*.test.ts"],
+          globalSetup: ["./test/process-leak-guard.ts"],
         },
       },
     ],
