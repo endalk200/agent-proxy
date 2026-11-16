@@ -14,7 +14,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "effect-tsgo oxlint --type-aware",
     "lint:fix": "effect-tsgo oxlint --type-aware --fix",
-    "test:unit": "bun --bun vitest run"
+    "test:unit": "bun --bun vitest run",
+    "prototype:accounts": "bun --bun vite --config prototype/accounts-dashboard/vite.config.ts"
   },
   "dependencies": {
     "react": "catalog:",

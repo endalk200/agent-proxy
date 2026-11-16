@@ -43,7 +43,8 @@
     "format:check": "oxfmt --check",
     "check": "oxfmt --check && turbo run lint typecheck test:unit test:integration",
     "postinstall": "effect-tsgo patch --oxlint",
-    "verify": "bun packages/sandbox/src/bin.ts"
+    "verify": "bun packages/sandbox/src/bin.ts",
+    "prototype:accounts": "cd apps/web && bun run prototype:accounts"
   },
   "devDependencies": {
     "@effect/tsgo": "0.69.0",
