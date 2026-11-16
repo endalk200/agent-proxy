@@ -14,6 +14,10 @@ Triage and Wayfinder label strings match their canonical role names. See `docs/a
 
 Single-context: one root `GLOSSARY.md` plus `docs/adr/`. See `docs/agents/domain.md`.
 
+### Verification
+
+Before calling a user-facing change done, reproducing a bug in the running app, or confirming a review finding live, follow `docs/agents/verification/README.md`. A change to a user-facing behaviour updates its file in `docs/agents/verification/features/` in the same change.
+
 ## Effect 4
 
 Effect 4 renamed and changed much of the Effect 3 API. Before using an Effect API this repo does not already use,
