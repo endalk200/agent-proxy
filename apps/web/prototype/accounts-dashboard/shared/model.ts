@@ -1,4 +1,4 @@
-// PROTOTYPE: the dashboard's vocabulary as types, plus pure helpers every variant may use.
+// PROTOTYPE: the dashboard's vocabulary as types, plus pure helpers.
 // Words follow the design session: Provider, Account, Plan, Pool, Account status, Priority, Client, Proxy key.
 
 export type Provider = "claude" | "codex"
@@ -13,7 +13,12 @@ export const providerLoginHost: Record<Provider, string> = {
   codex: "auth.openai.com",
 }
 
-export type Plan = "Claude Pro" | "Claude Max 5x" | "Claude Max 20x" | "ChatGPT Plus" | "ChatGPT Pro"
+export type Plan =
+  | "Claude Pro"
+  | "Claude Max 5x"
+  | "Claude Max 20x"
+  | "ChatGPT Plus"
+  | "ChatGPT Pro"
 
 /** Short text for a plan badge: "Max 20x", "Pro", "Plus". */
 export const planShort = (plan: Plan): string => plan.replace(/^(Claude|ChatGPT) /, "")
@@ -25,9 +30,9 @@ export const planTier = (plan: Plan): 1 | 2 | 3 => {
     case "ChatGPT Plus":
       return 1
     case "Claude Max 5x":
-    case "ChatGPT Pro":
-      return plan === "ChatGPT Pro" ? 3 : 2
+      return 2
     case "Claude Max 20x":
+    case "ChatGPT Pro":
       return 3
   }
 }
@@ -48,7 +53,7 @@ export interface Account {
   priority: number
   lastUsedAt: number | null
   addedAt: number
-  /** Last time the status changed, for variants that want to animate a change landing. */
+  /** Last time the status changed, so the UI can animate a change landing. */
   changedAt: number
 }
 
@@ -61,7 +66,9 @@ export type Status =
 
 export const statusOf = (a: Account): Status => (a.enabled ? a.health : { kind: "disabled" })
 
-export const statusLabel = (s: Status): "Active" | "Cooling down" | "Needs sign-in" | "Disabled" => {
+export const statusLabel = (
+  s: Status,
+): "Active" | "Cooling down" | "Needs sign-in" | "Disabled" => {
   switch (s.kind) {
     case "active":
       return "Active"
@@ -141,7 +148,10 @@ export const poolState = (accounts: ReadonlyArray<Account>, provider: Provider):
 }
 
 /** The account that gets the provider's new sessions, if any. */
-export const servingAccountId = (accounts: ReadonlyArray<Account>, provider: Provider): string | null => {
+export const servingAccountId = (
+  accounts: ReadonlyArray<Account>,
+  provider: Provider,
+): string | null => {
   const s = poolState(accounts, provider)
   return s.kind === "serving" ? s.account.id : null
 }
@@ -155,9 +165,19 @@ export interface Client {
 }
 
 export const CLIENTS: ReadonlyArray<Client> = [
-  { id: "claude-code", name: "Claude Code", command: "agent-proxy connect claude-code", providers: ["claude"] },
+  {
+    id: "claude-code",
+    name: "Claude Code",
+    command: "agent-proxy connect claude-code",
+    providers: ["claude"],
+  },
   { id: "codex", name: "Codex", command: "agent-proxy connect codex", providers: ["codex"] },
-  { id: "opencode", name: "opencode", command: "agent-proxy connect opencode", providers: ["claude", "codex"] },
+  {
+    id: "opencode",
+    name: "opencode",
+    command: "agent-proxy connect opencode",
+    providers: ["claude", "codex"],
+  },
 ]
 
 export const PLANS: Record<Provider, ReadonlyArray<Plan>> = {

@@ -1,5 +1,5 @@
 // PROTOTYPE: the add-account (and "Sign in again") flow as a small state machine with mocked timing.
-// Each variant renders these steps however it likes (modal, drawer, inline, pane).
+// The dashboard renders these steps in its add-account dialog (dashboard/AddAccountModal.tsx).
 //
 //   pick ──choose(provider)──▶ waiting ──(login tab approves | pasteCallback(url))──▶ verifying ──1.2s──▶ success
 //
@@ -35,7 +35,10 @@ export interface AddFlow {
 
 const VERIFY_MS = 1200
 
-const MOCK_IDENTITIES: Record<Provider, ReadonlyArray<{ email: string; plan: Plan; label: string }>> = {
+const MOCK_IDENTITIES: Record<
+  Provider,
+  ReadonlyArray<{ email: string; plan: Plan; label: string }>
+> = {
   claude: [
     { email: "side-project@example.com", plan: "Claude Max 5x", label: "Side project" },
     { email: "lab@example.com", plan: "Claude Pro", label: "Lab" },
@@ -74,7 +77,10 @@ small{color:#888;display:block;margin-bottom:18px}button{background:${accent};co
   return true
 }
 
-export const useAddAccountFlow = (opts?: { reauthAccountId?: string; provider?: Provider }): AddFlow => {
+export const useAddAccountFlow = (opts?: {
+  reauthAccountId?: string
+  provider?: Provider
+}): AddFlow => {
   const reauthAccountId = opts?.reauthAccountId ?? null
   const [step, setStep] = useState<AddStep>({ kind: "pick" })
   const stepRef = useRef(step)
@@ -130,7 +136,10 @@ export const useAddAccountFlow = (opts?: { reauthAccountId?: string; provider?: 
   const started = useRef(false)
   useEffect(() => {
     if (started.current) return
-    const reauth = reauthAccountId === null ? undefined : getState().accounts.find((a) => a.id === reauthAccountId)
+    const reauth =
+      reauthAccountId === null
+        ? undefined
+        : getState().accounts.find((a) => a.id === reauthAccountId)
     const provider = reauth?.provider ?? opts?.provider
     if (provider !== undefined) {
       started.current = true
@@ -152,7 +161,8 @@ export const useAddAccountFlow = (opts?: { reauthAccountId?: string; provider?: 
       const s = stepRef.current
       if (s.kind !== "waiting") return null
       if (!CALLBACK.test(url.trim())) {
-        const err = "That isn't a callback URL. It starts with http://localhost or http://127.0.0.1 and contains code="
+        const err =
+          "That isn't a callback URL. It starts with http://localhost or http://127.0.0.1 and contains code="
         setStep({ ...s, pasteError: err })
         return err
       }

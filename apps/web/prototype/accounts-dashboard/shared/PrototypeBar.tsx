@@ -1,62 +1,35 @@
-// PROTOTYPE chrome, not part of any design: variant switcher, scenario picker, live-update simulator,
+// PROTOTYPE chrome, not part of the design: scenario picker, live-update simulator,
 // state inspector, theme toggle. Fixed bottom-centre. Hidden outside dev builds.
 
-import { useEffect, useRef, useState } from "react"
+import { useState } from "react"
 
 import "./prototype-bar.css"
+import { IconMonitor, IconMoon, IconSun, IconZap } from "./icons.tsx"
 import {
-  IconChevronLeft,
-  IconChevronRight,
-  IconMonitor,
-  IconMoon,
-  IconSun,
-  IconZap,
-} from "./icons.tsx"
-import { PROVIDERS, lastUsedText, poolState, providerName, statusLabel, statusOf, untilText } from "./model.ts"
+  PROVIDERS,
+  lastUsedText,
+  poolState,
+  providerName,
+  statusLabel,
+  statusOf,
+  untilText,
+} from "./model.ts"
 import { SCENARIOS, type ScenarioId, sim, useDashboard, useNow } from "./store.ts"
 import type { ThemeChoice } from "./theme.ts"
 
-export interface VariantInfo {
-  key: string
-  name: string
-}
-
-const isTyping = (el: Element | null) =>
-  el instanceof HTMLInputElement ||
-  el instanceof HTMLTextAreaElement ||
-  el instanceof HTMLSelectElement ||
-  (el instanceof HTMLElement && el.isContentEditable)
-
-export function PrototypeBar(props: {
-  variants: ReadonlyArray<VariantInfo>
-  current: string
-  onChange: (key: string) => void
-  theme: ThemeChoice
-  onTheme: (t: ThemeChoice) => void
-}) {
-  const { variants, current, onChange, theme, onTheme } = props
+export function PrototypeBar(props: { theme: ThemeChoice; onTheme: (t: ThemeChoice) => void }) {
+  const { theme, onTheme } = props
   const s = useDashboard()
   const now = useNow(1000)
   const [panel, setPanel] = useState<"none" | "sim" | "state">("none")
-  const index = Math.max(0, variants.findIndex((v) => v.key === current))
-  const cur = variants[index]
-  const go = (d: number) => onChange(variants[(index + d + variants.length) % variants.length]!.key)
-  const goRef = useRef(go)
-  goRef.current = go
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(document.activeElement)) return
-      if (e.key === "ArrowLeft") goRef.current(-1)
-      else if (e.key === "ArrowRight") goRef.current(1)
-    }
-    window.addEventListener("keydown", onKey)
-    return () => window.removeEventListener("keydown", onKey)
-  }, [])
 
   if (!import.meta.env.DEV) return null
 
-  const nextTheme: Record<ThemeChoice, ThemeChoice> = { system: "light", light: "dark", dark: "system" }
+  const nextTheme: Record<ThemeChoice, ThemeChoice> = {
+    system: "light",
+    light: "dark",
+    dark: "system",
+  }
   const ThemeIcon = theme === "light" ? IconSun : theme === "dark" ? IconMoon : IconMonitor
 
   return (
@@ -73,7 +46,11 @@ export function PrototypeBar(props: {
               {s.daemon.running ? "Stop the daemon" : "Start the daemon"}
             </button>
             <label className="ptbar-check">
-              <input type="checkbox" checked={s.autoSimulate} onChange={(e) => sim.setAuto(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={s.autoSimulate}
+                onChange={(e) => sim.setAuto(e.target.checked)}
+              />
               Random event every 6s
             </label>
           </div>
@@ -91,7 +68,8 @@ export function PrototypeBar(props: {
       {panel === "state" && (
         <div className="ptbar-panel ptbar-state">
           <div className="ptbar-panel-title">
-            State · daemon {s.daemon.running ? "running" : "down"} at {s.daemon.address} · scenario {s.scenario}
+            State · daemon {s.daemon.running ? "running" : "down"} at {s.daemon.address} · scenario{" "}
+            {s.scenario}
           </div>
           {PROVIDERS.map((p) => {
             const ps = poolState(s.accounts, p)
@@ -134,19 +112,6 @@ export function PrototypeBar(props: {
       )}
       <div className="ptbar" role="toolbar" aria-label="Prototype controls">
         <span className="ptbar-tag">PROTOTYPE</span>
-        <button className="ptbar-icon" onClick={() => go(-1)} aria-label="Previous variant" title="Previous variant (←)">
-          <IconChevronLeft />
-        </button>
-        <span className="ptbar-label">
-          <b>{cur?.key}</b> {cur?.name}
-          <span className="ptbar-count">
-            {index + 1}/{variants.length}
-          </span>
-        </span>
-        <button className="ptbar-icon" onClick={() => go(1)} aria-label="Next variant" title="Next variant (→)">
-          <IconChevronRight />
-        </button>
-        <span className="ptbar-sep" />
         <select
           className="ptbar-select"
           value={s.scenario}
@@ -165,10 +130,18 @@ export function PrototypeBar(props: {
         >
           <IconZap size={14} /> Simulate
         </button>
-        <button className={`ptbar-btn ${panel === "state" ? "on" : ""}`} onClick={() => setPanel(panel === "state" ? "none" : "state")}>
+        <button
+          className={`ptbar-btn ${panel === "state" ? "on" : ""}`}
+          onClick={() => setPanel(panel === "state" ? "none" : "state")}
+        >
           State
         </button>
-        <button className="ptbar-icon" onClick={() => onTheme(nextTheme[theme])} title={`Theme: ${theme}`} aria-label={`Theme: ${theme}`}>
+        <button
+          className="ptbar-icon"
+          onClick={() => onTheme(nextTheme[theme])}
+          title={`Theme: ${theme}`}
+          aria-label={`Theme: ${theme}`}
+        >
           <ThemeIcon />
         </button>
       </div>

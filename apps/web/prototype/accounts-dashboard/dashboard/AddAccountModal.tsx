@@ -1,8 +1,15 @@
-// PROTOTYPE variant A: add-account / "Sign in again" modal. Mounted only while open, so the flow resets.
+// PROTOTYPE: the add-account and "Sign in again" dialog. Mounted only while open, so the flow resets.
 import { useMemo, useState } from "react"
 
-import { EXAMPLE_CALLBACK, useAddAccountFlow } from "../../shared/addFlow.ts"
-import { IconAlert, IconArrowRight, IconCheck, IconChevronLeft, IconExternal, ProviderMark } from "../../shared/icons.tsx"
+import { EXAMPLE_CALLBACK, useAddAccountFlow } from "../shared/addFlow.ts"
+import {
+  IconAlert,
+  IconArrowRight,
+  IconCheck,
+  IconChevronLeft,
+  IconExternal,
+  ProviderMark,
+} from "../shared/icons.tsx"
 import {
   CLIENTS,
   PLANS,
@@ -12,8 +19,8 @@ import {
   planTier,
   providerLoginHost,
   providerName,
-} from "../../shared/model.ts"
-import { actions, useDashboard } from "../../shared/store.ts"
+} from "../shared/model.ts"
+import { actions, useDashboard } from "../shared/store.ts"
 import { CopyButton, Modal, Spinner } from "./ui.tsx"
 
 const clientsFor = (p: Provider) =>
@@ -36,21 +43,29 @@ export function AddAccountModal(props: {
   const flow = useAddAccountFlow(opts)
   const s = useDashboard()
   const step = flow.step
-  const reauth = props.reauthAccountId === undefined ? undefined : s.accounts.find((a) => a.id === props.reauthAccountId)
+  const reauth =
+    props.reauthAccountId === undefined
+      ? undefined
+      : s.accounts.find((a) => a.id === props.reauthAccountId)
 
   if (step.kind === "pick") {
     return (
-      <Modal title="Add an account" subtitle="Pick a provider. Its sign-in page opens in a new tab." onClose={onClose} width={520}>
-        <div className="vA-pick">
+      <Modal
+        title="Add an account"
+        subtitle="Pick a provider. Its sign-in page opens in a new tab."
+        onClose={onClose}
+        width={520}
+      >
+        <div className="ap-pick">
           {(["claude", "codex"] as const).map((p) => (
-            <button key={p} type="button" className="vA-pick-card" onClick={() => flow.choose(p)}>
-              <span className="vA-pick-mark">
+            <button key={p} type="button" className="ap-pick-card" onClick={() => flow.choose(p)}>
+              <span className="ap-pick-mark">
                 <ProviderMark provider={p} size={26} />
               </span>
-              <span className="vA-pick-text">
+              <span className="ap-pick-text">
                 <b>{providerName[p]}</b>
                 <span>{PLANS[p].map(planShort).join(", ")}</span>
-                <span className="vA-pick-clients">Used by {clientsFor(p)}</span>
+                <span className="ap-pick-clients">Used by {clientsFor(p)}</span>
               </span>
               <IconArrowRight size={16} />
             </button>
@@ -80,20 +95,30 @@ export function AddAccountModal(props: {
   }
 
   const provider = step.provider
-  const title = reauth !== undefined ? `Sign in again to ${reauth.label}` : `Sign in to ${providerName[provider]}`
+  const title =
+    reauth !== undefined
+      ? `Sign in again to ${reauth.label}`
+      : `Sign in to ${providerName[provider]}`
   const subtitle =
     reauth !== undefined ? (
       <>
-        Sign in as <b>{reauth.email}</b> to put this account back in the {providerName[provider]} pool.
+        Sign in as <b>{reauth.email}</b> to put this account back in the {providerName[provider]}{" "}
+        pool.
       </>
     ) : (
       `agent-proxy adds the account it signs in as to the ${providerName[provider]} pool.`
     )
 
   return (
-    <Modal title={title} subtitle={subtitle} icon={<ProviderMark provider={provider} size={22} />} onClose={onClose} width={540}>
+    <Modal
+      title={title}
+      subtitle={subtitle}
+      icon={<ProviderMark provider={provider} size={22} />}
+      onClose={onClose}
+      width={540}
+    >
       {step.kind === "verifying" ? (
-        <div className="vA-wait">
+        <div className="ap-wait">
           <Spinner size={22} />
           <div>
             <b>Finishing sign-in…</b>
@@ -129,62 +154,70 @@ function WaitingStep(props: {
   const [url, setUrl] = useState("")
   const login = useMemo(() => loginUrl(provider), [loginUrl, provider])
   return (
-    <div className="vA-waiting">
+    <div className="ap-waiting">
       {props.popupBlocked ? (
-        <div className="vA-callout is-warn">
+        <div className="ap-callout is-warn">
           <IconAlert size={16} />
           <div>
             <b>Your browser blocked the new tab.</b>
             <p>Open the {providerName[provider]} sign-in page yourself, then come back here.</p>
           </div>
-          <button type="button" className="vA-btn vA-btn-primary" onClick={props.onOpen}>
+          <button type="button" className="ap-btn ap-btn-primary" onClick={props.onOpen}>
             Open sign-in page <IconExternal size={13} />
           </button>
         </div>
       ) : (
-        <div className="vA-wait">
+        <div className="ap-wait">
           <Spinner size={22} />
           <div>
             <b>Waiting for you to finish signing in…</b>
             <p>
-              We opened {providerLoginHost[provider]} in a new tab. Approve agent-proxy there and this dialog moves on by itself.
+              We opened {providerLoginHost[provider]} in a new tab. Approve agent-proxy there and
+              this dialog moves on by itself.
             </p>
-            <button type="button" className="vA-linkbtn" onClick={props.onOpen}>
+            <button type="button" className="ap-linkbtn" onClick={props.onOpen}>
               Open sign-in page again <IconExternal size={12} />
             </button>
           </div>
         </div>
       )}
 
-      <div className={`vA-paste ${pasteOpen ? "is-open" : ""}`}>
-        <button type="button" className="vA-paste-toggle" onClick={() => setPasteOpen(!pasteOpen)} aria-expanded={pasteOpen}>
-          <span className="vA-chev">›</span> Signing in over SSH or on a headless box? Paste the callback URL
+      <div className={`ap-paste ${pasteOpen ? "is-open" : ""}`}>
+        <button
+          type="button"
+          className="ap-paste-toggle"
+          onClick={() => setPasteOpen(!pasteOpen)}
+          aria-expanded={pasteOpen}
+        >
+          <span className="ap-chev">›</span> Signing in over SSH or on a headless box? Paste the
+          callback URL
         </button>
         {pasteOpen && (
-          <div className="vA-paste-body">
+          <div className="ap-paste-body">
             <ol>
               <li>
                 Open this URL in a browser on any machine:
-                <div className="vA-urlbox">
+                <div className="ap-urlbox">
                   <code>{login}</code>
                   <CopyButton text={login} label="Copy sign-in URL" />
                 </div>
               </li>
               <li>
                 Sign in. The browser ends up on a page that won't load, at an address starting with{" "}
-                <code className="vA-inline">http://127.0.0.1:8318/callback</code>. Copy that whole address.
+                <code className="ap-inline">http://127.0.0.1:8318/callback</code>. Copy that whole
+                address.
               </li>
               <li>Paste it here:</li>
             </ol>
             <form
-              className="vA-paste-form"
+              className="ap-paste-form"
               onSubmit={(e) => {
                 e.preventDefault()
                 props.onPaste(url)
               }}
             >
               <input
-                className={`vA-input vA-mono ${props.pasteError !== null ? "is-error" : ""}`}
+                className={`ap-input ap-mono ${props.pasteError !== null ? "is-error" : ""}`}
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
                 placeholder={EXAMPLE_CALLBACK}
@@ -192,17 +225,17 @@ function WaitingStep(props: {
                 aria-label="Callback URL"
                 autoFocus
               />
-              <button type="submit" className="vA-btn vA-btn-primary" disabled={url.trim() === ""}>
+              <button type="submit" className="ap-btn ap-btn-primary" disabled={url.trim() === ""}>
                 Continue
               </button>
             </form>
-            {props.pasteError !== null && <p className="vA-error">{props.pasteError}</p>}
+            {props.pasteError !== null && <p className="ap-error">{props.pasteError}</p>}
           </div>
         )}
       </div>
 
       {props.onBack !== undefined && (
-        <button type="button" className="vA-linkbtn vA-back" onClick={props.onBack}>
+        <button type="button" className="ap-linkbtn ap-back" onClick={props.onBack}>
           <IconChevronLeft size={13} /> Choose a different provider
         </button>
       )}
@@ -229,7 +262,11 @@ function SuccessStep(props: {
   }
   return (
     <Modal
-      title={props.reauth ? `${props.label} is signed in again` : `${providerName[props.provider]} account added`}
+      title={
+        props.reauth
+          ? `${props.label} is signed in again`
+          : `${providerName[props.provider]} account added`
+      }
       subtitle={
         props.reauth
           ? `It's back in the ${providerName[props.provider]} pool at priority ${props.priority}.`
@@ -238,39 +275,44 @@ function SuccessStep(props: {
             : `It's the first account in the ${providerName[props.provider]} pool, so it gets new sessions right away.`
       }
       icon={
-        <span className="vA-success-icon">
+        <span className="ap-success-icon">
           <IconCheck size={18} />
         </span>
       }
       onClose={done}
       width={500}
       footer={
-        <button type="button" className="vA-btn vA-btn-primary" onClick={done}>
+        <button type="button" className="ap-btn ap-btn-primary" onClick={done}>
           Done
         </button>
       }
     >
       <form
-        className="vA-success"
+        className="ap-success"
         onSubmit={(e) => {
           e.preventDefault()
           done()
         }}
       >
-        <div className="vA-success-card">
+        <div className="ap-success-card">
           <ProviderMark provider={props.provider} size={20} />
           <div>
-            <div className="vA-success-email">{props.email}</div>
-            <div className="vA-muted">Signed in · Active</div>
+            <div className="ap-success-email">{props.email}</div>
+            <div className="ap-muted">Signed in · Active</div>
           </div>
-          <span className="vA-plan" data-tier={props.tier}>
+          <span className="ap-plan" data-tier={props.tier}>
             {props.plan}
           </span>
         </div>
         {!props.reauth && (
-          <label className="vA-field">
+          <label className="ap-field">
             <span>Label</span>
-            <input className="vA-input" value={label} onChange={(e) => setLabel(e.target.value)} data-autofocus />
+            <input
+              className="ap-input"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              data-autofocus
+            />
             <small>Only you see this. Pick something that tells your accounts apart.</small>
           </label>
         )}

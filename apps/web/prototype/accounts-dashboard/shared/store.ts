@@ -1,5 +1,5 @@
 // PROTOTYPE: in-memory stand-in for the daemon. No persistence; reload resets to the scenario.
-// Variants read state with `useDashboard()` and change it only through `actions`.
+// The dashboard reads state with `useDashboard()` and change it only through `actions`.
 // `sim` fakes the daemon pushing live status changes (the prototype bar drives it).
 
 import { useEffect, useState, useSyncExternalStore } from "react"
@@ -45,7 +45,7 @@ export interface LiveEvent {
   kind: LiveEventKind
   accountId: string | null
   provider: Provider | null
-  /** Sentence a variant can show as a toast or log line, e.g. "Work is cooling down until 3:42 PM". */
+  /** Sentence the UI can show as a toast or log line, e.g. "Work is cooling down until 3:42 PM". */
   message: string
   /** true when the daemon caused it (live update) rather than the owner's own action. */
   live: boolean
@@ -147,7 +147,11 @@ const scenarioAccounts = (id: ScenarioId): Account[] => {
       return []
     case "all-cooling":
       return [
-        { ...personal, health: { kind: "cooling", until: resetIn(18) }, lastUsedAt: Date.now() - 2 * MIN },
+        {
+          ...personal,
+          health: { kind: "cooling", until: resetIn(18) },
+          lastUsedAt: Date.now() - 2 * MIN,
+        },
         { ...work, health: { kind: "cooling", until: resetIn(72) } },
         gptPro,
         plusBackup,
@@ -159,7 +163,12 @@ const scenarioAccounts = (id: ScenarioId): Account[] => {
 
 const initialState = (scenario: ScenarioId): DashboardState => ({
   scenario,
-  daemon: { running: true, address: "127.0.0.1:8318", version: "0.1.0", startedAt: Date.now() - 3 * 60 * MIN },
+  daemon: {
+    running: true,
+    address: "127.0.0.1:8318",
+    version: "0.1.0",
+    startedAt: Date.now() - 3 * 60 * MIN,
+  },
   proxyKey: "apk_live_7f3c9e2a41b84d0f95c1e6a2",
   accounts: scenarioAccounts(scenario),
   events: [],
@@ -211,7 +220,15 @@ const log = (
 ): DashboardState => ({
   ...s,
   events: [
-    { id: eventSeq++, at: Date.now(), kind, accountId: account?.id ?? null, provider: account?.provider ?? null, message, live },
+    {
+      id: eventSeq++,
+      at: Date.now(),
+      kind,
+      accountId: account?.id ?? null,
+      provider: account?.provider ?? null,
+      message,
+      live,
+    },
     ...s.events,
   ].slice(0, 50),
 })
@@ -225,8 +242,14 @@ const setHealth = (id: string, health: Health) =>
   patch(id, (a) => ({ ...a, health, changedAt: Date.now() }))
 
 /** Rewrites priorities 1..n for one provider in the given order. */
-const applyOrder = (accounts: Account[], provider: Provider, orderedIds: ReadonlyArray<string>): Account[] =>
-  accounts.map((a) => (a.provider === provider ? { ...a, priority: orderedIds.indexOf(a.id) + 1 } : a))
+const applyOrder = (
+  accounts: Account[],
+  provider: Provider,
+  orderedIds: ReadonlyArray<string>,
+): Account[] =>
+  accounts.map((a) =>
+    a.provider === provider ? { ...a, priority: orderedIds.indexOf(a.id) + 1 } : a,
+  )
 
 // ---------------------------------------------------------------------------------------------
 // Owner actions (what the dashboard UI calls)
@@ -246,7 +269,15 @@ export const actions = {
       addedAt: Date.now(),
       changedAt: Date.now(),
     }
-    setState(log({ ...state, accounts: [...state.accounts, a] }, "added", a, `Added ${a.label} (${a.plan})`, false))
+    setState(
+      log(
+        { ...state, accounts: [...state.accounts, a] },
+        "added",
+        a,
+        `Added ${a.label} (${a.plan})`,
+        false,
+      ),
+    )
     return id
   },
 
@@ -283,7 +314,9 @@ export const actions = {
   setPriority(id: string, to: number) {
     const a = find(id)
     if (a === undefined) return
-    const ids = accountsOf(state.accounts, a.provider).map((x) => x.id).filter((x) => x !== id)
+    const ids = accountsOf(state.accounts, a.provider)
+      .map((x) => x.id)
+      .filter((x) => x !== id)
     const index = Math.max(0, Math.min(ids.length, to - 1))
     ids.splice(index, 0, id)
     actions.reorder(a.provider, ids)
@@ -314,7 +347,15 @@ export const actions = {
     if (a === undefined) return
     const rest = state.accounts.filter((x) => x.id !== id)
     const order = accountsOf(rest, a.provider).map((x) => x.id)
-    setState(log({ ...state, accounts: applyOrder(rest, a.provider, order) }, "removed", a, `Removed ${a.label}`, false))
+    setState(
+      log(
+        { ...state, accounts: applyOrder(rest, a.provider, order) },
+        "removed",
+        a,
+        `Removed ${a.label}`,
+        false,
+      ),
+    )
   },
 
   /** After "Sign in again" completes. */
@@ -322,7 +363,13 @@ export const actions = {
     const a = find(id)
     if (a === undefined) return
     setState(
-      log({ ...state, accounts: setHealth(id, { kind: "active" }) }, "signed-in", a, `${a.label} is signed in again`, false),
+      log(
+        { ...state, accounts: setHealth(id, { kind: "active" }) },
+        "signed-in",
+        a,
+        `${a.label} is signed in again`,
+        false,
+      ),
     )
   },
 }
@@ -365,11 +412,14 @@ export const sim = {
 
   /** Expires an account's login (default: an Active one, preferring a non-serving account). */
   expireSignIn(id?: string) {
-    const serving = new Set(["claude", "codex"].map((p) => servingAccountId(state.accounts, p as Provider)))
+    const serving = new Set(
+      ["claude", "codex"].map((p) => servingAccountId(state.accounts, p as Provider)),
+    )
     const a =
       id === undefined
-        ? (state.accounts.find((x) => x.enabled && x.health.kind === "active" && !serving.has(x.id)) ??
-          state.accounts.find((x) => x.enabled && x.health.kind === "active"))
+        ? (state.accounts.find(
+            (x) => x.enabled && x.health.kind === "active" && !serving.has(x.id),
+          ) ?? state.accounts.find((x) => x.enabled && x.health.kind === "active"))
         : find(id)
     if (a === undefined) return
     setState(
@@ -389,11 +439,21 @@ export const sim = {
       id === undefined
         ? state.accounts
             .filter((x) => x.health.kind === "cooling")
-            .sort((x, y) => (x.health.kind === "cooling" && y.health.kind === "cooling" ? x.health.until - y.health.until : 0))[0]
+            .sort((x, y) =>
+              x.health.kind === "cooling" && y.health.kind === "cooling"
+                ? x.health.until - y.health.until
+                : 0,
+            )[0]
         : find(id)
     if (a === undefined || a.health.kind !== "cooling") return
     setState(
-      log({ ...state, accounts: setHealth(a.id, { kind: "active" }) }, "cooldown-ended", a, `${a.label}'s cooldown ended`, true),
+      log(
+        { ...state, accounts: setHealth(a.id, { kind: "active" }) },
+        "cooldown-ended",
+        a,
+        `${a.label}'s cooldown ended`,
+        true,
+      ),
     )
   },
 
@@ -402,14 +462,27 @@ export const sim = {
     const a = pickServing()
     if (a === undefined) return
     setState(
-      log({ ...state, accounts: patch(a.id, (x) => ({ ...x, lastUsedAt: Date.now() })) }, "used", a, `${a.label} served a request`, true),
+      log(
+        { ...state, accounts: patch(a.id, (x) => ({ ...x, lastUsedAt: Date.now() })) },
+        "used",
+        a,
+        `${a.label} served a request`,
+        true,
+      ),
     )
   },
 
   setDaemonRunning(running: boolean) {
     setState(
       log(
-        { ...state, daemon: { ...state.daemon, running, startedAt: running ? Date.now() : state.daemon.startedAt } },
+        {
+          ...state,
+          daemon: {
+            ...state.daemon,
+            running,
+            startedAt: running ? Date.now() : state.daemon.startedAt,
+          },
+        },
         running ? "daemon-up" : "daemon-down",
         null,
         running ? "Daemon is running again" : `Can't reach the daemon at ${state.daemon.address}`,

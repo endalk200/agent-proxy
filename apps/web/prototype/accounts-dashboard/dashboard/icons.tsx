@@ -1,4 +1,4 @@
-// PROTOTYPE variant A1: nav icons private to this variant (lucide-style, 24px grid).
+// PROTOTYPE: nav and sheet icons (lucide-style, 24px grid).
 import type { ReactNode } from "react"
 
 const Svg = ({ size = 16, children }: { size?: number | undefined; children: ReactNode }) => (

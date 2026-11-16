@@ -1,7 +1,7 @@
-// PROTOTYPE variant A: small UI pieces (modal, switch, menu, copy button) private to this variant.
+// PROTOTYPE: small UI pieces: dialog, switch, menu, copy button, spinner.
 import { type ReactNode, useEffect, useRef, useState } from "react"
 
-import { IconCheck, IconCopy, IconMore, IconX } from "../../shared/icons.tsx"
+import { IconCheck, IconCopy, IconMore, IconX } from "../shared/icons.tsx"
 
 export const copyText = (text: string) => {
   void navigator.clipboard?.writeText(text).catch(() => undefined)
@@ -17,7 +17,7 @@ export function CopyButton({ text, label = "Copy" }: { text: string; label?: str
   return (
     <button
       type="button"
-      className={`vA-iconbtn ${copied ? "is-done" : ""}`}
+      className={`ap-iconbtn ${copied ? "is-done" : ""}`}
       onClick={() => {
         copyText(text)
         setCopied(true)
@@ -52,36 +52,47 @@ export function Modal(props: {
     const root = ref.current
     if (root === null || root.contains(document.activeElement)) return
     const first =
-      root.querySelector<HTMLElement>("[data-autofocus]") ?? root.querySelector<HTMLElement>(".vA-modal-body button, .vA-modal-body input")
+      root.querySelector<HTMLElement>("[data-autofocus]") ??
+      root.querySelector<HTMLElement>(".ap-modal-body button, .ap-modal-body input")
     first?.focus()
   }, [])
   return (
-    <div className="vA-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="ap-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div
-        className="vA-modal"
+        className="ap-modal"
         role="dialog"
         aria-modal="true"
         ref={ref}
         style={props.width !== undefined ? { width: props.width } : undefined}
       >
-        <div className="vA-modal-head">
-          {props.icon !== undefined && <div className="vA-modal-icon">{props.icon}</div>}
-          <div className="vA-modal-titles">
+        <div className="ap-modal-head">
+          {props.icon !== undefined && <div className="ap-modal-icon">{props.icon}</div>}
+          <div className="ap-modal-titles">
             <h2>{props.title}</h2>
             {props.subtitle !== undefined && <p>{props.subtitle}</p>}
           </div>
-          <button type="button" className="vA-iconbtn vA-modal-x" onClick={onClose} aria-label="Close">
+          <button
+            type="button"
+            className="ap-iconbtn ap-modal-x"
+            onClick={onClose}
+            aria-label="Close"
+          >
             <IconX size={16} />
           </button>
         </div>
-        <div className="vA-modal-body">{props.children}</div>
-        {props.footer !== undefined && <div className="vA-modal-foot">{props.footer}</div>}
+        <div className="ap-modal-body">{props.children}</div>
+        {props.footer !== undefined && <div className="ap-modal-foot">{props.footer}</div>}
       </div>
     </div>
   )
 }
 
-export function Switch(props: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+export function Switch(props: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  label: string
+  disabled?: boolean
+}) {
   return (
     <button
       type="button"
@@ -90,7 +101,7 @@ export function Switch(props: { checked: boolean; onChange: (v: boolean) => void
       aria-label={props.label}
       title={props.label}
       disabled={props.disabled}
-      className={`vA-switch ${props.checked ? "is-on" : ""}`}
+      className={`ap-switch ${props.checked ? "is-on" : ""}`}
       onClick={() => props.onChange(!props.checked)}
     >
       <span />
@@ -126,10 +137,10 @@ export function RowMenu({ items, label }: { items: ReadonlyArray<MenuItem>; labe
     }
   }, [open])
   return (
-    <div className="vA-menu-wrap" ref={ref}>
+    <div className="ap-menu-wrap" ref={ref}>
       <button
         type="button"
-        className={`vA-iconbtn ${open ? "is-active" : ""}`}
+        className={`ap-iconbtn ${open ? "is-active" : ""}`}
         onClick={() => setOpen(!open)}
         aria-label={label}
         aria-haspopup="menu"
@@ -138,21 +149,21 @@ export function RowMenu({ items, label }: { items: ReadonlyArray<MenuItem>; labe
         <IconMore size={16} />
       </button>
       {open && (
-        <div className="vA-menu" role="menu">
+        <div className="ap-menu" role="menu">
           {items.map((it) => (
             <div key={it.label}>
-              {it.separatorBefore === true && <div className="vA-menu-sep" />}
+              {it.separatorBefore === true && <div className="ap-menu-sep" />}
               <button
                 type="button"
                 role="menuitem"
                 disabled={it.disabled}
-                className={`vA-menu-item ${it.danger === true ? "is-danger" : ""}`}
+                className={`ap-menu-item ${it.danger === true ? "is-danger" : ""}`}
                 onClick={() => {
                   setOpen(false)
                   it.onSelect()
                 }}
               >
-                <span className="vA-menu-icon">{it.icon}</span>
+                <span className="ap-menu-icon">{it.icon}</span>
                 {it.label}
               </button>
             </div>
@@ -164,5 +175,5 @@ export function RowMenu({ items, label }: { items: ReadonlyArray<MenuItem>; labe
 }
 
 export function Spinner({ size = 16 }: { size?: number }) {
-  return <span className="vA-spinner" style={{ width: size, height: size }} aria-hidden="true" />
+  return <span className="ap-spinner" style={{ width: size, height: size }} aria-hidden="true" />
 }

@@ -1,5 +1,5 @@
-// PROTOTYPE variant A1: the Accounts page body. Adapted from round 1's Console (a-console/VariantA.tsx):
-// per-provider tables, drag-to-reorder, inline rename, ⋯ menu. New here: clicking a row opens the
+// PROTOTYPE: the Accounts page body: one table per provider, drag-to-reorder priority, inline rename,
+// the ⋯ menu, first run, the remove dialog, and toasts for live updates. Clicking a row opens the
 // account sheet, and the open account stays highlighted.
 
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react"
@@ -18,7 +18,7 @@ import {
   IconTrash,
   IconX,
   ProviderMark,
-} from "../../shared/icons.tsx"
+} from "../shared/icons.tsx"
 import {
   type Account,
   CLIENTS,
@@ -35,10 +35,10 @@ import {
   providerName,
   statusLabel,
   statusOf,
-} from "../../shared/model.ts"
-import { type LiveEvent, actions } from "../../shared/store.ts"
-import { CommandLine, ProxyKeyRow } from "../a-console/ConnectClients.tsx"
-import { Modal, RowMenu, Switch } from "../a-console/ui.tsx"
+} from "../shared/model.ts"
+import { type LiveEvent, actions } from "../shared/store.ts"
+import { CommandLine, ProxyKeyRow } from "./ConnectClients.tsx"
+import { Modal, RowMenu, Switch } from "./ui.tsx"
 
 export const clientsFor = (p: Provider) =>
   CLIENTS.filter((c) => c.providers.includes(p))
@@ -48,31 +48,43 @@ export const clientsFor = (p: Provider) =>
 // -----------------------------------------------------------------------------------------------
 // Pool line in a section header
 
-export function PoolLine({ ps, now, provider }: { ps: PoolState; now: number; provider: Provider }) {
+export function PoolLine({
+  ps,
+  now,
+  provider,
+}: {
+  ps: PoolState
+  now: number
+  provider: Provider
+}) {
   switch (ps.kind) {
     case "serving":
       return (
-        <span className="vA1-pool is-ok">
-          <span className="vA1-pool-dot" />
+        <span className="app-pool is-ok">
+          <span className="app-pool-dot" />
           New sessions go to <b>{ps.account.label}</b>
         </span>
       )
     case "blocked":
       return (
-        <span className="vA1-pool is-warn">
+        <span className="app-pool is-warn">
           <IconAlert size={13} />
-          {ps.allCooling ? "Every account is cooling down" : "No account can take new sessions"}
+          No account available
           {ps.nextReset !== null && (
-            <span className="vA1-pool-sub">
+            <span className="app-pool-sub">
               · next reset {formatClock(ps.nextReset)} ({countdown(ps.nextReset, now)})
             </span>
           )}
         </span>
       )
     case "off":
-      return <span className="vA1-pool is-muted">Every {providerName[provider]} account is disabled</span>
+      return (
+        <span className="app-pool is-muted">
+          Every {providerName[provider]} account is disabled
+        </span>
+      )
     case "empty":
-      return <span className="vA1-pool is-muted">No accounts yet</span>
+      return <span className="app-pool is-muted">No accounts yet</span>
   }
 }
 
@@ -110,10 +122,17 @@ export function ProviderSection(props: {
 
   const startDrag = (e: ReactPointerEvent<HTMLButtonElement>, id: string, index: number) => {
     if (e.button !== 0) return
-    const row = e.currentTarget.closest(".vA-row")
+    const row = e.currentTarget.closest(".ap-row")
     if (row === null) return
     e.currentTarget.setPointerCapture(e.pointerId)
-    setDrag({ id, from: index, to: index, startY: e.clientY, dy: 0, h: row.getBoundingClientRect().height })
+    setDrag({
+      id,
+      from: index,
+      to: index,
+      startY: e.clientY,
+      dy: 0,
+      h: row.getBoundingClientRect().height,
+    })
   }
   const moveDrag = (e: ReactPointerEvent<HTMLButtonElement>) => {
     const d = dragRef.current
@@ -144,45 +163,44 @@ export function ProviderSection(props: {
   }
 
   return (
-    <section className={`vA1-section ${ps.kind === "blocked" ? "is-blocked" : ""}`} aria-labelledby={`vA1-h-${provider}`}>
-      <header className="vA1-section-head">
-        <div className="vA1-section-title">
+    <section
+      className={`app-section ${ps.kind === "blocked" ? "is-blocked" : ""}`}
+      aria-labelledby={`app-h-${provider}`}
+    >
+      <header className="app-section-head">
+        <div className="app-section-title">
           <ProviderMark provider={provider} size={16} />
-          <h2 id={`vA1-h-${provider}`}>{providerName[provider]}</h2>
-          <span className="vA1-count">{list.length}</span>
+          <h2 id={`app-h-${provider}`}>{providerName[provider]}</h2>
+          <span className="app-count">{list.length}</span>
         </div>
         <PoolLine ps={ps} now={now} provider={provider} />
-        <div className="vA1-spacer" />
+        <div className="app-spacer" />
         {list.length > 0 && (
-          <button type="button" className="vA-btn vA-btn-ghost vA-btn-sm" onClick={props.onAdd}>
+          <button type="button" className="ap-btn ap-btn-ghost ap-btn-sm" onClick={props.onAdd}>
             <IconPlus size={13} /> Add {providerName[provider]} account
           </button>
         )}
       </header>
 
       {ps.kind === "blocked" && (
-        <div className="vA1-blocked">
+        <div className="app-blocked">
           <IconClock size={15} />
           <span>
-            {ps.allCooling ? (
-              <>
-                Every account in the {providerName[provider]} pool hit its limit. No account can take new{" "}
-                {providerName[provider]} sessions until{" "}
-                <b>{ps.nextReset !== null ? formatClock(ps.nextReset) : "a cooldown ends"}</b>.
-              </>
-            ) : (
-              <>
-                Every enabled account is cooling down or needs sign-in.{" "}
-                {ps.nextReset !== null ? `The first cooldown ends at ${formatClock(ps.nextReset)}.` : "Sign in again to recover."}
-              </>
-            )}
+            {ps.allCooling
+              ? `Every account in the ${providerName[provider]} pool hit its plan's limit. ${clientsFor(provider)} get ${providerName[provider]} sessions again when the first cooldown ends.`
+              : ps.nextReset !== null
+                ? "Every enabled account is cooling down or needs sign-in. Sign in again, or wait for the first cooldown to end."
+                : "Every enabled account needs sign-in. Sign in again to use this pool."}
           </span>
         </div>
       )}
 
-      <div className={`vA-table vA1-table ${drag !== null ? "is-dragging" : ""} ${settling ? "is-settling" : ""}`} role="list">
+      <div
+        className={`ap-table app-table ${drag !== null ? "is-dragging" : ""} ${settling ? "is-settling" : ""}`}
+        role="list"
+      >
         {list.length > 0 && (
-          <div className="vA-row vA-thead vA1-row" aria-hidden="true">
+          <div className="ap-row ap-thead app-row" aria-hidden="true">
             <span />
             <span>#</span>
             <span>Account</span>
@@ -215,8 +233,8 @@ export function ProviderSection(props: {
           />
         ))}
         {list.length === 0 && (
-          <div className="vA1-empty">
-            <span className="vA1-empty-mark">
+          <div className="app-empty">
+            <span className="app-empty-mark">
               <ProviderMark provider={provider} size={18} />
             </span>
             <div>
@@ -225,7 +243,7 @@ export function ProviderSection(props: {
                 {clientsFor(provider)} can't use {providerName[provider]} until you add one.
               </p>
             </div>
-            <button type="button" className="vA-btn vA-btn-ghost vA-btn-sm" onClick={props.onAdd}>
+            <button type="button" className="ap-btn ap-btn-ghost ap-btn-sm" onClick={props.onAdd}>
               <IconPlus size={13} /> Add {providerName[provider]} account
             </button>
           </div>
@@ -235,7 +253,7 @@ export function ProviderSection(props: {
   )
 }
 
-const INTERACTIVE = "button, input, a, [role=switch], .vA-menu-wrap"
+const INTERACTIVE = "button, input, a, [role=switch], .ap-menu-wrap"
 
 function AccountRow(props: {
   account: Account
@@ -265,8 +283,8 @@ function AccountRow(props: {
       tabIndex={0}
       aria-label={`${a.label}, ${statusLabel(st)}. Open details`}
       className={[
-        "vA-row",
-        "vA1-row",
+        "ap-row",
+        "app-row",
         `is-${st.kind}`,
         props.serving ? "is-serving" : "",
         props.lifted ? "is-lifted" : "",
@@ -287,7 +305,7 @@ function AccountRow(props: {
     >
       <button
         type="button"
-        className="vA-grip"
+        className="ap-grip"
         aria-label={`Reorder ${a.label}. Arrow keys move it.`}
         title="Drag to change priority"
         onPointerDown={props.onGripDown}
@@ -307,47 +325,51 @@ function AccountRow(props: {
         <IconGrip size={14} />
       </button>
 
-      <span className="vA-prio" title={`Priority ${a.priority}`}>
+      <span className="ap-prio" title={`Priority ${a.priority}`}>
         {a.priority}
       </span>
 
-      <div className="vA-who">
+      <div className="ap-who">
         {props.editing ? (
           <RenameInput account={a} onDone={() => props.onEdit(false)} />
         ) : (
-          <div className="vA-label" onDoubleClick={() => props.onEdit(true)} title="Double-click to rename">
+          <div
+            className="ap-label"
+            onDoubleClick={() => props.onEdit(true)}
+            title="Double-click to rename"
+          >
             {a.label}
-            {props.serving && <span className="vA-serving">New sessions</span>}
+            {props.serving && <span className="ap-serving">New sessions</span>}
           </div>
         )}
-        <div className="vA-email">{a.email}</div>
+        <div className="ap-email">{a.email}</div>
       </div>
 
       <span>
-        <span className="vA-plan" data-tier={planTier(a.plan)} title={a.plan}>
+        <span className="ap-plan" data-tier={planTier(a.plan)} title={a.plan}>
           {planShort(a.plan)}
         </span>
       </span>
 
-      <div className="vA-status">
-        <span className="vA-status-main">
-          <span className="vA-sdot" />
+      <div className="ap-status">
+        <span className="ap-status-main">
+          <span className="ap-sdot" />
           {statusLabel(st)}
         </span>
         {st.kind === "cooling" && (
-          <span className="vA-status-sub">
+          <span className="ap-status-sub">
             until {formatClock(st.until)} · {countdown(st.until, now)}
           </span>
         )}
         {st.kind === "signin" && (
-          <button type="button" className="vA-btn vA-btn-xs vA-btn-red" onClick={props.onReauth}>
+          <button type="button" className="ap-btn ap-btn-xs ap-btn-red" onClick={props.onReauth}>
             <IconLogIn size={12} /> Sign in again
           </button>
         )}
       </div>
 
       <span
-        className={`vA-used ${usedFlash ? "is-fresh" : ""}`}
+        className={`ap-used ${usedFlash ? "is-fresh" : ""}`}
         title={a.lastUsedAt === null ? "Never used" : new Date(a.lastUsedAt).toLocaleString()}
       >
         {lastUsedText(a.lastUsedAt, now)}
@@ -395,7 +417,15 @@ function AccountRow(props: {
   )
 }
 
-export function RenameInput({ account, onDone, className }: { account: Account; onDone: () => void; className?: string }) {
+export function RenameInput({
+  account,
+  onDone,
+  className,
+}: {
+  account: Account
+  onDone: () => void
+  className?: string
+}) {
   const [value, setValue] = useState(account.label)
   const save = () => {
     actions.rename(account.id, value)
@@ -403,7 +433,7 @@ export function RenameInput({ account, onDone, className }: { account: Account; 
   }
   return (
     <input
-      className={className ?? "vA-input vA-rename"}
+      className={className ?? "ap-input ap-rename"}
       value={value}
       autoFocus
       onFocus={(e) => e.currentTarget.select()}
@@ -427,22 +457,23 @@ export function RenameInput({ account, onDone, className }: { account: Account; 
 
 export function FirstRun({ onAdd, address }: { onAdd: (p: Provider) => void; address: string }) {
   return (
-    <div className="vA1-first">
-      <ol className="vA1-steps">
+    <div className="app-first">
+      <ol className="app-steps">
         <li className="is-current">
-          <div className="vA1-step-num">1</div>
-          <div className="vA1-step-body">
+          <div className="app-step-num">1</div>
+          <div className="app-step-body">
             <h3>Add an account</h3>
             <p>
-              The daemon at <code>{address}</code> has no accounts yet. Pick a provider and its sign-in page opens in a new tab.
+              The daemon at <code>{address}</code> has no accounts yet. Pick a provider and its
+              sign-in page opens in a new tab.
             </p>
-            <div className="vA1-picks">
+            <div className="app-picks">
               {(["claude", "codex"] as const).map((p) => (
-                <button key={p} type="button" className="vA1-pick" onClick={() => onAdd(p)}>
-                  <span className="vA1-pick-mark">
+                <button key={p} type="button" className="app-pick" onClick={() => onAdd(p)}>
+                  <span className="app-pick-mark">
                     <ProviderMark provider={p} size={18} />
                   </span>
-                  <span className="vA1-pick-text">
+                  <span className="app-pick-text">
                     <b>{providerName[p]}</b>
                     <small>Used by {clientsFor(p)}</small>
                   </span>
@@ -453,28 +484,34 @@ export function FirstRun({ onAdd, address }: { onAdd: (p: Provider) => void; add
           </div>
         </li>
         <li>
-          <div className="vA1-step-num">2</div>
-          <div className="vA1-step-body">
+          <div className="app-step-num">2</div>
+          <div className="app-step-body">
             <h3>Connect your clients</h3>
-            <p>Run one command per client. It points the client at this proxy and gives it the proxy key.</p>
-            <div className="vA1-cmds">
+            <p>
+              Run one command per client. It points the client at this proxy and gives it the proxy
+              key.
+            </p>
+            <div className="app-cmds">
               {CLIENTS.map((c) => (
-                <div key={c.id} className="vA1-cmd-row">
-                  <span className="vA1-cmd-name">{c.name}</span>
+                <div key={c.id} className="app-cmd-row">
+                  <span className="app-cmd-name">{c.name}</span>
                   <CommandLine command={c.command} />
                 </div>
               ))}
             </div>
-            <div className="vA1-first-key">
+            <div className="app-first-key">
               <ProxyKeyRow />
             </div>
           </div>
         </li>
         <li>
-          <div className="vA1-step-num">3</div>
-          <div className="vA1-step-body">
+          <div className="app-step-num">3</div>
+          <div className="app-step-body">
             <h3>Add a fallback</h3>
-            <p>Add a second account to a pool. When the first hits its limit, new sessions move to the next one by priority.</p>
+            <p>
+              Add a second account to a pool. When the first hits its limit, new sessions move to
+              the next one by priority.
+            </p>
           </div>
         </li>
       </ol>
@@ -502,7 +539,7 @@ export function RemoveModal({
     <Modal
       title={`Remove ${account.label}?`}
       icon={
-        <span className="vA-danger-icon">
+        <span className="ap-danger-icon">
           <IconTrash size={17} />
         </span>
       }
@@ -510,12 +547,12 @@ export function RemoveModal({
       width={460}
       footer={
         <>
-          <button type="button" className="vA-btn vA-btn-ghost" onClick={onClose} data-autofocus>
+          <button type="button" className="ap-btn ap-btn-ghost" onClick={onClose} data-autofocus>
             Cancel
           </button>
           <button
             type="button"
-            className="vA-btn vA-btn-danger"
+            className="ap-btn ap-btn-danger"
             onClick={() => {
               actions.remove(account.id)
               onClose()
@@ -526,26 +563,29 @@ export function RemoveModal({
         </>
       }
     >
-      <div className="vA-remove">
-        <div className="vA-success-card">
+      <div className="ap-remove">
+        <div className="ap-success-card">
           <ProviderMark provider={account.provider} size={18} />
           <div>
-            <div className="vA-success-email">{account.label}</div>
-            <div className="vA-muted">{account.email}</div>
+            <div className="ap-success-email">{account.label}</div>
+            <div className="ap-muted">{account.email}</div>
           </div>
-          <span className="vA-plan" data-tier={planTier(account.plan)}>
+          <span className="ap-plan" data-tier={planTier(account.plan)}>
             {planShort(account.plan)}
           </span>
         </div>
         <p>
-          agent-proxy signs out of <b>{account.email}</b> and forgets this account. Sessions already using it finish; new sessions
-          go to {next !== undefined ? <b>{next.label}</b> : `the next account in the ${p} pool`}. You can add it again later.
+          agent-proxy signs out of <b>{account.email}</b> and forgets this account. Sessions already
+          using it finish; new sessions go to{" "}
+          {next !== undefined ? <b>{next.label}</b> : `the next account in the ${p} pool`}. You can
+          add it again later.
         </p>
         {onlyOne && (
-          <div className="vA-callout is-warn">
+          <div className="ap-callout is-warn">
             <IconAlert size={16} />
             <div>
-              This is the only enabled {p} account. {clientsFor(account.provider)} can't use {p} until you add another.
+              This is the only enabled {p} account. {clientsFor(account.provider)} can't use {p}{" "}
+              until you add another.
             </div>
           </div>
         )}
@@ -562,7 +602,11 @@ export const eventTone = (k: LiveEvent["kind"]): "amber" | "red" | "green" | "ne
     ? "amber"
     : k === "signin-expired" || k === "daemon-down" || k === "removed"
       ? "red"
-      : k === "cooldown-ended" || k === "signed-in" || k === "daemon-up" || k === "added" || k === "enabled"
+      : k === "cooldown-ended" ||
+          k === "signed-in" ||
+          k === "daemon-up" ||
+          k === "added" ||
+          k === "enabled"
         ? "green"
         : "neutral"
 
@@ -607,7 +651,7 @@ export function Toasts({ events }: { events: ReadonlyArray<LiveEvent> }) {
   }, [events])
   const dismiss = (id: number) => setToasts((t) => t.filter((x) => x.id !== id))
   return (
-    <div className="vA-toasts vA1-toasts" aria-live="polite">
+    <div className="ap-toasts app-toasts" aria-live="polite">
       {toasts.map((t) => (
         <Toast key={t.id} event={t} onDismiss={() => dismiss(t.id)} />
       ))}
@@ -623,18 +667,22 @@ function Toast({ event, onDismiss }: { event: LiveEvent; onDismiss: () => void }
     return () => clearTimeout(t)
   }, [])
   return (
-    <div className={`vA-toast is-${eventTone(event.kind)}`}>
-      <span className="vA-toast-icon">
-        {event.provider !== null ? <ProviderMark provider={event.provider} size={15} /> : <IconPower size={14} />}
+    <div className={`ap-toast is-${eventTone(event.kind)}`}>
+      <span className="ap-toast-icon">
+        {event.provider !== null ? (
+          <ProviderMark provider={event.provider} size={15} />
+        ) : (
+          <IconPower size={14} />
+        )}
       </span>
-      <div className="vA-toast-body">
-        <div className="vA-toast-kind">
-          <span className="vA-sdot" />
+      <div className="ap-toast-body">
+        <div className="ap-toast-kind">
+          <span className="ap-sdot" />
           {eventTitle(event.kind)}
         </div>
         <div>{event.message}</div>
       </div>
-      <button type="button" className="vA-iconbtn" onClick={onDismiss} aria-label="Dismiss">
+      <button type="button" className="ap-iconbtn" onClick={onDismiss} aria-label="Dismiss">
         <IconX size={13} />
       </button>
     </div>

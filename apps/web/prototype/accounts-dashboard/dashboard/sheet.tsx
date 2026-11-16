@@ -1,4 +1,4 @@
-// PROTOTYPE variant A1: the account sheet. Slides over from the right when a row is clicked.
+// PROTOTYPE: the account sheet. Slides over from the right when a row is clicked.
 // It is where one account's detail lives, and later its usage (the Usage tab is a placeholder).
 
 import { useEffect, useState } from "react"
@@ -12,7 +12,7 @@ import {
   IconTrash,
   IconX,
   ProviderMark,
-} from "../../shared/icons.tsx"
+} from "../shared/icons.tsx"
 import {
   type Account,
   accountsOf,
@@ -25,11 +25,11 @@ import {
   providerName,
   statusLabel,
   statusOf,
-} from "../../shared/model.ts"
-import { type LiveEvent, actions } from "../../shared/store.ts"
-import { Switch } from "../a-console/ui.tsx"
+} from "../shared/model.ts"
+import { type LiveEvent, actions } from "../shared/store.ts"
 import { RenameInput, eventTitle, eventTone } from "./accounts.tsx"
 import { IconActivity, IconChart } from "./icons.tsx"
+import { Switch } from "./ui.tsx"
 
 type Tab = "overview" | "activity" | "usage"
 
@@ -67,6 +67,23 @@ export function AccountSheet(props: {
     return () => window.removeEventListener("keydown", k)
   }, [onClose, covered])
 
+  // The page stays usable while the sheet is open: clicking another account's row swaps the sheet,
+  // clicking anywhere else outside it closes it. Dialogs, menus and toasts on top don't count as outside.
+  useEffect(() => {
+    if (covered) return
+    const down = (e: MouseEvent) => {
+      const t = e.target
+      if (!(t instanceof Element)) return
+      if (
+        t.closest(".app-sheet, .app-row, .ap-overlay, .ap-menu, .ap-toast, [data-prototype-chrome]")
+      )
+        return
+      onClose()
+    }
+    window.addEventListener("mousedown", down)
+    return () => window.removeEventListener("mousedown", down)
+  }, [onClose, covered])
+
   const statusText = (() => {
     switch (st.kind) {
       case "active":
@@ -86,65 +103,89 @@ export function AccountSheet(props: {
 
   return (
     <>
-      <div className="vA1-scrim" onMouseDown={onClose} aria-hidden="true" />
-      <aside className="vA1-sheet" role="dialog" aria-modal="false" aria-label={`${a.label} details`}>
-        <div className="vA1-sheet-top">
-          <span className="vA1-sheet-crumb">
+      <aside
+        className="app-sheet"
+        role="dialog"
+        aria-modal="false"
+        aria-label={`${a.label} details`}
+      >
+        <div className="app-sheet-top">
+          <span className="app-sheet-crumb">
             <ProviderMark provider={a.provider} size={14} />
             {p} pool
-            <span className="vA1-sheet-crumb-sep">/</span>
+            <span className="app-sheet-crumb-sep">/</span>
             <span>{ordinal(a.priority)} priority</span>
           </span>
-          <button type="button" className="vA-iconbtn" onClick={onClose} aria-label="Close details" title="Close (Esc)">
+          <button
+            type="button"
+            className="ap-iconbtn"
+            onClick={onClose}
+            aria-label="Close details"
+            title="Close (Esc)"
+          >
             <IconX size={16} />
           </button>
         </div>
 
-        <div className="vA1-sheet-scroll">
-          <header className="vA1-sheet-head">
+        <div className="app-sheet-scroll">
+          <header className="app-sheet-head">
             {renaming ? (
-              <RenameInput account={a} onDone={() => setRenaming(false)} className="vA-input vA1-sheet-rename" />
+              <RenameInput
+                account={a}
+                onDone={() => setRenaming(false)}
+                className="ap-input app-sheet-rename"
+              />
             ) : (
-              <h2 className="vA1-sheet-title">
-                <button type="button" onClick={() => setRenaming(true)} disabled={props.readOnly} title="Rename">
+              <h2 className="app-sheet-title">
+                <button
+                  type="button"
+                  onClick={() => setRenaming(true)}
+                  disabled={props.readOnly}
+                  title="Rename"
+                >
                   {a.label}
                   <IconPencil size={13} />
                 </button>
               </h2>
             )}
-            <div className="vA1-sheet-meta">
+            <div className="app-sheet-meta">
               <span>{a.email}</span>
-              <span className="vA-plan" data-tier={planTier(a.plan)}>
+              <span className="ap-plan" data-tier={planTier(a.plan)}>
                 {planShort(a.plan)}
               </span>
             </div>
           </header>
 
-          <div className={`vA1-statuscard is-${st.kind} ${flash ? "is-flash" : ""}`}>
-            <div className="vA1-statuscard-main">
-              <span className="vA1-statuscard-dot" />
+          <div className={`app-statuscard is-${st.kind} ${flash ? "is-flash" : ""}`}>
+            <div className="app-statuscard-main">
+              <span className="app-statuscard-dot" />
               <div>
-                <div className="vA1-statuscard-label">
+                <div className="app-statuscard-label">
                   {statusLabel(st)}
                   {st.kind === "cooling" && <span> until {formatClock(st.until)}</span>}
-                  {serving && <span className="vA-serving">New sessions</span>}
+                  {serving && <span className="ap-serving">New sessions</span>}
                 </div>
                 <p>{statusText}</p>
               </div>
             </div>
             {st.kind === "cooling" && (
-              <div className="vA1-statuscard-side">
+              <div className="app-statuscard-side">
                 <IconClock size={13} /> {countdown(st.until, now)}
               </div>
             )}
             {st.kind === "signin" && (
-              <button type="button" className="vA-btn vA-btn-sm vA-btn-red" onClick={props.onReauth} disabled={props.readOnly}>
+              <button
+                type="button"
+                className="ap-btn ap-btn-sm ap-btn-red"
+                onClick={props.onReauth}
+                disabled={props.readOnly}
+              >
                 <IconLogIn size={13} /> Sign in again
               </button>
             )}
           </div>
 
-          <div className="vA1-tabs" role="tablist">
+          <div className="app-tabs" role="tablist">
             {(
               [
                 ["overview", "Overview"],
@@ -161,24 +202,24 @@ export function AccountSheet(props: {
                 onClick={() => setTab(id)}
               >
                 {label}
-                {id === "usage" && <span className="vA1-tag">Planned</span>}
+                {id === "usage" && <span className="app-tag">Planned</span>}
               </button>
             ))}
           </div>
 
           {tab === "overview" && (
-            <div className="vA1-sheet-body">
-              <dl className="vA1-props">
+            <div className="app-sheet-body">
+              <dl className="app-props">
                 <div>
                   <dt>Priority</dt>
                   <dd>
                     <span>
                       <b>{a.priority}</b> of {list.length} in the {p} pool
                     </span>
-                    <span className="vA1-stepper">
+                    <span className="app-stepper">
                       <button
                         type="button"
-                        className="vA-iconbtn"
+                        className="ap-iconbtn"
                         disabled={a.priority === 1 || props.readOnly}
                         onClick={() => actions.move(a.id, -1)}
                         aria-label="Move up"
@@ -188,7 +229,7 @@ export function AccountSheet(props: {
                       </button>
                       <button
                         type="button"
-                        className="vA-iconbtn"
+                        className="ap-iconbtn"
                         disabled={a.priority === list.length || props.readOnly}
                         onClick={() => actions.move(a.id, 1)}
                         aria-label="Move down"
@@ -202,7 +243,9 @@ export function AccountSheet(props: {
                 <div>
                   <dt>Use this account</dt>
                   <dd>
-                    <span className="vA1-muted">{a.enabled ? "In the pool" : "Out of the pool"}</span>
+                    <span className="app-muted">
+                      {a.enabled ? "In the pool" : "Out of the pool"}
+                    </span>
                     <Switch
                       checked={a.enabled}
                       onChange={(v) => actions.setEnabled(a.id, v)}
@@ -225,21 +268,27 @@ export function AccountSheet(props: {
                 </div>
                 <div>
                   <dt>Added</dt>
-                  <dd>{new Date(a.addedAt).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })}</dd>
+                  <dd>
+                    {new Date(a.addedAt).toLocaleDateString([], {
+                      month: "short",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </dd>
                 </div>
               </dl>
 
-              <div className="vA1-order">
-                <div className="vA1-order-title">{p} pool order</div>
+              <div className="app-order">
+                <div className="app-order-title">{p} pool order</div>
                 <ol>
                   {list.map((x) => {
                     const xs = statusOf(x)
                     return (
                       <li key={x.id} className={`is-${xs.kind} ${x.id === a.id ? "is-me" : ""}`}>
-                        <span className="vA1-order-n">{x.priority}</span>
-                        <span className="vA1-order-label">{x.label}</span>
-                        <span className="vA1-order-status">
-                          <span className="vA-sdot" />
+                        <span className="app-order-n">{x.priority}</span>
+                        <span className="app-order-label">{x.label}</span>
+                        <span className="app-order-status">
+                          <span className="ap-sdot" />
                           {statusLabel(xs)}
                         </span>
                       </li>
@@ -248,12 +297,17 @@ export function AccountSheet(props: {
                 </ol>
               </div>
 
-              <div className="vA1-danger">
+              <div className="app-danger">
                 <div>
                   <b>Remove account</b>
                   <p>Signs agent-proxy out of {a.email}. You can add it again later.</p>
                 </div>
-                <button type="button" className="vA-btn vA-btn-ghost vA-btn-sm vA1-btn-danger-ghost" onClick={props.onRemove} disabled={props.readOnly}>
+                <button
+                  type="button"
+                  className="ap-btn ap-btn-ghost ap-btn-sm app-btn-danger-ghost"
+                  onClick={props.onRemove}
+                  disabled={props.readOnly}
+                >
                   <IconTrash size={13} /> Remove…
                 </button>
               </div>
@@ -261,23 +315,26 @@ export function AccountSheet(props: {
           )}
 
           {tab === "activity" && (
-            <div className="vA1-sheet-body">
+            <div className="app-sheet-body">
               {mine.length === 0 ? (
-                <div className="vA1-quiet">
+                <div className="app-quiet">
                   <IconActivity size={18} />
-                  <p>Nothing has happened to {a.label} since you opened the dashboard. Status changes and edits show up here.</p>
+                  <p>
+                    Nothing has happened to {a.label} since you opened the dashboard. Status changes
+                    and edits show up here.
+                  </p>
                 </div>
               ) : (
-                <ol className="vA1-feed">
+                <ol className="app-feed">
                   {mine.map((e) => (
                     <li key={e.id} className={`is-${eventTone(e.kind)}`}>
-                      <span className="vA1-feed-dot" />
+                      <span className="app-feed-dot" />
                       <div>
-                        <div className="vA1-feed-title">
+                        <div className="app-feed-title">
                           {eventTitle(e.kind)}
-                          {e.live && <span className="vA1-feed-live">Live</span>}
+                          {e.live && <span className="app-feed-live">Live</span>}
                         </div>
-                        <div className="vA1-feed-msg">{e.message}</div>
+                        <div className="app-feed-msg">{e.message}</div>
                       </div>
                       <time>{lastUsedText(e.at, now)}</time>
                     </li>
@@ -288,9 +345,9 @@ export function AccountSheet(props: {
           )}
 
           {tab === "usage" && (
-            <div className="vA1-sheet-body">
-              <div className="vA1-usage-skel" aria-hidden="true">
-                <div className="vA1-usage-tiles">
+            <div className="app-sheet-body">
+              <div className="app-usage-skel" aria-hidden="true">
+                <div className="app-usage-tiles">
                   <div>
                     <i />
                     <b />
@@ -300,16 +357,17 @@ export function AccountSheet(props: {
                     <b />
                   </div>
                 </div>
-                <div className="vA1-usage-bars">
+                <div className="app-usage-bars">
                   {Array.from({ length: 18 }, (_, i) => (
                     <span key={i} style={{ height: `${20 + ((i * 41) % 75)}%` }} />
                   ))}
                 </div>
               </div>
-              <div className="vA1-quiet">
+              <div className="app-quiet">
                 <IconChart size={18} />
                 <p>
-                  <b>Usage for {a.label} is planned.</b> Tokens, requests, and how much of this plan's limit is left will show here.
+                  <b>Usage for {a.label} is planned.</b> Tokens, requests, and how much of this
+                  plan's limit is left will show here.
                 </p>
               </div>
             </div>

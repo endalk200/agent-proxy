@@ -1,4 +1,4 @@
-// PROTOTYPE: serves the accounts-dashboard variants. Run `bun run prototype:accounts` from the repo root.
+// PROTOTYPE: serves the accounts-dashboard prototype. Run `bun run prototype:accounts` from the repo root.
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 

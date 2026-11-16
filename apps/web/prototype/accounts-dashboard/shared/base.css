@@ -1,4 +1,15 @@
-/* PROTOTYPE: the only global styles. Everything else is scoped under each variant's root class. */
-*, *::before, *::after { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
-body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+/* PROTOTYPE: the only global styles. Everything else is scoped under the dashboard's .ap root. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

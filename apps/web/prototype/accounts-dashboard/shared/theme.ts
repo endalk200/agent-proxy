@@ -1,4 +1,4 @@
-// PROTOTYPE: light/dark. Sets data-theme="light"|"dark" on <html>; variants style off that attribute.
+// PROTOTYPE: light/dark. Sets data-theme="light"|"dark" on <html>; the dashboard styles off that attribute.
 // The choice lives in ?theme= (system when absent) so a screenshot URL reproduces it.
 
 import { useEffect, useState } from "react"
