@@ -1,0 +1,120 @@
+/* PROTOTYPE round 2 kit. Uses round 1 Console tokens; render under a .vA root. */
+.vA .vK-future {
+  display: grid;
+  gap: 20px;
+}
+.vA .vK-future-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+.vA .vK-future-head h1 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.vA .vK-future-head p {
+  color: var(--muted);
+  margin-top: 4px;
+  max-width: 620px;
+}
+.vA .vK-planned {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+  border: 1px dashed var(--border-strong);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.vA .vK-skel {
+  display: grid;
+  gap: 16px;
+  opacity: 0.75;
+  -webkit-mask-image: linear-gradient(to bottom, #000 40%, transparent);
+  mask-image: linear-gradient(to bottom, #000 40%, transparent);
+}
+.vA .vK-skel i,
+.vA .vK-skel b {
+  display: block;
+  height: 10px;
+  border-radius: 4px;
+  background: var(--subtle);
+}
+.vA .vK-skel b {
+  height: 18px;
+  margin-top: 10px;
+  background: var(--border);
+}
+.vA .vK-skel-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+.vA .vK-skel-tile {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 16px;
+}
+.vA .vK-skel-chart {
+  height: 180px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 20px 20px 16px;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.vA .vK-skel-chart span {
+  flex: 1;
+  border-radius: 3px 3px 0 0;
+  background: var(--subtle);
+}
+.vA .vK-skel-table {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.vA .vK-skel-row {
+  display: flex;
+  gap: 24px;
+  padding: 16px;
+  border-top: 1px solid var(--border);
+}
+.vA .vK-skel-row:first-child {
+  border-top: 0;
+}
+.vA .vK-skel-toolbar {
+  display: flex;
+  gap: 8px;
+}
+.vA .vK-skel-toolbar i {
+  height: 30px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+}
+.vA .vK-skel-form {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 8px 20px;
+}
+.vA .vK-skel-form > div {
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+}
+.vA .vK-skel-form > div:first-child {
+  border-top: 0;
+}
+.vA .vK-future-note {
+  color: var(--faint);
+  font-size: 12.5px;
+}
