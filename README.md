@@ -66,7 +66,7 @@ bun run verify down               # stop what the run started; evidence is kept
 
 To work inside the sandbox yourself, `bun run verify shell` opens your shell with the run's environment and nothing else from your session except `PATH`. Run one command with `bun run verify shell -- -c 'bun apps/cli/src/bin.ts info'`.
 
-Agents follow the same flow through the `verify-agent-proxy` skill. `docs/adr/0001-*` explains the design.
+Agents follow the same flow through the runbook in `docs/agents/verification/README.md`. `docs/adr/0001-*` explains the design.
 
 ## Configuration
 

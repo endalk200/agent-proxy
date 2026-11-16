@@ -1,6 +1,6 @@
 # agent-proxy feature map
 
-The maintained source for what a user can do with agent-proxy and how to prove each behaviour. Read this index, then the file for the feature you are verifying.
+The maintained source for what a user can do with agent-proxy and how to prove each behaviour. Read this index, then the file for the feature you are verifying. The commands come from the [runbook](../README.md).
 
 ## Baseline
 
@@ -13,6 +13,14 @@ The maintained source for what a user can do with agent-proxy and how to prove e
 - Commands are literal: keep names, flags, and quoting exactly as written.
 - In the web client, find elements by ARIA role and accessible name, never by CSS selector or position.
 - Start every drive from the baseline unless its preconditions say otherwise.
+
+## Proof and skip reporting
+
+- CLI proof is the evidence file `verify cli` prints: command, stdout, stderr, and exit code.
+- Web proof is the screenshot and accessibility tree `verify browse` prints, plus its console and page-error counts.
+- Record the sub-feature ID and entry point with every evidence path.
+- Report an entry point as verified only through that entry point.
+- Report an unreachable entry point with the command attempted and the unmet prerequisite.
 
 ## Feature file contract
 

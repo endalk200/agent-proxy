@@ -15,7 +15,7 @@ import * as Sandbox from "./Sandbox.ts"
 import * as Web from "./Web.ts"
 
 // `verify`: launch, check, drive, and tear down agent-proxy in a sandboxed run.
-// The verify-agent-proxy skill documents how agents use it.
+// docs/agents/verification/README.md documents how agents use it.
 
 /** Exits with `code` without printing anything more; the command already reported. */
 class ExitWith extends Data.TaggedError("ExitWith")<{ readonly code: number }> {
