@@ -36,14 +36,14 @@ export type DaemonInfo = typeof DaemonInfo.Type
 /** How long the CLI waits for a daemon on this machine before calling it not running. */
 const REQUEST_TIMEOUT = "2 seconds"
 
-/** The running daemon's address from the state file, or `DaemonNotRunning`. */
+/** The running daemon's state file, or `DaemonNotRunning`. */
 const discover = Effect.gen(function* () {
   const stateDir = yield* resolveStateDir
   const state = yield* readStateFile(stateDir)
   if (Option.isNone(state)) {
     return yield* new DaemonNotRunning()
   }
-  return state.value.address
+  return state.value
 })
 
 /** True when the daemon at `address` answers `/healthz` with 200. */
@@ -54,16 +54,32 @@ export const isHealthy = (address: string) =>
     return response.status === 200
   }).pipe(Effect.orElseSucceed(() => false))
 
-/** Asks the running daemon who it is. A missing or unreachable daemon is `DaemonNotRunning`. */
+/**
+ * Asks the running daemon who it is. A missing or unreachable daemon is `DaemonNotRunning`.
+ *
+ * The answer must come from the daemon the state file names: after a crash, its
+ * address may now belong to another state directory's daemon, which this
+ * directory's commands must never report or signal.
+ */
 export const fetchDaemonInfo = Effect.gen(function* () {
-  const address = yield* discover
+  const state = yield* discover
   const client = yield* HttpClient.HttpClient
-  const response = yield* client.get(`${address}/api/daemon`).pipe(
-    Effect.timeout(REQUEST_TIMEOUT),
+  const info = yield* client.get(`${state.address}/api/daemon`).pipe(
     Effect.mapError(() => new DaemonNotRunning()),
+    Effect.flatMap((response) =>
+      HttpClientResponse.filterStatusOk(response).pipe(
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(DaemonInfo)),
+        Effect.mapError((cause) => new DaemonUnexpectedResponse({ address: state.address, cause })),
+      ),
+    ),
+    // The whole exchange, body included: a stale address may answer and then stall.
+    Effect.timeoutOrElse({
+      duration: REQUEST_TIMEOUT,
+      orElse: () => Effect.fail(new DaemonNotRunning()),
+    }),
   )
-  return yield* HttpClientResponse.filterStatusOk(response).pipe(
-    Effect.flatMap(HttpClientResponse.schemaBodyJson(DaemonInfo)),
-    Effect.mapError((cause) => new DaemonUnexpectedResponse({ address, cause })),
-  )
+  if (info.pid !== state.pid) {
+    return yield* new DaemonNotRunning()
+  }
+  return info
 })

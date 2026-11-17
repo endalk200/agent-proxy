@@ -46,6 +46,6 @@ Preconditions:
 
 - `daemon start` detaches, so the run's manifest does not record the daemon. `verify down` stops it through `agent-proxy daemon stop`; a daemon started with `verify shell` in the background must be stopped the same way.
 - The sandbox config binds port 0, so the port changes on every start. Read it from the start line, `daemon status`, or the state file; never hard-code `8318`.
-- The log is written in batches about once a second, so a line can appear up to a second after the event. A daemon killed with SIGKILL can lose its last second of logs and leaves its state file and lock behind; the next `status` reports it as not running and the next `start` takes over the lock.
+- The log is written in batches about once a second, so a line can appear up to a second after the event. A daemon killed with SIGKILL can lose its last second of logs and leaves its state file behind; the next `status` reports it as not running. Its lock is a kernel `flock` on `daemon.lock`, released by the OS when the process dies, so the next `start` takes it at once.
 - A missing config file at the default location means defaults, which listen on `127.0.0.1:8318`, not port 0. Take the run id from `verify up` or `verify ls`, not `ls` (which may print color codes into the path).
 - Errors print as `ERROR` followed by the message on the next line. Assert on the message, not the layout.

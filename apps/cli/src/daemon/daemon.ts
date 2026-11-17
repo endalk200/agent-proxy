@@ -33,6 +33,14 @@ const GRACEFUL_SHUTDOWN = "5 seconds"
 const isLoopback = (ip: string) =>
   ip === "::1" || ip.startsWith("127.") || ip.startsWith("::ffff:127.")
 
+/**
+ * True when a peer at `ip` is this machine: a loopback address, or the
+ * non-loopback address the daemon listens on, which only this machine can
+ * connect from (a client on this machine reaching that address arrives from it).
+ */
+const isThisMachine = (ip: string, listenHost: string) =>
+  isLoopback(ip) || ip === listenHost || ip === `::ffff:${listenHost}`
+
 /** The URL a client on this machine uses to reach `host:port`. */
 const clientAddress = (host: string, port: number) => {
   const reachable = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host
@@ -45,17 +53,22 @@ const notLoopback = HttpServerResponse.jsonUnsafe(
 )
 
 /**
- * Serves `handler` only to loopback clients: until remote access is designed,
- * the daemon API is local.
+ * Serves `handler` only to clients on this machine: until remote access is
+ * designed, the daemon API is local.
  */
-const loopbackOnly = <E, R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
-  Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-    Option.exists(request.peerAddress, isLoopback) ? handler : Effect.succeed(notLoopback),
-  )
+const localOnly =
+  (listenHost: string) =>
+  <E, R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
+    Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
+      Option.exists(request.peerAddress, (ip) => isThisMachine(ip, listenHost))
+        ? handler
+        : Effect.succeed(notLoopback),
+    )
 
 const routes = (info: {
   readonly pid: number
   readonly address: string
+  readonly listenHost: string
   readonly startedAt: DateTime.Utc
 }) =>
   HttpRouter.use((router) =>
@@ -64,7 +77,7 @@ const routes = (info: {
       router.add(
         "GET",
         "/api/daemon",
-        loopbackOnly(
+        localOnly(info.listenHost)(
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis
             const uptimeMs = now - DateTime.toEpochMillis(info.startedAt)
@@ -138,7 +151,7 @@ export const startDaemon = Effect.gen(function* () {
     const startedAt = yield* DateTime.now
 
     yield* Layer.build(
-      HttpRouter.serve(routes({ pid, address, startedAt }), {
+      HttpRouter.serve(routes({ pid, address, listenHost: config.listen.host, startedAt }), {
         disableLogger: true,
         disableListenLog: true,
       }).pipe(Layer.provide(Layer.succeed(HttpServer.HttpServer, server))),

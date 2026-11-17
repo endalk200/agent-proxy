@@ -121,6 +121,74 @@ layer(
     ),
   )
 
+  it.effect(
+    "status and stop ignore a stale state file whose address now serves another daemon",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const other = yield* makeHome('listen = "127.0.0.1:0"\n')
+          yield* other.runDaemon
+          const { address, port } = yield* Schema.decodeEffect(
+            Schema.fromJsonString(Schema.Struct({ address: Schema.String, port: Schema.Int })),
+          )(yield* fs.readFileString(`${other.stateDir}/daemon.json`))
+
+          // This home's daemon crashed, and another state directory's daemon took its port.
+          const home = yield* makeHome('listen = "127.0.0.1:0"\n')
+          yield* fs.makeDirectory(home.stateDir, { recursive: true })
+          yield* fs.writeFileString(
+            `${home.stateDir}/daemon.json`,
+            JSON.stringify({ pid: 999_999, port, address }),
+          )
+
+          const statusError = yield* Effect.flip(home.cli(["daemon", "status"]))
+          expect(statusError._tag === "UserError" && statusError.userMessage).toBe(notRunning)
+          const stopError = yield* Effect.flip(home.cli(["daemon", "stop"]))
+          expect(stopError._tag === "UserError" && stopError.userMessage).toBe(notRunning)
+          // The other directory's daemon was never signalled.
+          expect(yield* other.cli(["daemon", "status"])).toMatch(/^agent-proxy daemon is running/)
+        }),
+      ),
+  )
+
+  it.effect("status gives up on an address that sends headers but never finishes its body", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const server = yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            Bun.serve({
+              hostname: "127.0.0.1",
+              port: 0,
+              fetch: () =>
+                new Response(
+                  new ReadableStream({
+                    start: (controller) => controller.enqueue(new TextEncoder().encode("{")),
+                  }),
+                  { headers: { "content-type": "application/json" } },
+                ),
+            }),
+          ),
+          (s) => Effect.promise(() => s.stop(true)),
+        )
+        const home = yield* makeHome('listen = "127.0.0.1:0"\n')
+        yield* fs.makeDirectory(home.stateDir, { recursive: true })
+        yield* fs.writeFileString(
+          `${home.stateDir}/daemon.json`,
+          JSON.stringify({
+            pid: 999_999,
+            port: server.port,
+            address: `http://127.0.0.1:${server.port}`,
+          }),
+        )
+        const error = yield* Effect.flip(home.cli(["daemon", "status"])).pipe(
+          Effect.timeout("4 seconds"),
+        )
+        expect(error._tag).toBe("UserError")
+      }),
+    ),
+  )
+
   it.effect("status --json reports the running daemon's pid, address and uptime", () =>
     TestClock.withLive(
       Effect.gen(function* () {
