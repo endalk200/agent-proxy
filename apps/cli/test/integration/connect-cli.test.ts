@@ -21,12 +21,14 @@ import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 
-// `connect claude-code`, driven in-process through the real command tree, on a
-// temporary HOME, against an in-process daemon (`daemon run`) whose address it
-// writes. The terminal the owner answers the confirmation in is the only fake.
+// `connect claude-code` and `connect codex`, driven in-process through the
+// real command tree, on a temporary HOME, against an in-process daemon
+// (`daemon run`) whose address they write. The terminal the owner answers the confirmation in is the only fake.
 // What the command did is read back from the files it leaves in that HOME.
 
-const makeHome = (options: { readonly listen?: string } = {}) =>
+const makeHome = (
+  options: { readonly listen?: string; readonly env?: Readonly<Record<string, string>> } = {},
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-connect-cli-" })
@@ -42,10 +44,13 @@ const makeHome = (options: { readonly listen?: string } = {}) =>
       XDG_CONFIG_HOME: `${root}/config`,
       XDG_STATE_HOME: `${root}/state`,
       XDG_DATA_HOME: `${root}/data`,
+      ...options.env,
     }
     const stateDir = `${root}/state/agent-proxy`
     const settings = `${home}/.claude/settings.json`
     const backup = `${settings}.bak`
+    const codexConfig = `${home}/.codex/config.toml`
+    const codexBackup = `${codexConfig}.bak`
     const output: Array<string> = []
     const errors: Array<string> = []
     const typed = yield* Queue.unbounded<string, Terminal.QuitError>()
@@ -123,10 +128,10 @@ const makeHome = (options: { readonly listen?: string } = {}) =>
           : Option.none()
       })
 
-    /** Runs `connect claude-code <extra>` and answers its confirmation with `answer`. */
-    const connect = (answer: string, extra: ReadonlyArray<string> = []) =>
+    /** Runs `agent-proxy <argv>` and answers its confirmation with `answer`. */
+    const answering = (argv: ReadonlyArray<string>, answer: string) =>
       Effect.gen(function* () {
-        const run = yield* Effect.forkChild(cli(["connect", "claude-code", ...extra]))
+        const run = yield* Effect.forkChild(cli(argv))
         // A command that ends without asking fails the test with what it did instead.
         yield* Effect.raceFirst(
           asked,
@@ -134,6 +139,21 @@ const makeHome = (options: { readonly listen?: string } = {}) =>
         )
         yield* Queue.offer(typed, answer)
         return yield* Fiber.join(run)
+      })
+
+    /** Runs `connect claude-code <extra>` and answers its confirmation with `answer`. */
+    const connect = (answer: string, extra: ReadonlyArray<string> = []) =>
+      answering(["connect", "claude-code", ...extra], answer)
+
+    /** Runs `connect codex <extra>` and answers its confirmation with `answer`. */
+    const connectCodex = (answer: string, extra: ReadonlyArray<string> = []) =>
+      answering(["connect", "codex", ...extra], answer)
+
+    /** Writes `~/.codex/config.toml` as the owner had it before connecting. */
+    const writeCodexConfig = (content: string) =>
+      Effect.gen(function* () {
+        yield* fs.makeDirectory(`${home}/.codex`, { recursive: true })
+        yield* fs.writeFileString(codexConfig, content)
       })
 
     /** Writes `~/.claude/settings.json` as the owner had it before connecting. */
@@ -150,13 +170,17 @@ const makeHome = (options: { readonly listen?: string } = {}) =>
       asked,
       read,
       connect,
+      connectCodex,
       writeSettings,
+      writeCodexConfig,
       typed,
       output,
       errors,
       home,
       settings,
       backup,
+      codexConfig,
+      codexBackup,
     }
   })
 
@@ -164,16 +188,16 @@ const makeHome = (options: { readonly listen?: string } = {}) =>
 const connectedSettings = (address: string) =>
   `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${address}"\n  },\n  "apiKeyHelper": "agent-proxy key"\n}\n`
 
-layer(
-  Layer.mergeAll(
-    BunServices.layer,
-    RuntimeInfo.layerProcess,
-    Processes.layerProcess,
-    FetchHttpClient.layer,
-    ProviderEndpoints.layer,
-    Layer.succeed(Browser, Browser.of({ open: () => Effect.die("no browser in this test") })),
-  ),
-)("agent-proxy connect claude-code", (it) => {
+const services = Layer.mergeAll(
+  BunServices.layer,
+  RuntimeInfo.layerProcess,
+  Processes.layerProcess,
+  FetchHttpClient.layer,
+  ProviderEndpoints.layer,
+  Layer.succeed(Browser, Browser.of({ open: () => Effect.die("no browser in this test") })),
+)
+
+layer(services)("agent-proxy connect claude-code", (it) => {
   it.effect("creates a missing settings file after the owner confirms", () =>
     TestClock.withLive(
       Effect.gen(function* () {
@@ -432,6 +456,288 @@ layer(
         )
         expect(Option.getOrNull(yield* home.read(home.settings))).toBe(meanwhile)
         expect(yield* home.read(home.backup)).toStrictEqual(Option.none())
+      }),
+    ),
+  )
+})
+
+/** The config `connect codex` writes into an empty file, for a daemon at `address`. */
+const connectedCodexConfig = (address: string) => `model_provider = "agent-proxy"
+
+[model_providers.agent-proxy]
+name = "OpenAI"
+base_url = "${address}/backend-api/codex"
+wire_api = "responses"
+auth = { command = "agent-proxy", args = ["key"] }
+`
+
+layer(services)("agent-proxy connect codex", (it) => {
+  it.effect("creates a missing config.toml after the owner confirms", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+
+        const output = yield* home.connectCodex("y")
+
+        expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(
+          connectedCodexConfig(address),
+        )
+        expect(yield* home.read(home.codexBackup)).toStrictEqual(Option.none())
+        expect(output).toContain(
+          `Connecting Codex to the proxy at ${address} changes ~/.codex/config.toml:`,
+        )
+        expect(output).toContain("--- /dev/null")
+        expect(output).toContain('+model_provider = "agent-proxy"')
+        expect(output).toContain("Write ~/.codex/config.toml? [y/N]")
+        expect(output).toContain(`Connected Codex to the proxy at ${address}.`)
+      }),
+    ),
+  )
+
+  it.effect(
+    "replaces model_provider, keeps the rest byte for byte, backs it up, and writes only once confirmed",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome()
+          const address = yield* home.runDaemon
+          const before = `# Codex settings, kept in dotfiles.
+model = "gpt-5.5"   # the default model
+model_provider = 'openai' # was the built-in provider
+approval_policy = "on-request"
+
+[model_providers.lmstudio-local]
+name = "LM Studio"
+base_url = "http://localhost:1234/v1"
+
+# Project trust
+[projects."/Users/me/src"]
+trust_level = "trusted"
+`
+          yield* home.writeCodexConfig(before)
+
+          const run = yield* Effect.forkChild(home.cli(["connect", "codex"]))
+          const shown = yield* home.asked
+          expect(shown).toContain("--- ~/.codex/config.toml")
+          expect(shown).toContain("+++ ~/.codex/config.toml")
+          expect(shown).toContain("-model_provider = 'openai' # was the built-in provider")
+          expect(shown).toContain('+model_provider = "agent-proxy" # was the built-in provider')
+          expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(before)
+
+          yield* Queue.offer(home.typed, "y")
+          const output = yield* Fiber.join(run)
+
+          expect(Option.getOrNull(yield* home.read(home.codexConfig)))
+            .toBe(`# Codex settings, kept in dotfiles.
+model = "gpt-5.5"   # the default model
+model_provider = "agent-proxy" # was the built-in provider
+approval_policy = "on-request"
+
+[model_providers.lmstudio-local]
+name = "LM Studio"
+base_url = "http://localhost:1234/v1"
+
+# Project trust
+[projects."/Users/me/src"]
+trust_level = "trusted"
+
+[model_providers.agent-proxy]
+name = "OpenAI"
+base_url = "${address}/backend-api/codex"
+wire_api = "responses"
+auth = { command = "agent-proxy", args = ["key"] }
+`)
+          expect(Option.getOrNull(yield* home.read(home.codexBackup))).toBe(before)
+          expect(output).toContain("The old settings are in ~/.codex/config.toml.bak.")
+        }),
+      ),
+  )
+
+  it.effect(
+    "replaces an agent-proxy provider table in place, and adds model_provider after the root settings",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome()
+          const address = yield* home.runDaemon
+          yield* home.writeCodexConfig(`model = "gpt-5.5"
+# no model_provider yet
+
+[model_providers.agent-proxy]   # set up by hand
+name = "agent-proxy"
+base_url = "http://127.0.0.1:9999/v1"
+requires_openai_auth = true
+# an old note
+
+# Local models
+[model_providers.lmstudio-local]
+name = "LM Studio"
+`)
+
+          yield* home.connectCodex("y")
+
+          expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(`model = "gpt-5.5"
+model_provider = "agent-proxy"
+# no model_provider yet
+
+[model_providers.agent-proxy]
+name = "OpenAI"
+base_url = "${address}/backend-api/codex"
+wire_api = "responses"
+auth = { command = "agent-proxy", args = ["key"] }
+
+# Local models
+[model_providers.lmstudio-local]
+name = "LM Studio"
+`)
+        }),
+      ),
+  )
+
+  it.effect(
+    "puts model_provider above the first table and its comments when there are no root settings",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome()
+          const address = yield* home.runDaemon
+          yield* home.writeCodexConfig(`# My Codex config
+
+# MCP servers
+[mcp_servers.docs]
+command = "docs-mcp"
+`)
+
+          yield* home.connectCodex("y")
+
+          expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(`# My Codex config
+
+model_provider = "agent-proxy"
+
+# MCP servers
+[mcp_servers.docs]
+command = "docs-mcp"
+
+[model_providers.agent-proxy]
+name = "OpenAI"
+base_url = "${address}/backend-api/codex"
+wire_api = "responses"
+auth = { command = "agent-proxy", args = ["key"] }
+`)
+        }),
+      ),
+  )
+
+  it.effect("says so and changes nothing when Codex is already connected", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+        yield* home.writeCodexConfig('model = "gpt-5.5"\n')
+        yield* home.connectCodex("y")
+        const config = yield* home.read(home.codexConfig)
+        const backup = yield* home.read(home.codexBackup)
+
+        const output = yield* home.cli(["connect", "codex"])
+
+        expect(output).toBe(
+          `Codex is already connected to the proxy at ${address}; ~/.codex/config.toml is unchanged.\n`,
+        )
+        expect(yield* home.read(home.codexConfig)).toStrictEqual(config)
+        expect(yield* home.read(home.codexBackup)).toStrictEqual(backup)
+      }),
+    ),
+  )
+
+  it.effect("--print prints the settings to add, and writes nothing", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+
+        const output = yield* home.cli(["connect", "codex", "--print"])
+
+        expect(output).toBe(connectedCodexConfig(address))
+        expect(home.errors.join("")).toBe("Add these settings to ~/.codex/config.toml:\n")
+        expect(yield* fs.exists(`${home.home}/.codex`)).toBe(false)
+      }),
+    ),
+  )
+
+  it.effect("refuses a config.toml that is not valid TOML, and leaves it as it was", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        const broken = 'model = "gpt-5.5\n'
+        yield* home.writeCodexConfig(broken)
+
+        const message = yield* home.fails(["connect", "codex"])
+
+        expect(message).toMatch(
+          /^~\/\.codex\/config\.toml is not valid TOML \(.+\), so it was left unchanged\. Fix it, or move it aside, and run this again\.$/,
+        )
+        expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(broken)
+        expect(yield* fs.readDirectory(`${home.home}/.codex`)).toStrictEqual(["config.toml"])
+      }),
+    ),
+  )
+
+  it.effect("refuses a provider it cannot change safely, and leaves the file as it was", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        const unsafe = [
+          // The provider in dotted keys: a second table would redefine it.
+          `model_providers.agent-proxy.name = "agent-proxy"
+model_providers.agent-proxy.base_url = "http://127.0.0.1:9999/v1"
+`,
+          // A subtable of the provider survives the table being replaced.
+          `[model_providers.agent-proxy]
+name = "agent-proxy"
+
+[model_providers.agent-proxy.http_headers]
+X-Team = "core"
+`,
+          // A line inside a multi-line string that looks like a table.
+          `developer_instructions = """
+Answer briefly.
+[not a table]
+"""
+`,
+        ]
+        for (const before of unsafe) {
+          yield* home.writeCodexConfig(before)
+
+          expect(yield* home.fails(["connect", "codex"])).toBe(
+            "~/.codex/config.toml sets model_provider or the agent-proxy provider in a way connect cannot change safely, so it was left unchanged. Add the settings `agent-proxy connect codex --print` shows by hand.",
+          )
+          expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(before)
+        }
+      }),
+    ),
+  )
+
+  it.effect("changes the config.toml in $CODEX_HOME when that is set", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const probe = yield* makeHome()
+        const codexHome = `${probe.home}/codex-home`
+        const home = yield* makeHome({ env: { CODEX_HOME: codexHome } })
+        const address = yield* home.runDaemon
+
+        const output = yield* home.connectCodex("y")
+
+        expect(output).toContain(`changes ${codexHome}/config.toml:`)
+        expect(Option.getOrNull(yield* home.read(`${codexHome}/config.toml`))).toBe(
+          connectedCodexConfig(address),
+        )
+        expect(yield* fs.exists(`${home.home}/.codex`)).toBe(false)
       }),
     ),
   )

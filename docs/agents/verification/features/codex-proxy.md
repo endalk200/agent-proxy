@@ -15,7 +15,7 @@ The daemon serves Codex on its listen address: with a custom Codex provider name
 
 ## How to get to it (user POV)
 
-- Add a Codex account (`agent-proxy accounts add codex`, see [Accounts](./accounts.md)), then point Codex at the daemon by hand in `~/.codex/config.toml` (until `connect codex` exists):
+- Add a Codex account (`agent-proxy accounts add codex`, see [Accounts](./accounts.md)), then point Codex at the daemon with `agent-proxy connect codex` (see [Connect](./connect.md)), which writes into `~/.codex/config.toml`:
 
   ```toml
   model_provider = "agent-proxy"
