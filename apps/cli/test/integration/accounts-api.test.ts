@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
-import { ConfigProvider, Effect, FileSystem, Layer, Schema } from "effect"
+import { ConfigProvider, Effect, Fiber, FileSystem, Layer, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
 import { TestClock } from "effect/testing"
 
@@ -15,8 +15,11 @@ import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../sup
 // OAuth server standing in for Anthropic. Account files are observed only as
 // files the daemon wrote, and seeded only in the format it writes.
 
-/** A daemon in a throwaway home whose Claude logins go to `claude`. */
-const makeHome = (claude: FakeClaude) =>
+/**
+ * A daemon in a throwaway home whose Claude logins go to `claude`. With
+ * `dataHome`, it uses that data directory, as a restarted daemon would.
+ */
+const makeHome = (claude: FakeClaude, options: { readonly dataHome?: string } = {}) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-accounts-" })
@@ -26,9 +29,9 @@ const makeHome = (claude: FakeClaude) =>
       HOME: `${root}/home`,
       XDG_CONFIG_HOME: `${root}/config`,
       XDG_STATE_HOME: `${root}/state`,
-      XDG_DATA_HOME: `${root}/data`,
+      XDG_DATA_HOME: options.dataHome ?? `${root}/data`,
     }
-    const dataDir = `${root}/data/agent-proxy`
+    const dataDir = `${env.XDG_DATA_HOME}/agent-proxy`
     const accountsDir = `${dataDir}/accounts`
     const daemon = yield* startDaemon.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
@@ -119,6 +122,7 @@ const makeHome = (claude: FakeClaude) =>
       )
 
     return {
+      dataHome: env.XDG_DATA_HOME,
       dataDir,
       accountsDir,
       request,
@@ -449,6 +453,45 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
           error: "Claude did not grant access: The user denied access",
         })
         expect(yield* home.accounts).toEqual([])
+      }),
+    )
+
+    it.effect(
+      "a login fails when Claude does not answer the token exchange within 30 seconds",
+      () =>
+        Effect.gen(function* () {
+          const claude = yield* fakeClaude
+          const home = yield* makeHome(claude)
+          const started = yield* home.startLogin()
+          const arrived = claude.hangNextToken()
+          const pasted = yield* signInWithoutReachingDaemon(started.authorizeUrl)
+          const submitted = yield* Effect.forkScoped(
+            home.request("POST", `/api/logins/${started.id}/callback`, { url: pasted }),
+          )
+          yield* Effect.promise(() => arrived)
+          yield* TestClock.adjust("30 seconds")
+          const response = yield* Fiber.join(submitted)
+          expect(response.json).toMatchObject({
+            status: "failed",
+            error: "Claude did not answer within 30 seconds. Try signing in again.",
+          })
+          expect(yield* isFree(callbackPort(started.authorizeUrl))).toBe(true)
+          expect(yield* home.accounts).toEqual([])
+        }),
+    )
+
+    it.effect("removes temp files a crash left behind when it starts", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const claude = yield* fakeClaude
+        const first = yield* makeHome(claude)
+        yield* first.signIn(alice)
+        const [file] = yield* first.accountFiles
+        const leftover = `${first.accountsDir}/.${file?.name}.1a2b3c4d.tmp`
+        yield* fs.writeFileString(leftover, '{"id": "ha', { mode: 0o600 })
+        const second = yield* makeHome(claude, { dataHome: first.dataHome })
+        expect(yield* second.accounts).toHaveLength(1)
+        expect(yield* fs.exists(leftover)).toBe(false)
       }),
     )
 

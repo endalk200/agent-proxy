@@ -9,9 +9,9 @@
 - `accounts-add-browser` opens the browser at Claude's sign-in page and finishes when the redirect reaches the daemon.
 - `accounts-add-paste` (`--no-browser`) prints the sign-in URL and the redirect address, and takes a pasted callback URL; a rejected paste asks again.
 - `accounts-add-result` reports `Added Claude account "<label>" (<email>, <plan>) at priority <n>.` or `Signed in again to Claude account "<label>" …; its credentials are updated.`
-- `accounts-login-cancel` cancels the login in the daemon on Ctrl-C and frees port 54545; a login nobody finishes expires after 10 minutes.
+- `accounts-login-cancel` cancels the login in the daemon on Ctrl-C and frees port 54545; a login nobody finishes expires after 10 minutes, and one Claude does not answer within 30 seconds fails.
 - `accounts-callback-page` answers the browser on `localhost:54545/callback`: a success page, or a 400 page naming the problem.
-- `accounts-files` keeps one 0600 JSON file per account in a 0700 directory, replaced atomically.
+- `accounts-files` keeps one 0600 JSON file per account in a 0700 directory, replaced atomically; a temp file a crash left behind is removed when the daemon starts.
 - `accounts-not-running` fails with the daemon-down hint and starts nothing.
 
 ## How to get to it (user POV)

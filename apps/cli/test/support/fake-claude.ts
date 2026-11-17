@@ -61,12 +61,18 @@ export interface FakeClaude {
   readonly denyNext: () => void
   /** The access tokens issued so far, oldest first. */
   readonly issuedAccessTokens: () => ReadonlyArray<string>
+  /**
+   * The next token request never gets an answer. The returned promise
+   * resolves once that request has arrived.
+   */
+  readonly hangNextToken: () => Promise<void>
 }
 
 /** Starts the fake on a free loopback port until the scope closes. */
 export const fakeClaude = Effect.gen(function* () {
   let user: ClaudeUser = alice
   let deny = false
+  let hang: (() => void) | undefined
   const codes = new Map<string, PendingCode>()
   const accessTokens = new Map<string, ClaudeUser>()
 
@@ -105,6 +111,11 @@ export const fakeClaude = Effect.gen(function* () {
   }
 
   const token = async (request: Request) => {
+    if (hang !== undefined) {
+      hang()
+      hang = undefined
+      return new Promise<Response>(() => {})
+    }
     const parsed: unknown = await request.json()
     const body: Readonly<Record<string, unknown>> = Object.fromEntries(
       typeof parsed === "object" && parsed !== null ? Object.entries(parsed) : [],
@@ -197,6 +208,10 @@ export const fakeClaude = Effect.gen(function* () {
       deny = true
     },
     issuedAccessTokens: () => [...accessTokens.keys()],
+    hangNextToken: () =>
+      new Promise<void>((resolve) => {
+        hang = resolve
+      }),
   }
   return fake
 })

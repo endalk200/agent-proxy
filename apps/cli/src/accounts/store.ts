@@ -42,6 +42,9 @@ const storeError = (message: string) => (cause: unknown) =>
 /** Account files end in `.json`; anything else, such as a temp file a crash left, is ignored. */
 const isAccountFile = (name: string) => name.endsWith(".json") && !name.startsWith(".")
 
+/** A file `write` creates before renaming it over an account file. */
+const isTempFile = (name: string) => name.startsWith(".") && name.endsWith(".tmp")
+
 /**
  * The label a new account gets when the owner gives none: its email's local
  * part, numbered when another account in its pool already has that label.
@@ -82,6 +85,23 @@ export class AccountStore extends Context.Service<
       const dir = path.join(dataDir, "accounts")
       // Writes are serialized, so two logins finishing together never pick the same priority.
       const writes = yield* Semaphore.make(1)
+
+      // A crash between writing a temp file and renaming it leaves the temp
+      // file, credentials and all. The daemon is the only writer and holds
+      // its lock by now, so any temp file here is such a leftover.
+      yield* Effect.gen(function* () {
+        if (!(yield* fs.exists(dir))) return
+        const leftovers = (yield* fs.readDirectory(dir)).filter(isTempFile)
+        yield* Effect.forEach(leftovers, (name) => fs.remove(path.join(dir, name)), {
+          discard: true,
+        })
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("could not remove leftover account temp files").pipe(
+            Effect.annotateLogs({ dir, cause: cause.message }),
+          ),
+        ),
+      )
 
       const read = (file: string) =>
         fs.readFileString(path.join(dir, file)).pipe(

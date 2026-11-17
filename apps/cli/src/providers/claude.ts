@@ -72,6 +72,9 @@ const describeRejection = (response: HttpClientResponse.HttpClientResponse) =>
     ),
   )
 
+/** How long the token exchange and profile lookup may take together. */
+const EXCHANGE_TIMEOUT = "30 seconds"
+
 const unreachable = (cause: unknown) =>
   new ProviderLoginError({ message: "Could not reach Claude to finish the sign-in.", cause })
 
@@ -138,27 +141,38 @@ export class ClaudeLogin extends Context.Service<ClaudeLogin, LoginAdapter>()(
         )
       })
 
-      const exchange = Effect.fn("ClaudeLogin.exchange")(function* (params: ExchangeParams) {
-        const tokens = yield* exchangeCode(params)
-        const profile = yield* fetchProfile(tokens.access_token)
-        const now = yield* Clock.currentTimeMillis
-        return {
-          identity: {
-            provider: "claude" as const,
-            // A person can belong to several organizations, each its own subscription.
-            providerAccountId: `${profile.account.uuid}:${profile.organization.uuid}`,
-            email: profile.account.email,
-            plan: claudePlan(profile.organization),
-          },
-          credentials: {
-            accessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token,
-            expiresAt: DateTime.formatIso(
-              DateTime.makeUnsafe(now + Math.round(tokens.expires_in * 1000)),
+      const exchange = Effect.fn("ClaudeLogin.exchange")(
+        function* (params: ExchangeParams) {
+          const tokens = yield* exchangeCode(params)
+          const profile = yield* fetchProfile(tokens.access_token)
+          const now = yield* Clock.currentTimeMillis
+          return {
+            identity: {
+              provider: "claude" as const,
+              // A person can belong to several organizations, each its own subscription.
+              providerAccountId: `${profile.account.uuid}:${profile.organization.uuid}`,
+              email: profile.account.email,
+              plan: claudePlan(profile.organization),
+            },
+            credentials: {
+              accessToken: tokens.access_token,
+              refreshToken: tokens.refresh_token,
+              expiresAt: DateTime.formatIso(
+                DateTime.makeUnsafe(now + Math.round(tokens.expires_in * 1000)),
+              ),
+            },
+          }
+        },
+        Effect.timeoutOrElse({
+          duration: EXCHANGE_TIMEOUT,
+          orElse: () =>
+            Effect.fail(
+              new ProviderLoginError({
+                message: "Claude did not answer within 30 seconds. Try signing in again.",
+              }),
             ),
-          },
-        }
-      })
+        }),
+      )
 
       return ClaudeLogin.of({
         provider: "claude",
