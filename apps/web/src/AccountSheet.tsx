@@ -1,7 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog"
 import { Switch } from "@base-ui/react/switch"
 import { Tabs } from "@base-ui/react/tabs"
-import { type ReactNode, useId, useRef, useState } from "react"
+import { type ReactNode, useEffect, useId, useRef, useState } from "react"
 
 import { type AccountControls, LabelInput } from "./AccountsPage.tsx"
 import type { Account, AccountList } from "./daemon-api.ts"
@@ -133,6 +133,14 @@ function SheetBody(props: {
   const provider = providerNames[account.provider]
   const pool = accountsOf(list, account.provider)
   const [renaming, setRenaming] = useState(false)
+  // A rename ended from the keyboard hands focus back to the Rename button.
+  const renameButton = useRef<HTMLButtonElement>(null)
+  const refocusRename = useRef(false)
+  useEffect(() => {
+    if (renaming || !refocusRename.current) return
+    refocusRename.current = false
+    renameButton.current?.focus()
+  }, [renaming])
   const enabledId = useId()
 
   return (
@@ -160,8 +168,9 @@ function SheetBody(props: {
               <LabelInput
                 account={account}
                 className="sheet-rename"
-                onDone={(label) => {
+                onDone={(label, keyboard) => {
                   setRenaming(false)
+                  refocusRename.current = keyboard
                   if (label !== undefined) controls.rename(account, label)
                 }}
               />
@@ -178,6 +187,7 @@ function SheetBody(props: {
               </Dialog.Title>
               <Tip label="Rename">
                 <button
+                  ref={renameButton}
                   type="button"
                   className="iconbtn sheet-title-edit"
                   aria-label="Rename"

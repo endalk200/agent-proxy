@@ -512,3 +512,107 @@ describe("account sheet controls", () => {
     )
   })
 })
+
+describe("review fixes", () => {
+  it("gives up on a removal the daemon never answers, so the dialog can be closed", async () => {
+    const daemon = threeAccounts()
+    render(<App fetch={daemon.fetch} openEvents={daemon.openEvents} requestTimeout={50} />)
+    await screen.findByRole("table", { name: "Claude accounts" })
+
+    await pick("Work", "Remove…")
+    const confirm = await screen.findByRole("alertdialog", { name: "Remove Work?" })
+    daemon.stalled = true
+    fireEvent.click(within(confirm).getByRole("button", { name: "Remove account" }))
+
+    expect(await notice("Couldn't remove Work")).toContain("Can't reach the daemon")
+    daemon.stalled = false
+    const cancel = within(confirm).getByRole("button", { name: "Cancel" })
+    await waitFor(() => expect(cancel.hasAttribute("disabled")).toBe(false))
+  })
+
+  it("keeps the latest of two quick moves, even when the daemon answers them out of order", async () => {
+    const daemon = threeAccounts()
+    let patches = 0
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      if (init?.method === "PATCH" && patches++ === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 150))
+      }
+      return daemon.fetch(input, init)
+    }
+    render(<App fetch={fetch} openEvents={daemon.openEvents} />)
+    const table = await screen.findByRole("table", { name: "Claude accounts" })
+
+    const spare = within(table).getByRole("button", { name: "Reorder Spare" })
+    spare.focus()
+    fireEvent.keyDown(spare, { key: "ArrowUp" })
+    fireEvent.keyDown(spare, { key: "ArrowUp" })
+
+    await waitFor(() => expect(daemon.changes).toHaveLength(2))
+    await waitFor(() => expect(stored(daemon)).toEqual(["1 Spare (off)", "2 Work", "3 Home"]))
+    await waitFor(() => expect(labels(table)).toEqual(["Spare", "Work", "Home"]))
+  })
+
+  it("does not write back a label left untouched while the daemon renamed it", async () => {
+    const daemon = threeAccounts()
+    const table = await show(daemon)
+
+    fireEvent.doubleClick(within(table).getByText("Work"))
+    const input = within(table).getByRole("textbox", { name: "Label for Work" })
+    daemon.update("a1", { label: "Main" })
+    await waitFor(() => expect(poolLine()).toBe("New sessions go to Main"))
+    fireEvent.blur(input)
+
+    expect(daemon.changes).toEqual([])
+  })
+
+  it("hands focus back to the label after a rename is confirmed or cancelled from the keyboard", async () => {
+    const daemon = threeAccounts()
+    const table = await show(daemon)
+
+    fireEvent.doubleClick(within(table).getByText("Home"))
+    fireEvent.keyDown(within(table).getByRole("textbox", { name: "Label for Home" }), {
+      key: "Escape",
+    })
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(table).getByRole("button", { name: "Home" })),
+    )
+
+    fireEvent.doubleClick(within(table).getByText("Home"))
+    const input = within(table).getByRole("textbox", { name: "Label for Home" })
+    fireEvent.change(input, { target: { value: "House" } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(table).getByRole("button", { name: "House" })),
+    )
+  })
+
+  it("hands focus back to the sheet's Rename button after a rename is cancelled with Escape", async () => {
+    const daemon = threeAccounts()
+    const table = await show(daemon)
+    const opened = await openSheet(table, "Home")
+
+    fireEvent.click(within(opened).getByRole("button", { name: "Rename" }))
+    fireEvent.keyDown(within(opened).getByRole("textbox", { name: "Label for Home" }), {
+      key: "Escape",
+    })
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(opened).getByRole("button", { name: "Rename" })),
+    )
+  })
+
+  it("saves nothing when the browser cancels a drag", async () => {
+    const daemon = threeAccounts()
+    const table = await show(daemon)
+
+    fireEvent.pointerDown(within(table).getByRole("button", { name: "Reorder Spare" }), {
+      button: 0,
+      pointerId: 1,
+    })
+    fireEvent.pointerOver(rowOf(table, "Work")!)
+    fireEvent.pointerCancel(document, { pointerId: 1 })
+
+    expect(labels(table)).toEqual(["Work", "Home", "Spare"])
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(daemon.changes).toEqual([])
+  })
+})

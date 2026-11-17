@@ -43,7 +43,11 @@ export function App(props: DashboardProps) {
 function Dashboard(props: DashboardProps) {
   const fetchImpl = props.fetch ?? browserFetch
   const { openEvents } = props
-  const client = useMemo(() => createDaemonClient(fetchImpl, openEvents), [fetchImpl, openEvents])
+  const mutationTimeout = (props.requestTimeout ?? 5000) * 2
+  const client = useMemo(
+    () => createDaemonClient(fetchImpl, openEvents, mutationTimeout),
+    [fetchImpl, openEvents, mutationTimeout],
+  )
   const [signingIn, setSigningIn] = useState<SignInRequest | undefined>()
   const live = useLiveUpdates(signingIn !== undefined)
   const view = useDaemon(

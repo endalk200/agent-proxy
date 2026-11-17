@@ -1,6 +1,6 @@
 import { Menu } from "@base-ui/react/menu"
 import { Switch } from "@base-ui/react/switch"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { CommandLine, ProxyKeyRow } from "./ConnectClients.tsx"
 import type { Account, AccountList, DaemonClient, Pool, Provider } from "./daemon-api.ts"
@@ -181,12 +181,14 @@ function PoolSection(props: {
     const cancel = (event: KeyboardEvent) => {
       if (event.key === "Escape") setDrag(undefined)
     }
+    // A drag the browser cancels (a touch taken over by scrolling, say) saves nothing.
+    const abandon = () => setDrag(undefined)
     document.addEventListener("pointerup", drop)
-    document.addEventListener("pointercancel", drop)
+    document.addEventListener("pointercancel", abandon)
     document.addEventListener("keydown", cancel)
     return () => {
       document.removeEventListener("pointerup", drop)
-      document.removeEventListener("pointercancel", drop)
+      document.removeEventListener("pointercancel", abandon)
       document.removeEventListener("keydown", cancel)
     }
   }, [drag, pool, move])
@@ -286,6 +288,14 @@ function AccountRow(props: {
   const { account, controls } = props
   const { readOnly } = controls
   const [renaming, setRenaming] = useState(false)
+  // A rename ended from the keyboard hands focus back to the label's button.
+  const nameButton = useRef<HTMLButtonElement>(null)
+  const refocusName = useRef(false)
+  useEffect(() => {
+    if (renaming || !refocusName.current) return
+    refocusName.current = false
+    nameButton.current?.focus()
+  }, [renaming])
   const open = controls.openId === account.id
   const flash = controls.flashes.get(account.id)
   return (
@@ -337,13 +347,15 @@ function AccountRow(props: {
           <LabelInput
             account={account}
             className="who-rename"
-            onDone={(label) => {
+            onDone={(label, keyboard) => {
               setRenaming(false)
+              refocusName.current = keyboard
               if (label !== undefined) controls.rename(account, label)
             }}
           />
         ) : (
           <button
+            ref={nameButton}
             type="button"
             className="who-name"
             data-opens-sheet={account.id}
@@ -421,15 +433,24 @@ function AccountRow(props: {
 export function LabelInput(props: {
   account: Account
   className: string
-  onDone: (label: string | undefined) => void
+  /** `keyboard` is true when Enter or Escape ended the edit, so focus can go back to where it was. */
+  onDone: (label: string | undefined, keyboard: boolean) => void
 }) {
-  const [value, setValue] = useState(props.account.label)
+  // Undefined until the owner types: an untouched field follows the account's
+  // label as it changes, and leaving it writes nothing.
+  const [draft, setDraft] = useState<string | undefined>()
+  const value = draft ?? props.account.label
   const [done, setDone] = useState(false)
-  const finish = (keep: boolean) => {
+  const finish = (keep: boolean, keyboard: boolean) => {
     if (done) return
     setDone(true)
-    const label = value.trim()
-    props.onDone(keep && label !== "" && label !== props.account.label ? label : undefined)
+    const label = draft?.trim()
+    props.onDone(
+      keep && label !== undefined && label !== "" && label !== props.account.label
+        ? label
+        : undefined,
+      keyboard,
+    )
   }
   return (
     <input
@@ -441,16 +462,16 @@ export function LabelInput(props: {
       spellCheck={false}
       aria-label={`Label for ${props.account.label}`}
       onFocus={(event) => event.currentTarget.select()}
-      onChange={(event) => setValue(event.target.value)}
-      onBlur={() => finish(true)}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => finish(true, false)}
       onKeyDown={(event) => {
         if (event.key === "Enter") {
           event.preventDefault()
-          finish(true)
+          finish(true, true)
         } else if (event.key === "Escape") {
           event.preventDefault()
           event.stopPropagation()
-          finish(false)
+          finish(false, true)
         }
       }}
     />

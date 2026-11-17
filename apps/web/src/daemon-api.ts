@@ -309,7 +309,15 @@ export const browserEventStream: OpenEventStream = (url, handlers) => {
 export const createDaemonClient = (
   fetchImpl: typeof fetch,
   openEvents: OpenEventStream = browserEventStream,
+  /** How long a change may go unanswered before it counts as the daemon being unreachable. */
+  mutationTimeout = 10_000,
 ): DaemonClient => {
+  /** A signal that aborts after `mutationTimeout`: no change waits on the daemon forever. */
+  const deadline = () => {
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), mutationTimeout)
+    return controller.signal
+  }
   const call = async <A>(
     path: string,
     decode: (body: unknown) => A,
@@ -368,8 +376,13 @@ export const createDaemonClient = (
     daemon: (signal) => call("/api/daemon", decodeDaemonInfo, { signal }),
     key: () => call("/api/key", decodeKey),
     updateAccount: (id, settings) =>
-      call(accountPath(id), decodeAccount, { method: "PATCH", body: settings }),
-    removeAccount: (id) => call(accountPath(id), decodeAccount, { method: "DELETE" }),
+      call(accountPath(id), decodeAccount, {
+        method: "PATCH",
+        body: settings,
+        signal: deadline(),
+      }),
+    removeAccount: (id) =>
+      call(accountPath(id), decodeAccount, { method: "DELETE", signal: deadline() }),
     startLogin: (provider) =>
       call("/api/logins", decodeLogin, { method: "POST", body: { provider } }),
     login: (id, signal) => call(loginPath(id), decodeLogin, { signal }),

@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useMemo, useRef } from "react"
 
 import type { Account, AccountSettings, DaemonClient, DaemonFailure } from "./daemon-api.ts"
 import { withSettings } from "./model.ts"
@@ -34,11 +34,20 @@ const reason = (account: Account, failure: DaemonFailure): string => {
 export const useAccountActions = (daemon: Daemon, client: DaemonClient): AccountActions => {
   const notify = useNotify()
   const { change } = daemon
+  // The last change sent; the next waits for it.
+  const queue = useRef<Promise<unknown>>(Promise.resolve())
   return useMemo(() => {
+    // Changes reach the daemon one at a time, in the order the owner made
+    // them: two quick moves answered out of order must not leave the first.
+    const inOrder = <A>(send: () => Promise<A>): Promise<A> => {
+      const sent = queue.current.then(send, send)
+      queue.current = sent.catch(() => undefined)
+      return sent
+    }
     const update = (account: Account, settings: AccountSettings, verb: string) => {
       change(
         (list) => withSettings(list, account.id, settings),
-        () => client.updateAccount(account.id, settings),
+        () => inOrder(() => client.updateAccount(account.id, settings)),
         { id: account.id, settings },
       ).catch((error: unknown) =>
         notify.error(`Couldn't ${verb} ${account.label}`, reason(account, asFailure(error))),
@@ -52,7 +61,7 @@ export const useAccountActions = (daemon: Daemon, client: DaemonClient): Account
       remove: (account) =>
         change(
           (list) => list,
-          () => client.removeAccount(account.id),
+          () => inOrder(() => client.removeAccount(account.id)),
           { id: account.id, removed: true },
         ).then(
           () => true,
