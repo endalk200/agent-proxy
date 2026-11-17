@@ -17,6 +17,7 @@
     "test:unit": "bun --bun vitest run"
   },
   "dependencies": {
+    "@base-ui/react": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:"
   },
