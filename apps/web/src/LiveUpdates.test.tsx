@@ -23,6 +23,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 /** Work (1, gets new sessions) and Home (2), both Claude and Active. */
@@ -191,6 +192,29 @@ describe("a change made on this page", () => {
 
     expect(notices()).toHaveLength(1)
     expect(rowOf(table, "Work").dataset["flash"]).toBeUndefined()
+  })
+
+  it("shows no notice for an account its sign-in dialog adds, as the dialog says so", async () => {
+    const daemon = twoAccounts()
+    daemon.signInAs = { providerAccountId: "acct-lab", email: "lab@example.com", plan: "Pro" }
+    // The provider's sign-in page opens in a tab of its own, which the test stands in for.
+    vi.spyOn(window, "open").mockImplementation(() => {
+      const tab: Window = Object.create(window)
+      Object.defineProperty(tab, "opener", { value: window, writable: true })
+      return tab
+    })
+    const table = await show(daemon)
+
+    fireEvent.click(screen.getByRole("button", { name: "Add account" }))
+    const pick = await screen.findByRole("dialog", { name: "Add an account" })
+    fireEvent.click(within(pick).getByRole("button", { name: "Claude" }))
+    const waiting = await screen.findByRole("dialog", { name: "Sign in to Claude" })
+    await within(waiting).findByText("Waiting for you to sign in…")
+    daemon.redirect()
+
+    await screen.findByRole("dialog", { name: "Claude account added" })
+    await waitFor(() => within(table).getByText("lab"))
+    expect(notices()).toEqual([])
   })
 })
 

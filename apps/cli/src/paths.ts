@@ -51,3 +51,12 @@ export const resolveDataDir = Effect.gen(function* () {
     : path.join(yield* Config.NonEmptyString("HOME"), ".local", "share")
   return path.join(dataHome, "agent-proxy")
 })
+
+/**
+ * The proxy key file (ADR-0005), `key` in the data directory: it holds the
+ * key alone, so a client config can read it with `{file:…}`.
+ */
+export const resolveProxyKeyFile = Effect.gen(function* () {
+  const path = yield* Path.Path
+  return path.join(yield* resolveDataDir, "key")
+})

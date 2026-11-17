@@ -62,7 +62,7 @@ test("shows each pool's accounts with status, plan, priority and who gets new se
   await expect(rows).toHaveText([
     /#\s*Account\s*Plan\s*Status\s*Last used\s*Enabled/,
     /^1\s*Work\s*New sessions\s*me@work\.example\s*Max 20x\s*Active\s*Never/,
-    /^2\s*Personal Max\s*me@home\.example\s*Max 5x\s*Needs sign-in\s*Never/,
+    /^2\s*Personal Max\s*me@home\.example\s*Max 5x\s*Needs sign-in\s*Sign in again\s*Never/,
     /^3\s*Spare\s*spare@example\.com\s*Pro\s*Disabled\s*Never/,
   ])
   await expect(page.getByRole("switch", { name: "Work enabled" })).toBeChecked()
@@ -77,7 +77,8 @@ test("walks through the first run when the daemon holds no accounts", async ({ p
   await open(page)
   const steps = page.getByRole("list", { name: "Get started" })
   await expect(steps.getByRole("heading", { name: "Add an account" })).toBeVisible()
-  await expect(steps.getByText("agent-proxy accounts add claude")).toBeVisible()
+  await expect(steps.getByRole("button", { name: "Add a Claude account" })).toBeVisible()
+  await expect(steps.getByRole("button", { name: "Add a Codex account" })).toBeVisible()
   await expect(page.getByRole("table")).toHaveCount(0)
 })
 

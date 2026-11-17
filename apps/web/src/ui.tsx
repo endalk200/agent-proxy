@@ -140,6 +140,32 @@ export const IconGrip = ({ size }: IconProps) => (
     <circle cx="15" cy="18" r="1" />
   </Svg>
 )
+export const IconPlus = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <path d="M12 5v14M5 12h14" />
+  </Svg>
+)
+export const IconArrowRight = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <path d="M5 12h14M13 6l6 6-6 6" />
+  </Svg>
+)
+export const IconChevronLeft = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <path d="m15 18-6-6 6-6" />
+  </Svg>
+)
+export const IconExternal = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+  </Svg>
+)
+
+/** A small spinning ring, for something the dashboard is waiting on. */
+export const Spinner = ({ size = 16 }: { size?: number }) => (
+  <span className="spinner" style={{ width: size, height: size }} aria-hidden="true" />
+)
+
 export const IconActivity = ({ size }: IconProps) => (
   <Svg size={size}>
     <path d="M22 12h-4l-3 9L9 3l-3 9H2" />

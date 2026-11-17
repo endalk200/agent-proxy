@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code and Codex at the daemon (`agent-proxy connect claude-code | codex`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts and Codex from your Codex (ChatGPT) accounts, and a dashboard of your accounts that updates live at its own address (`http://127.0.0.1:8318/` by default); opencode comes later.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code, Codex and opencode at the daemon (`agent-proxy connect claude-code | codex | opencode`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts, Codex from your Codex (ChatGPT) accounts, opencode from both, and a dashboard of your accounts that updates live at its own address (`http://127.0.0.1:8318/` by default).
 
 ## Requirements
 
@@ -94,6 +94,8 @@ agent-proxy accounts remove Work               # forget it and its credentials
 
 The daemon runs each login itself (ADR-0007), so it must be running. A Claude sign-in redirects to `http://localhost:54545/callback`, and a Codex sign-in to `http://127.0.0.1:1455/auth/callback`, the port Codex itself uses, so a Codex login fails while `codex login` waits on it. The daemon listens there only while the login waits. When the browser cannot reach the daemon, such as over SSH, the redirected page fails to load: copy its address and paste it into `accounts add <provider> --no-browser`. A login nobody finishes expires after 10 minutes.
 
+The dashboard runs the same logins: **Add account** asks for Claude or Codex and opens its sign-in page in a new tab while it waits, and **Sign in again** does the same for an account that needs it. When the browser cannot reach the daemon, paste the redirected address into the dialog instead. Closing the dialog cancels the login.
+
 A new account joins the bottom of its pool, labelled after its email unless `--label` names it. Signing in again to an account the daemon already holds updates its credentials in place and keeps its priority and enabled setting, and its label unless `--label` gives a new one.
 
 `accounts` ends with which account gets each pool's new sessions: the highest-priority Active one (see [Sessions and limits](#sessions-and-limits)). An account that hit a limit shows **Cooling down** with the local time its cooldown ends, such as `Cooling down until 15:30`, and `--json` gives that end as `cooldownEndsAt`. Priority is a place in the pool: moving an account to priority 1 moves the others down one place, and removing one moves those below it up. A disabled account keeps its place, so enabling it returns it there. Removing an account deletes its file at once; a request it is already serving still finishes, and the next one goes to the next account.
@@ -102,7 +104,7 @@ The account a command acts on is named by its label, its email (either ignoring 
 
 Accounts live in `$XDG_DATA_HOME/agent-proxy/accounts/`, by default `~/.local/share/agent-proxy/accounts/`: one file per account, readable only by you. Only the daemon writes them.
 
-The daemon keeps each account's tokens fresh: it refreshes a Claude account about an hour before its token expires, and a Codex account about a day before, whether or not anything is using it. When a refresh is refused, or its outcome is lost (the connection drops after it was sent, the provider answers with a gateway error, or the daemon stops mid-refresh), the account shows **Needs sign-in** and serves nothing until you sign in to it again with `accounts add <provider>`. Refresh tokens work once, so a refresh that may have happened is never retried. A refresh that never reached the provider, or that it answered with 429 or 503, is retried a few minutes later.
+The daemon keeps each account's tokens fresh: it refreshes a Claude account about an hour before its token expires, and a Codex account about a day before, whether or not anything is using it. When a refresh is refused, or its outcome is lost (the connection drops after it was sent, the provider answers with a gateway error, or the daemon stops mid-refresh), the account shows **Needs sign-in** and serves nothing until you sign in to it again, with `accounts add <provider>` or **Sign in again** in the dashboard. Refresh tokens work once, so a refresh that may have happened is never retried. A refresh that never reached the provider, or that it answered with 429 or 503, is retried a few minutes later.
 
 ## Serving Claude Code
 
@@ -158,7 +160,47 @@ auth = { command = "agent-proxy", args = ["key"] }
 
 The rest of the file stays byte for byte, comments included. A `model_provider` naming another provider is replaced in place, and an existing `[model_providers.agent-proxy]` table is replaced whole; the diff shows both. It asks, backs up and writes as `connect claude-code` does, keeps a linked file a link, and refuses a file that is not valid TOML. A file it cannot change without changing its meaning (the provider in dotted keys, a subtable of it, a multi-line string with a line that starts with `[`) is refused and left alone; add the `--print` settings by hand, with `model_provider` above the first table. The file holds no secret: Codex fetches the key by running `agent-proxy key`.
 
-Leave `supports_websockets` unset. The daemon serves `POST /responses` (streamed), `GET /models` and `POST /alpha/search` under `/backend-api/codex` from `chatgpt.com`, as one of your Codex accounts, chosen as [Sessions and limits](#sessions-and-limits) describes: it puts that account's token in `Authorization` and its ChatGPT workspace in `chatgpt-account-id`, and passes everything else through, the `x-codex-*` limit headers included. It refuses a WebSocket upgrade with 426, and Codex falls back to HTTP. When the backend rejects the account's token, the daemon refreshes it once and retries on the same account. opencode's OpenAI Responses provider works with the same base URL and the key as its `apiKey`.
+Leave `supports_websockets` unset. The daemon serves `POST /responses` (streamed), `GET /models` and `POST /alpha/search` under `/backend-api/codex` from `chatgpt.com`, as one of your Codex accounts, chosen as [Sessions and limits](#sessions-and-limits) describes: it puts that account's token in `Authorization` and its ChatGPT workspace in `chatgpt-account-id`, and passes everything else through, the `x-codex-*` limit headers included. It refuses a WebSocket upgrade with 426, and Codex falls back to HTTP. When the backend rejects the account's token, the daemon refreshes it once and retries on the same account.
+
+## Serving opencode
+
+opencode spends your Claude accounts through its Claude Agent integration, and your Codex accounts through an OpenAI Responses provider. Point both at the daemon:
+
+```sh
+agent-proxy connect opencode          # show the change, ask, back up, write
+agent-proxy connect opencode --print  # print the settings only; change nothing
+```
+
+`connect opencode` adds two providers to opencode's global config, `~/.config/opencode/opencode.json` (`$XDG_CONFIG_HOME/opencode/` or `$OPENCODE_CONFIG_DIR` when set, and `opencode.jsonc` there when it exists, since opencode lets it win):
+
+```json
+{
+  "providers": {
+    "claude-agent": {
+      "settings": {
+        "baseURL": "http://127.0.0.1:8318",
+        "apiKey": "{file:~/.local/share/agent-proxy/key}"
+      }
+    },
+    "agent-proxy-codex": {
+      "name": "agent-proxy (Codex)",
+      "canonical": "openai",
+      "package": "@opencode/ai/providers/openai/responses",
+      "settings": {
+        "baseURL": "http://127.0.0.1:8318/backend-api/codex",
+        "apiKey": "{file:~/.local/share/agent-proxy/key}"
+      },
+      "models": { "gpt-6.1-sol": { "name": "GPT-6.1 Sol" }, "…": {} }
+    }
+  }
+}
+```
+
+opencode cannot run a command for its key, so both providers read the key file with `{file:…}`, named by its real path (`~/…` only when it lies under your home directory); the config still holds no secret. The Claude Agent integration runs your local `claude` and ignores `~/.claude/settings.json`, which is why its base URL is set here. Its models appear once the integration is connected: run `opencode auth login claude-agent --method claude-login` once. `connect` lists four Codex models (`gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-luna`) only when the provider has none, so edit the list freely.
+
+Comments, trailing commas and the rest of the file stay as they were; only the lines next to a new setting may be laid out again. Settings already in `claude-agent` or `agent-proxy-codex` that `connect` does not manage stay too. It asks, backs up and writes as `connect claude-code` does.
+
+opencode reads the key file when it loads its config, so after `agent-proxy key --rotate` restart it, or run `opencode reload`. A missing key file makes opencode send no key, and the proxy answers `no proxy key sent`.
 
 ## Sessions and limits
 

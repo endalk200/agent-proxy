@@ -4,7 +4,7 @@ import { expect, layer } from "@effect/vitest"
 import { Effect, FileSystem, Schema } from "effect"
 import { TestClock } from "effect/testing"
 
-// `connect claude-code`, black-box: the built binary in a sandbox, whose HOME
+// `connect claude-code` and `connect opencode`, black-box: the built binary in a sandbox, whose HOME
 // stands in for the owner's. Only the paths that never ask are driven here,
 // because the sandbox gives the binary no terminal to answer in; confirming,
 // declining and the `.bak` are covered in-process with a controlled terminal.
@@ -24,7 +24,7 @@ const sandboxed = Effect.gen(function* () {
     Effect.map((state) => state.address),
   )
   const claudeDir = `${sandbox.home}/.claude`
-  return { agentProxy, address, claudeDir, settings: `${claudeDir}/settings.json` }
+  return { sandbox, agentProxy, address, claudeDir, settings: `${claudeDir}/settings.json` }
 })
 
 const settingsFor = (address: string) =>
@@ -79,6 +79,52 @@ layer(BunServices.layer)("agent-proxy connect claude-code (built binary)", (it) 
           expect(refused.stderr).toContain("~/.claude/settings.json is not valid JSON (")
           expect(yield* fs.readFileString(settings)).toBe("{ not json\n")
           expect(yield* fs.readDirectory(claudeDir)).toStrictEqual(["settings.json"])
+        }),
+      ),
+    60_000,
+  )
+})
+
+layer(BunServices.layer)("agent-proxy connect opencode (built binary)", (it) => {
+  it.effect(
+    "--print names the sandbox's key file, and a file that already holds it is reported connected",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const { sandbox, agentProxy, address } = yield* sandboxed
+          expect((yield* agentProxy(["daemon", "start"])).exitCode).toBe(0)
+          const proxy = yield* address
+          const opencodeDir = `${sandbox.configHome}/opencode`
+          const config = `${opencodeDir}/opencode.json`
+
+          const printed = yield* agentProxy(["connect", "opencode", "--print"])
+          expect(printed.exitCode).toBe(0)
+          expect(printed.stderr).toContain(`Add these settings to ${config}:\n`)
+          expect(yield* fs.exists(opencodeDir)).toBe(false)
+          // The sandbox's XDG_DATA_HOME lies outside its HOME: the key file by its absolute path.
+          const keyFile = `${sandbox.dataHome}/agent-proxy/key`
+          const providers = JSON.parse(printed.stdout).providers
+          expect(providers["claude-agent"].settings).toStrictEqual({
+            baseURL: proxy,
+            apiKey: `{file:${keyFile}}`,
+          })
+          expect(providers["agent-proxy-codex"].settings).toStrictEqual({
+            baseURL: `${proxy}/backend-api/codex`,
+            apiKey: `{file:${keyFile}}`,
+          })
+          const key = yield* agentProxy(["key"])
+          expect((yield* fs.readFileString(keyFile)).trim()).toBe(key.stdout.trim())
+
+          yield* fs.makeDirectory(opencodeDir, { recursive: true })
+          const connected = `// connected by hand\n${printed.stdout}`
+          yield* fs.writeFileString(config, connected)
+          const again = yield* agentProxy(["connect", "opencode"])
+          expect(again.exitCode).toBe(0)
+          expect(again.stdout).toBe(
+            `opencode is already connected to the proxy at ${proxy}; ${config} is unchanged.\n`,
+          )
+          expect(yield* fs.readFileString(config)).toBe(connected)
         }),
       ),
     60_000,

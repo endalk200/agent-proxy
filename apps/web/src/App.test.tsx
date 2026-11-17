@@ -67,7 +67,7 @@ describe("accounts page", () => {
         Priority: "2",
         Account: "Personal Max me@home.example",
         Plan: "Max 5x",
-        Status: "Needs sign-in",
+        Status: "Needs sign-in Sign in again",
         "Last used": "Never",
         Enabled: "",
         Actions: "",
@@ -132,7 +132,7 @@ describe("accounts page", () => {
       ]),
     ).toEqual([
       ["carol New sessions carol@example.com", "Pro", "Active"],
-      ["dave dave@example.com", "Plus", "Needs sign-in"],
+      ["dave dave@example.com", "Plus", "Needs sign-in Sign in again"],
     ])
     const claude = screen.getByRole("region", { name: "Claude" })
     expect(rowsOf(within(claude).getByRole("table", { name: "Claude accounts" }))).toHaveLength(1)
@@ -212,8 +212,10 @@ describe("first run", () => {
         .getAllByRole("heading")
         .map((h) => h.textContent),
     ).toEqual(["Add an account", "Connect your clients", "Add a fallback"])
+    for (const provider of ["Claude", "Codex"]) {
+      within(steps).getByRole("button", { name: `Add a ${provider} account` })
+    }
     for (const command of [
-      "agent-proxy accounts add claude",
       "agent-proxy connect claude-code",
       "agent-proxy connect codex",
       "agent-proxy connect opencode",

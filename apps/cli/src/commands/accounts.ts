@@ -64,7 +64,7 @@ const formatPool = (pool: PoolView, accounts: ReadonlyArray<AccountView>, now: n
   const next = accounts.find((account) => account.id === pool.newSessionsAccountId)
   if (next !== undefined) return `New ${name} sessions go to "${next.label}".`
   const firstFree = accounts
-    .filter((account) => account.provider === pool.provider)
+    .filter((account) => account.provider === pool.provider && account.status === "cooling-down")
     .flatMap((account) => (account.cooldownEndsAt === null ? [] : [account.cooldownEndsAt]))
     .toSorted()[0]
   return firstFree === undefined

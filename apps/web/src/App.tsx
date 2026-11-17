@@ -11,7 +11,8 @@ import { accountsOf, hostOf } from "./model.ts"
 import { NoticeProvider } from "./Notices.tsx"
 import { RemoveAccountDialog } from "./RemoveAccount.tsx"
 import { Sidebar } from "./Sidebar.tsx"
-import { IconPower } from "./ui.tsx"
+import { type SignInRequest, SignInDialog } from "./SignIn.tsx"
+import { IconPlus, IconPower } from "./ui.tsx"
 import { useAccountActions } from "./useAccountActions.ts"
 import { useDaemon, useNow } from "./useDaemon.ts"
 
@@ -24,6 +25,7 @@ interface DashboardProps {
   checkInterval?: number
   requestTimeout?: number
   reopenDelay?: number
+  loginPollInterval?: number
 }
 
 /**
@@ -42,7 +44,8 @@ function Dashboard(props: DashboardProps) {
   const fetchImpl = props.fetch ?? browserFetch
   const { openEvents } = props
   const client = useMemo(() => createDaemonClient(fetchImpl, openEvents), [fetchImpl, openEvents])
-  const live = useLiveUpdates()
+  const [signingIn, setSigningIn] = useState<SignInRequest | undefined>()
+  const live = useLiveUpdates(signingIn !== undefined)
   const view = useDaemon(
     client,
     {
@@ -81,6 +84,7 @@ function Dashboard(props: DashboardProps) {
     },
     askRemove: setRemoving,
     flashes: live.flashes,
+    signIn: setSigningIn,
   }
 
   return (
@@ -118,13 +122,26 @@ function Dashboard(props: DashboardProps) {
             )}
 
             <header className="pagehead">
-              <h1 id="page-title" tabIndex={-1}>
-                Accounts
-              </h1>
-              <p>
-                Each client spends only its own provider's accounts. Within a pool, the
-                highest-priority account that is Active gets new sessions.
-              </p>
+              <div className="pagehead-text">
+                <h1 id="page-title" tabIndex={-1}>
+                  Accounts
+                </h1>
+                <p>
+                  Each client spends only its own provider's accounts. Within a pool, the
+                  highest-priority account that is Active gets new sessions.
+                </p>
+              </div>
+              {list !== undefined && list.accounts.length > 0 && (
+                <button
+                  type="button"
+                  className="btn is-primary"
+                  disabled={!reachable}
+                  onClick={() => setSigningIn({ kind: "add" })}
+                >
+                  <IconPlus size={14} />
+                  Add account
+                </button>
+              )}
             </header>
 
             {view.accounts !== undefined && (
@@ -149,7 +166,7 @@ function Dashboard(props: DashboardProps) {
           list={list}
           now={now}
           controls={controls}
-          covered={removing !== undefined || connecting}
+          covered={removing !== undefined || connecting || signingIn !== undefined}
           onClose={() => setOpenId(undefined)}
         />
 
@@ -158,6 +175,16 @@ function Dashboard(props: DashboardProps) {
           list={list}
           remove={actions.remove}
           onClose={() => setRemoving(undefined)}
+        />
+
+        <SignInDialog
+          request={signingIn}
+          client={client}
+          pollInterval={props.loginPollInterval ?? 1000}
+          requestTimeout={props.requestTimeout ?? 5000}
+          onSignedIn={view.refresh}
+          rename={actions.rename}
+          onClose={() => setSigningIn(undefined)}
         />
 
         <ConnectClientsDialog

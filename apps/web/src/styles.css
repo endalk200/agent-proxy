@@ -170,6 +170,37 @@ p {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+a.linkbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  text-decoration: none;
+}
+.linkbtn.is-quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.linkbtn.is-quiet:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.spinner {
+  display: inline-block;
+  flex: none;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 .btn {
   display: inline-flex;
@@ -202,6 +233,18 @@ p {
   height: 28px;
   padding: 0 10px;
   font-size: 12.5px;
+}
+/* The one action a view leads to: filled with the text colour. */
+.btn.is-primary {
+  border-color: var(--text);
+  background: var(--text);
+  box-shadow: 0 1px 1px rgb(0 0 0 / 0.1);
+  color: var(--bg);
+  text-decoration: none;
+}
+.btn.is-primary:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--text) 86%, var(--bg));
+  background: color-mix(in srgb, var(--text) 86%, var(--bg));
 }
 .btn.is-danger {
   border-color: var(--danger-solid);
@@ -596,7 +639,16 @@ p {
   margin: 0 auto;
 }
 .pagehead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 24px;
   margin-bottom: 28px;
+}
+.pagehead-text {
+  flex: 1 1 320px;
+  min-width: 0;
 }
 .pagehead h1 {
   font-size: 20px;
@@ -788,8 +840,9 @@ p {
 .accounts .col-plan {
   width: 96px;
 }
+/* Room for "Needs sign-in" and its Sign in again button on one line. */
 .accounts th:nth-child(4) {
-  width: 170px;
+  width: 236px;
 }
 .accounts .col-used {
   width: 112px;
@@ -883,6 +936,29 @@ p {
 .row.is-active .sdot {
   background: var(--green);
 }
+.status-action {
+  margin: 2px 0 2px 8px;
+  padding: 1px 7px;
+  border: 1px solid color-mix(in srgb, var(--red) 30%, var(--border));
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background 120ms,
+    border-color 120ms;
+}
+.status-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--red) 50%, var(--border));
+  background: var(--red-soft);
+}
+.status-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .row.is-cooling-down .status {
   color: var(--amber);
 }
@@ -896,7 +972,9 @@ p {
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
-  white-space: nowrap;
+  /* Wraps at any table width, beside the sheet too, rather than running
+     under the row's menu. */
+  white-space: normal;
 }
 .row.is-needs-sign-in .status {
   color: var(--red);
@@ -1134,6 +1212,10 @@ p {
   .accounts .col-used {
     display: none;
   }
+  /* Sign in again wraps under the status rather than squeeze the accounts. */
+  .accounts th:nth-child(4) {
+    width: 170px;
+  }
 }
 @container (max-width: 560px) {
   .accounts .col-plan {
@@ -1230,6 +1312,12 @@ p {
 }
 .step-cmds {
   display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+.step-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
 }
@@ -1504,6 +1592,325 @@ p {
   white-space: nowrap;
 }
 
+/* -------------------------------------------------------- sign-in dialog */
+
+.dialog-signin {
+  width: 520px;
+}
+.dialog-icon.is-ok {
+  border-color: color-mix(in srgb, var(--green) 28%, transparent);
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+/* Picking a provider. */
+.signin-pick {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.pick {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 140ms,
+    background 140ms,
+    box-shadow 140ms;
+}
+.pick:hover {
+  border-color: var(--border-strong);
+  background: var(--hover);
+  box-shadow: 0 8px 20px -12px rgb(0 0 0 / 0.25);
+}
+.pick > svg {
+  flex: none;
+  color: var(--faint);
+  transition:
+    transform 140ms var(--ease),
+    color 140ms;
+}
+.pick:hover > svg,
+.pick:focus-visible > svg {
+  color: var(--text);
+  transform: translateX(2px);
+}
+.pick-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--subtle);
+}
+.pick-text {
+  display: grid;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+}
+.pick-text b {
+  font-size: 14px;
+  font-weight: 600;
+}
+.pick-text span {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* Waiting for the owner to sign in. */
+.signin {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.wait {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--subtle);
+}
+.wait > .spinner {
+  margin-top: 1px;
+}
+.wait output,
+.wait > div {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+.wait b {
+  font-weight: 600;
+}
+.wait p {
+  margin: 2px 0 8px;
+  color: var(--muted);
+}
+.wait > output p {
+  margin-bottom: 0;
+}
+.wait-trouble {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--amber);
+}
+.callout.blocked {
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0;
+  padding: 12px 14px;
+}
+.callout.blocked > div {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.callout.blocked b {
+  font-weight: 600;
+  color: var(--text);
+}
+.callout.blocked p {
+  color: var(--text-2);
+}
+
+/* The pasted-callback path, for a browser that can't reach the daemon. */
+.paste {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.paste-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+}
+.paste-toggle:hover {
+  background: var(--hover);
+}
+.paste-toggle > svg {
+  flex: none;
+  color: var(--muted);
+  transition: transform 160ms var(--ease);
+}
+.paste.is-open .paste-toggle {
+  border-radius: 11px 11px 0 0;
+}
+.paste.is-open .paste-toggle > svg {
+  transform: rotate(90deg);
+}
+.paste-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  padding: 2px 14px 14px;
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+.paste-why {
+  color: var(--muted);
+}
+.paste-body ol {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin: 0;
+  padding-left: 18px;
+}
+.paste-body li::marker {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.urlbox {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 6px;
+  padding: 2px 2px 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--subtle);
+}
+.urlbox code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inline-code {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--subtle);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.paste-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.field-input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  outline: 0;
+  background: var(--panel);
+  font: inherit;
+  color: var(--text);
+  transition:
+    border-color 120ms,
+    box-shadow 120ms;
+}
+.field-input::placeholder {
+  color: var(--faint);
+}
+.field-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.field-input.is-mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.field-input.is-error {
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px var(--red-soft);
+}
+.field-error {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--red);
+}
+
+/* A login that could not start or ended without signing in. */
+.problem {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--red) 30%, transparent);
+  border-radius: 12px;
+  background: var(--red-soft);
+}
+.problem > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--red);
+}
+.problem > div {
+  min-width: 0;
+}
+.problem b {
+  font-weight: 600;
+}
+.problem p {
+  margin-top: 2px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.problem-hint {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.signin-foot > .linkbtn {
+  margin-right: auto;
+}
+
+/* Signed in. */
+.signin-done {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.signin-done .callout {
+  margin: 0;
+}
+.field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+.field > label {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.field small {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 /* --------------------------------------------------------- account sheet */
 
 /* Wide screens: the page makes room for the sheet instead of sitting under it. */
@@ -1695,18 +2102,6 @@ p {
   font-size: 12.5px;
   color: var(--text-2);
 }
-.statuscard-action {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 6px;
-  padding-left: 20px;
-  font-size: 12.5px;
-  color: var(--text-2);
-}
-.statuscard-action .cmd {
-  background: var(--panel);
-}
-
 .tabs {
   margin-top: 22px;
 }
@@ -2099,9 +2494,25 @@ p {
   .dialog-foot .btn {
     flex: 1;
   }
-  /* A cooldown's end wraps rather than running under the row's menu. */
-  .status-sub {
-    white-space: normal;
+  .dialog-body {
+    padding: 16px;
+  }
+  .dialog-head {
+    padding: 16px 14px 0 16px;
+  }
+  .signin-foot > .linkbtn {
+    flex-basis: 100%;
+    justify-content: center;
+    padding: 4px 0;
+  }
+  .paste-form {
+    flex-direction: column;
+  }
+  .paste-form .field-input {
+    flex: none;
+  }
+  .wait {
+    padding: 14px;
   }
 }
 

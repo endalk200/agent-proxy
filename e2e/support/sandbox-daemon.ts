@@ -14,6 +14,10 @@ import { Effect, FileSystem, Schema } from "effect"
 
 export interface SeededAccount {
   readonly id: string
+  /** Claude unless given. */
+  readonly provider?: "claude" | "codex"
+  /** `account-<id>:org-<id>` unless given; a sign-in as this identity updates the account. */
+  readonly providerAccountId?: string
   readonly label: string
   readonly email: string
   readonly plan: string
@@ -43,9 +47,17 @@ const run = <A, E>(effect: Effect.Effect<A, E, NodeServices.NodeServices>) =>
 
 const StateFile = Schema.fromJsonString(Schema.Struct({ address: Schema.String }))
 
-export const startSandboxDaemon = async (): Promise<SandboxDaemon> => {
+/**
+ * Starts the built daemon in a new sandbox. `env` adds to the sandbox's
+ * environment for every command, such as `AGENT_PROXY_PROVIDER_ENDPOINTS` to
+ * sign in at fake providers.
+ */
+export const startSandboxDaemon = async (
+  options: { readonly env?: Readonly<Record<string, string>> } = {},
+): Promise<SandboxDaemon> => {
   const root = await mkdtemp(join(tmpdir(), "agent-proxy-e2e-web-"))
-  const sandbox = await run(Sandbox.create(`${root}/sandbox`))
+  const created = await run(Sandbox.create(`${root}/sandbox`))
+  const sandbox = { ...created, env: { ...created.env, ...options.env } }
   const agentProxy = (args: ReadonlyArray<string>) =>
     run(
       Effect.gen(function* () {
@@ -78,8 +90,9 @@ export const startSandboxDaemon = async (): Promise<SandboxDaemon> => {
           `${accountsDir}/${account.id}.json`,
           JSON.stringify({
             id: account.id,
-            provider: "claude",
-            providerAccountId: `account-${account.id}:org-${account.id}`,
+            provider: account.provider ?? "claude",
+            providerAccountId:
+              account.providerAccountId ?? `account-${account.id}:org-${account.id}`,
             email: account.email,
             plan: account.plan,
             label: account.label,

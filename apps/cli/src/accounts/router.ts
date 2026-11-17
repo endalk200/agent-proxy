@@ -44,11 +44,19 @@ export interface Cooldown {
 
 /** Where a request goes. */
 export type Choice =
-  | { readonly _tag: "Chosen"; readonly account: Account }
+  /**
+   * `seen` is the session's binding as the router saw it when choosing; hand
+   * it back to `record`, so an answer that arrives after the session moved on
+   * never moves it back.
+   */
+  | { readonly _tag: "Chosen"; readonly account: Account; readonly seen: SeenBinding }
   /** No account can serve it now, and at least one is cooling down; `cooldown`, account `accountId`'s, ends first. */
   | { readonly _tag: "CoolingDown"; readonly cooldown: Cooldown; readonly accountId: string }
   /** No account can serve it until the owner acts: each one needs sign-in or is disabled, or there is none. */
   | { readonly _tag: "Unavailable"; readonly accounts: ReadonlyArray<Account> }
+
+/** A session's binding as the router saw it when it chose an account; opaque to callers. */
+export type SeenBinding = object | undefined
 
 /** How the router sees accounts right now, for the daemon API. */
 export interface RoutingView {
@@ -100,6 +108,7 @@ export class Router extends Context.Service<
       account: Account,
       session: string | undefined,
       signal: LimitSignal,
+      seen?: SeenBinding,
     ) => Effect.Effect<void>
     readonly view: Effect.Effect<RoutingView>
   }
@@ -123,7 +132,10 @@ export class Router extends Context.Service<
         const status = (account: Account) => accountStatus(account, cooling(account) !== undefined)
         return {
           status,
-          cooldownEndsAt: (account) => cooling(account)?.until,
+          // Only a cooldown that decides the status is reported: a disabled
+          // or signed-out account is not waiting for its limit to reset.
+          cooldownEndsAt: (account) =>
+            status(account) === "cooling-down" ? cooling(account)?.until : undefined,
           newSessions: (accounts, provider) =>
             accounts
               .filter((account) => account.provider === provider && status(account) === "active")
@@ -156,7 +168,8 @@ export class Router extends Context.Service<
             ? servable.find((account) => account.id === binding.accountId)
             : undefined
         const account = bound ?? view.newSessions(servable, provider)
-        if (account !== undefined) return { _tag: "Chosen", account } satisfies Choice
+        if (account !== undefined)
+          return { _tag: "Chosen", account, seen: binding } satisfies Choice
 
         // Out of the pool only until a limit resets: the client hears when.
         const waiting = accounts.flatMap((candidate) => {
@@ -176,6 +189,10 @@ export class Router extends Context.Service<
 
       const coolDown = (account: Account, cooldown: Cooldown) =>
         Effect.suspend(() => {
+          // Answers in flight together can arrive in any order: a short limit
+          // never shortens a longer cooldown already running.
+          const running = cooldowns.get(account.id)
+          if (running !== undefined && running.until >= cooldown.until) return Effect.void
           cooldowns.set(account.id, cooldown)
           return Effect.logInfo("account cooling down").pipe(
             Effect.annotateLogs({
@@ -191,6 +208,7 @@ export class Router extends Context.Service<
         account: Account,
         session: string | undefined,
         signal: LimitSignal,
+        seen?: SeenBinding,
       ) {
         const now = yield* Clock.currentTimeMillis
         switch (signal._tag) {
@@ -200,10 +218,13 @@ export class Router extends Context.Service<
               if (now - binding.at >= SESSION_IDLE_MS) bindings.delete(key)
             }
             if (session !== undefined) {
-              bindings.set(bindingKey(account.provider, session), {
-                accountId: account.id,
-                at: now,
-              })
+              const key = bindingKey(account.provider, session)
+              const current = bindings.get(key)
+              // Rebind only from the binding this request was routed by: a late
+              // answer from an account the session has since left is ignored.
+              if (current === undefined || current === seen || current.accountId === account.id) {
+                bindings.set(key, { accountId: account.id, at: now })
+              }
             }
             return
           }

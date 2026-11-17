@@ -8,7 +8,9 @@ import { type Notice, useNotify } from "./Notices.tsx"
  * Live updates: each change the daemon streams that this page did not make
  * flashes its row in the account's new status colour and gets a notice. A
  * change made on this page gets neither, as the page already shows it, and a
- * move gets no notice, as the order on the page says it.
+ * move gets no notice, as the order on the page says it. A sign-in counts as
+ * made on this page while its sign-in dialog is open and for a few seconds
+ * after, as the dialog says how it went.
  */
 
 /** A row flashing: in the colour of `status`. `turn` flips each flash, so a second one replays. */
@@ -19,6 +21,26 @@ export interface Flash {
 
 /** How long a row's flash lasts, in milliseconds, matching its animation in the styles. */
 const FLASH_MS = 2600
+
+/** How long after the sign-in dialog closes a sign-in still counts as this page's own. */
+const SIGN_IN_WINDOW_MS = 5000
+
+/** True when `event` is what a sign-in does: add an account, or sign one in again. */
+const isSignIn = (event: AccountEvent) => {
+  switch (event.type) {
+    case "added":
+      return true
+    case "removed":
+      return false
+    case "status-changed":
+      return event.previous.status === "needs-sign-in" && event.account.status !== "needs-sign-in"
+    case "settings-changed":
+      return (
+        event.previous.priority === event.account.priority &&
+        event.previous.enabled === event.account.enabled
+      )
+  }
+}
 
 /** What a notice says about `event`, or nothing for a change the page shows by itself. */
 export const noticeFor = (event: AccountEvent, now: number): Notice | undefined => {
@@ -111,11 +133,24 @@ export const noticeFor = (event: AccountEvent, now: number): Notice | undefined 
   }
 }
 
-/** Flashes rows and adds notices for live changes; hand `onEvent` to the daemon. */
-export const useLiveUpdates = () => {
+/**
+ * Flashes rows and adds notices for live changes; hand `onEvent` to the
+ * daemon. `signingIn` is true while the page's sign-in dialog is open.
+ */
+export const useLiveUpdates = (signingIn: boolean) => {
   const notify = useNotify()
   const [flashes, setFlashes] = useState<ReadonlyMap<string, Flash>>(new Map())
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+  /** Until when a sign-in counts as this page's own, in epoch milliseconds. */
+  const signInUntil = useRef(0)
+
+  useEffect(() => {
+    if (!signingIn) return
+    signInUntil.current = Infinity
+    return () => {
+      signInUntil.current = Date.now() + SIGN_IN_WINDOW_MS
+    }
+  }, [signingIn])
 
   useEffect(() => {
     const pending = timers.current
@@ -126,7 +161,7 @@ export const useLiveUpdates = () => {
 
   const onEvent = useCallback(
     (event: AccountEvent, own: boolean) => {
-      if (own) return
+      if (own || (Date.now() < signInUntil.current && isSignIn(event))) return
       const notice = noticeFor(event, Date.now())
       if (notice === undefined) return
       notify.show(notice)
