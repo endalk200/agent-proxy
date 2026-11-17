@@ -336,6 +336,62 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
       ),
     )
 
+    it.effect("a redirect from Claude reaches the client as it is, never followed", () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const claude = yield* fakeClaude
+          const home = yield* makeHome(claude)
+          yield* home.signIn(alice)
+          const key = yield* home.proxyKey
+          claude.answerApiWith(
+            () =>
+              new Response(null, {
+                status: 307,
+                headers: { location: "/v1/messages/count_tokens?beta=true" },
+              }),
+          )
+          const before = claude.apiRequests().length
+          const response = yield* home.send("/v1/messages?beta=true", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-api-key": key },
+            body: messagesBody,
+            redirect: "manual",
+          })
+          expect(response.status).toBe(307)
+          expect(response.headers.get("location")).toBe("/v1/messages/count_tokens?beta=true")
+          expect(claude.apiRequests().length - before).toBe(1)
+        }),
+      ),
+    )
+
+    it.effect("an empty Bearer header counts as no key, so a valid x-api-key still works", () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const claude = yield* fakeClaude
+          const home = yield* makeHome(claude)
+          yield* home.signIn(alice)
+          const key = yield* home.proxyKey
+          const withKey = yield* home.send("/v1/messages?beta=true", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: "Bearer ",
+              "x-api-key": key,
+            },
+            body: messagesBody,
+          })
+          expect(withKey.status).toBe(200)
+          const alone = yield* home.send("/v1/messages?beta=true", {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: "Bearer " },
+            body: messagesBody,
+          })
+          expect(alone.status).toBe(401)
+          expect(alone.text).toContain("no proxy key sent")
+        }),
+      ),
+    )
+
     it.effect("Claude's status, limit headers and body reach the client unchanged", () =>
       TestClock.withLive(
         Effect.gen(function* () {

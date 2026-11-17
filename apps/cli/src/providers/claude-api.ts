@@ -36,10 +36,12 @@ export interface ProxiedRequest {
 }
 
 /**
- * Bun's fetch option that leaves a compressed body as it arrived, so the
- * client gets the bytes its `content-encoding` header describes.
+ * Bun's fetch options for passthrough: a compressed body stays as it arrived,
+ * so the client gets the bytes its `content-encoding` header describes, and a
+ * redirect goes back to the client rather than being followed with the
+ * account's token.
  */
-const passThroughEncoding: BunFetchRequestInit = { decompress: false }
+const passThroughEncoding: BunFetchRequestInit = { decompress: false, redirect: "manual" }
 
 /** The beta flag that lets an OAuth token call the API. */
 const OAUTH_BETA = "oauth-2025-04-20"
