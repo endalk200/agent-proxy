@@ -10,7 +10,7 @@ const info: Info = {
   runtimeVersion: "1.4.4",
   platform: "linux",
   arch: "x64",
-  configPath: "/home/me/.config/agent-proxy/config.json",
+  configPath: "/home/me/.config/agent-proxy/config.toml",
 }
 
 const TestEnvironment = Layer.mergeAll(
@@ -33,7 +33,7 @@ layer(TestEnvironment)("info command", (it) => {
         runtimeVersion: "1.4.4",
         platform: "linux",
         arch: "x64",
-        configPath: "/home/me/.config/agent-proxy/config.json",
+        configPath: "/home/me/.config/agent-proxy/config.toml",
       })
       expect(gathered.version).toMatch(/^\d+\.\d+\.\d+/)
     }),
@@ -45,7 +45,7 @@ layer(TestEnvironment)("info command", (it) => {
         "agent-proxy 1.2.3",
         "runtime   bun 1.4.4",
         "platform  linux-x64",
-        "config    /home/me/.config/agent-proxy/config.json",
+        "config    /home/me/.config/agent-proxy/config.toml",
       ].join("\n"),
     )
   })

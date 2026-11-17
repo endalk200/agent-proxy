@@ -5,6 +5,7 @@ import { FetchHttpClient } from "effect/http"
 import { TestClock } from "effect/testing"
 
 import { runCli } from "../../src/Cli.ts"
+import * as Daemon from "../../src/Daemon.ts"
 import * as Processes from "../../src/Processes.ts"
 import { defaultRepo, repoPaths } from "../../src/Repo.ts"
 import * as Runs from "../../src/Runs.ts"
@@ -98,6 +99,28 @@ layer(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))("sandbox", (it) 
           // The server was recorded in the run's manifest while it ran.
           const recorded = yield* Runs.resolve(repo, Option.some(run.manifest.id))
           expect(recorded.manifest.processes.map((p) => p.pid)).toEqual([record.pid])
+        }),
+      ),
+    60_000,
+  )
+
+  it.effect(
+    "stops a daemon started inside the sandbox, so teardown leaves nothing running",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const sandbox = yield* Sandbox.create(`${yield* tempDir}/box`)
+          const stateFile = `${sandbox.stateHome}/agent-proxy/daemon.json`
+          const started = yield* Effect.acquireRelease(
+            runCli(sandbox, defaultRepo.cliSource, ["daemon", "start"], { cwd: defaultRepo.root }),
+            () => Daemon.stop(defaultRepo, sandbox).pipe(Effect.ignore),
+          )
+          expect(started.exitCode).toBe(0)
+          expect(yield* fs.exists(stateFile)).toBe(true)
+          expect(yield* Daemon.stop(defaultRepo, sandbox)).toBe("stopped")
+          expect(yield* fs.exists(stateFile)).toBe(false)
+          expect(yield* Daemon.stop(defaultRepo, sandbox)).toBe("not-running")
         }),
       ),
     60_000,

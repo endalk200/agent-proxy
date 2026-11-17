@@ -98,7 +98,8 @@ jobs:
         working-directory: e2e
         run: bun x playwright install-deps chromium
 
-      - run: bun run test:e2e
+      # Stream each test as it runs, so a hang shows where it is.
+      - run: bun run test:e2e -- --log-order=stream
 
       - name: Upload Playwright report
         if: failure()

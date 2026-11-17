@@ -8,6 +8,7 @@
       "e2e"
     ],
     "catalog": {
+      "@base-ui/react": "1.9.0",
       "@effect/platform-bun": "4.1.4",
       "@effect/platform-node": "4.1.4",
       "@effect/vitest": "4.1.4",

@@ -2,7 +2,7 @@ import { Console, Effect } from "effect"
 import { CliError, Command, Flag } from "effect/cli"
 
 import packageJson from "../../package.json" with { type: "json" }
-import { resolveConfigPath } from "../config-path.ts"
+import { resolveConfigPath } from "../paths.ts"
 import { RuntimeInfo } from "../runtime-info.ts"
 
 export interface Info {

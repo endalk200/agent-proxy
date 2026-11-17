@@ -13,7 +13,7 @@ Every command here is `bun run --silent verify <subcommand>`, shortened below to
 
 Ready when: `up` has printed a run id and, for web changes, `web` has printed a URL.
 
-The run's manifest records the PID of every process it starts. Cleanup stops only those.
+The run's manifest records the PID of every process it starts. Cleanup stops only those, plus a daemon left running in the run's sandbox.
 
 The CLI is short-lived: each `verify cli` invocation runs one fresh process in the run's sandbox. The web server is long-lived: one per run, driven serially.
 
@@ -50,7 +50,7 @@ Report each behaviour as: the entry point driven, the observed result, and the e
 
 ## Cleanup
 
-`verify down`, after a failed drive too. It stops only the processes the run recorded starting, deletes the run's state, and keeps `artifacts/`. `verify down --all` tears down every run that is still up.
+`verify down`, after a failed drive too. It stops a daemon left running in the run's sandbox (through `agent-proxy daemon stop`) and the processes the run recorded starting, deletes the run's state, and keeps `artifacts/`. `verify down --all` tears down every run that is still up.
 
 Done when `verify ls` shows the run as `down` and every evidence path you reported still exists. `verify prune` deletes runs that are down, evidence included; run it only when that evidence is no longer needed.
 

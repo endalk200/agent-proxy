@@ -1,13 +1,356 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { App } from "./App.tsx"
+import { account, type FakeDaemon, fakeDaemon } from "./test/fake-daemon.ts"
+import { rowsOf } from "./test/queries.ts"
+
+// The dashboard against a fake daemon API, found the way a user (or a screen
+// reader) finds things: by ARIA role and accessible name.
 
 afterEach(cleanup)
 
-describe("App", () => {
-  it("renders the product heading", () => {
-    render(<App />)
-    expect(screen.getByRole("heading", { level: 1, name: "agent-proxy" })).toBeDefined()
+const show = (daemon: FakeDaemon) =>
+  render(<App fetch={daemon.fetch} openEvents={daemon.openEvents} reopenDelay={20} />)
+
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
+
+describe("accounts page", () => {
+  it("shows each pool's accounts in priority order with status, plan, and who gets new sessions", async () => {
+    show(
+      fakeDaemon({
+        accounts: [
+          account({
+            id: "a3",
+            label: "Spare",
+            plan: "Pro",
+            priority: 3,
+            enabled: false,
+            status: "disabled",
+          }),
+          account({
+            id: "a1",
+            label: "Work",
+            email: "me@work.example",
+            plan: "Max 20x",
+            priority: 1,
+            lastUsedAt: minutesAgo(4),
+          }),
+          account({
+            id: "a2",
+            label: "Personal Max",
+            email: "me@home.example",
+            plan: "Max 5x",
+            priority: 2,
+            status: "needs-sign-in",
+          }),
+        ],
+        pools: [{ provider: "claude", newSessionsAccountId: "a1" }],
+      }),
+    )
+
+    const claude = await screen.findByRole("region", { name: "Claude" })
+    expect(within(claude).getByText(/New sessions go to/).textContent).toBe(
+      "New sessions go to Work",
+    )
+    expect(rowsOf(within(claude).getByRole("table", { name: "Claude accounts" }))).toEqual([
+      {
+        Priority: "1",
+        Account: "Work New sessions me@work.example",
+        Plan: "Max 20x",
+        Status: "Active",
+        "Last used": "4 min ago",
+        Enabled: "",
+        Actions: "",
+      },
+      {
+        Priority: "2",
+        Account: "Personal Max me@home.example",
+        Plan: "Max 5x",
+        Status: "Needs sign-in Sign in again",
+        "Last used": "Never",
+        Enabled: "",
+        Actions: "",
+      },
+      {
+        Priority: "3",
+        Account: "Spare spare@example.com",
+        Plan: "Pro",
+        Status: "Disabled",
+        "Last used": "Never",
+        Enabled: "",
+        Actions: "",
+      },
+    ])
+    expect(
+      ["Work", "Personal Max", "Spare"].map((label) =>
+        screen.getByRole("switch", { name: `${label} enabled` }).getAttribute("aria-checked"),
+      ),
+    ).toEqual(["true", "true", "false"])
+  })
+
+  it("shows a Codex pool beside the Claude pool, each with its own accounts", async () => {
+    show(
+      fakeDaemon({
+        accounts: [
+          account({ id: "a1", label: "Work", plan: "Max 20x" }),
+          account({
+            id: "c1",
+            provider: "codex",
+            providerAccountId: "5e1d1c3a-cccc-4c4c-8c8c-000000000003",
+            label: "carol",
+            email: "carol@example.com",
+            plan: "Pro",
+          }),
+          account({
+            id: "c2",
+            provider: "codex",
+            providerAccountId: "5e1d1c3a-dddd-4d4d-8d8d-000000000004",
+            label: "dave",
+            email: "dave@example.com",
+            plan: "Plus",
+            priority: 2,
+            status: "needs-sign-in",
+          }),
+        ],
+        pools: [
+          { provider: "claude", newSessionsAccountId: "a1" },
+          { provider: "codex", newSessionsAccountId: "c1" },
+        ],
+      }),
+    )
+
+    const codex = await screen.findByRole("region", { name: "Codex" })
+    expect(within(codex).getByText(/New sessions go to/).textContent).toBe(
+      "New sessions go to carol",
+    )
+    expect(
+      rowsOf(within(codex).getByRole("table", { name: "Codex accounts" })).map((row) => [
+        row["Account"],
+        row["Plan"],
+        row["Status"],
+      ]),
+    ).toEqual([
+      ["carol New sessions carol@example.com", "Pro", "Active"],
+      ["dave dave@example.com", "Plus", "Needs sign-in Sign in again"],
+    ])
+    const claude = screen.getByRole("region", { name: "Claude" })
+    expect(rowsOf(within(claude).getByRole("table", { name: "Claude accounts" }))).toHaveLength(1)
+    expect(
+      within(screen.getByRole("list", { name: "Pools" }))
+        .getAllByRole("listitem")
+        .map((item) => item.getAttribute("aria-label")),
+    ).toEqual(["Claude: new sessions go to Work", "Codex: new sessions go to carol"])
+  })
+})
+
+describe("sidebar", () => {
+  it("counts accounts that need sign-in and says who gets each pool's new sessions", async () => {
+    show(
+      fakeDaemon({
+        accounts: [
+          account({ id: "a1", label: "Work", priority: 1 }),
+          account({ id: "a2", label: "Home", priority: 2, status: "needs-sign-in" }),
+          account({ id: "a3", label: "Old", priority: 3, status: "needs-sign-in" }),
+        ],
+        pools: [{ provider: "claude", newSessionsAccountId: "a1" }],
+      }),
+    )
+    const nav = screen.getByRole("navigation", { name: "Dashboard" })
+    expect(
+      (await within(nav).findByRole("link", { name: "Accounts 2 need sign-in" })).getAttribute(
+        "aria-current",
+      ),
+    ).toBe("page")
+    expect(
+      within(within(nav).getByRole("list", { name: "Pools" }))
+        .getAllByRole("listitem")
+        .map((item) => item.getAttribute("aria-label")),
+    ).toEqual(["Claude: new sessions go to Work"])
+  })
+
+  it("shows a pool whose enabled accounts all need sign-in as unavailable, in the strip and its section", async () => {
+    show(
+      fakeDaemon({
+        accounts: [
+          account({ id: "a1", label: "Work", status: "needs-sign-in" }),
+          account({ id: "a2", label: "Spare", priority: 2, enabled: false, status: "disabled" }),
+        ],
+        pools: [{ provider: "claude", newSessionsAccountId: null }],
+      }),
+    )
+    const claude = await screen.findByRole("region", { name: "Claude" })
+    expect(within(claude).getByText("No account can take new sessions")).toBeDefined()
+    expect(within(claude).getByText(/Every enabled Claude account needs sign-in/)).toBeDefined()
+    expect(
+      screen.getByRole("listitem", { name: "Claude: no account can take new sessions" }),
+    ).toBeDefined()
+  })
+
+  it("shows a pool whose accounts are all disabled as off", async () => {
+    show(
+      fakeDaemon({
+        accounts: [account({ id: "a1", label: "Work", enabled: false, status: "disabled" })],
+        pools: [{ provider: "claude", newSessionsAccountId: null }],
+      }),
+    )
+    const claude = await screen.findByRole("region", { name: "Claude" })
+    expect(within(claude).getByText("Every Claude account is disabled")).toBeDefined()
+    expect(
+      screen.getByRole("listitem", { name: "Claude: every account is disabled" }),
+    ).toBeDefined()
+    expect(screen.getByRole("link", { name: "Accounts 1" })).toBeDefined()
+  })
+})
+
+describe("first run", () => {
+  it("walks through adding an account and connecting clients while the daemon holds none", async () => {
+    show(fakeDaemon())
+    const steps = await screen.findByRole("list", { name: "Get started" })
+    expect(
+      within(steps)
+        .getAllByRole("heading")
+        .map((h) => h.textContent),
+    ).toEqual(["Add an account", "Connect your clients", "Add a fallback"])
+    for (const provider of ["Claude", "Codex"]) {
+      within(steps).getByRole("button", { name: `Add a ${provider} account` })
+    }
+    for (const command of [
+      "agent-proxy connect claude-code",
+      "agent-proxy connect codex",
+      "agent-proxy connect opencode",
+    ]) {
+      within(steps).getByRole("button", { name: `Copy ${command}` })
+    }
+    within(steps).getByText("127.0.0.1:8318")
+    expect(screen.queryByRole("table")).toBeNull()
+    expect(screen.queryByRole("list", { name: "Pools" })).toBeNull()
+  })
+})
+
+describe("when the daemon stops answering", () => {
+  it("says so, and keeps showing what it last reported, read-only", async () => {
+    const daemon = fakeDaemon({
+      accounts: [account({ id: "a1", label: "Work" })],
+      pools: [{ provider: "claude", newSessionsAccountId: "a1" }],
+    })
+    show(daemon)
+    await screen.findByRole("table", { name: "Claude accounts" })
+    expect(screen.queryByRole("status")).toBeNull()
+    expect(screen.getByRole("button", { name: "Actions for Work" }).hasAttribute("disabled")).toBe(
+      false,
+    )
+
+    daemon.reachable = false
+    const banner = await screen.findByRole("status")
+    expect(banner.textContent).toContain("Can't reach the daemon at 127.0.0.1:8318.")
+    expect(banner.textContent).toContain("This is what it last reported")
+    screen.getByRole("table", { name: "Claude accounts" })
+    screen.getByRole("listitem", { name: "Claude: new sessions go to Work" })
+    expect(screen.getByRole("button", { name: "Actions for Work" }).hasAttribute("disabled")).toBe(
+      true,
+    )
+    screen.getByRole("button", { name: "This Mac Unreachable" })
+
+    daemon.reachable = true
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull())
+    screen.getByRole("button", { name: "This Mac 127.0.0.1:8318" })
+  })
+
+  it("treats a daemon that stops answering mid-request as unreachable, and recovers", async () => {
+    const daemon = fakeDaemon({
+      accounts: [account({ id: "a1", label: "Work" })],
+      pools: [{ provider: "claude", newSessionsAccountId: "a1" }],
+    })
+    render(
+      <App
+        fetch={daemon.fetch}
+        openEvents={daemon.openEvents}
+        checkInterval={20}
+        requestTimeout={50}
+      />,
+    )
+    await screen.findByRole("table", { name: "Claude accounts" })
+
+    daemon.stalled = true
+    const banner = await screen.findByRole("status")
+    expect(banner.textContent).toContain("Can't reach the daemon")
+    screen.getByRole("table", { name: "Claude accounts" })
+
+    daemon.stalled = false
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull())
+  })
+
+  it("shows the error the daemon answers with", async () => {
+    const daemon = fakeDaemon()
+    daemon.refusal = "The daemon API is served to clients on this machine only."
+    show(daemon)
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "The daemon answered with an error. The daemon API is served to clients on this machine only.",
+    )
+  })
+
+  it("shows only the banner when it never answered", async () => {
+    const daemon = fakeDaemon()
+    daemon.reachable = false
+    show(daemon)
+    const banner = await screen.findByRole("status")
+    expect(banner.textContent).not.toContain("last reported")
+    expect(screen.queryByRole("list", { name: "Get started" })).toBeNull()
+  })
+})
+
+describe("Connect clients", () => {
+  it("lists each client's connect command and the proxy key, masked until revealed, each one copyable", async () => {
+    const daemon = fakeDaemon({
+      accounts: [account({ id: "a1", label: "Work" })],
+      pools: [{ provider: "claude", newSessionsAccountId: "a1" }],
+    })
+    show(daemon)
+    fireEvent.click(screen.getByRole("button", { name: "Connect clients" }))
+    const dialog = await screen.findByRole("dialog", { name: "Connect clients" })
+
+    for (const command of [
+      "agent-proxy connect claude-code",
+      "agent-proxy connect codex",
+      "agent-proxy connect opencode",
+    ]) {
+      within(dialog).getByText(command)
+    }
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy agent-proxy connect codex" }))
+    await within(dialog).findByRole("button", { name: "Copied" })
+    expect(await navigator.clipboard.readText()).toBe("agent-proxy connect codex")
+
+    const key = await within(dialog).findByLabelText("Proxy key", { exact: true })
+    expect(key.textContent).toBe("ap-Zx8••••••••••••••••q8Bs")
+    expect(dialog.textContent).not.toContain(daemon.key)
+    const reveal = within(dialog).getByRole("button", { name: "Reveal" })
+    fireEvent.click(reveal)
+    expect(key.textContent).toBe(daemon.key)
+    expect(reveal.getAttribute("aria-pressed")).toBe("true")
+    fireEvent.click(within(dialog).getByRole("button", { name: "Hide" }))
+    expect(key.textContent).toBe("ap-Zx8••••••••••••••••q8Bs")
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Copy proxy key" }))
+    await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(daemon.key))
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }))
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+})
+
+describe("daemon switcher", () => {
+  it("shows the daemon's address, version and uptime, and copies the address", async () => {
+    show(fakeDaemon())
+    fireEvent.click(await screen.findByRole("button", { name: "This Mac 127.0.0.1:8318" }))
+    const popup = await screen.findByRole("dialog", { name: "Running" })
+    expect(within(popup).getByText("Address").nextElementSibling?.textContent).toBe(
+      "127.0.0.1:8318",
+    )
+    expect(within(popup).getByText("Version").nextElementSibling?.textContent).toBe("v0.0.0")
+    expect(within(popup).getByText("Uptime").nextElementSibling?.textContent).toBe("1h 30m")
+    fireEvent.click(within(popup).getByRole("button", { name: "Copy address" }))
+    await within(popup).findByRole("button", { name: "Copied" })
+    expect(await navigator.clipboard.readText()).toBe("http://127.0.0.1:8318")
   })
 })

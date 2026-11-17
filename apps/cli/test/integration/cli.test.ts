@@ -1,8 +1,12 @@
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
 import { ConfigProvider, Console, Effect, Layer } from "effect"
+import { FetchHttpClient } from "effect/http"
 
+import { Browser } from "../../src/browser.ts"
 import { runCli } from "../../src/cli.ts"
+import { Processes } from "../../src/processes.ts"
+import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 
 // Drives the real command tree in-process with the real Bun platform services.
@@ -24,7 +28,16 @@ const runCapturing = (argv: ReadonlyArray<string>, env: Record<string, string>) 
     return lines.join("\n")
   })
 
-layer(Layer.mergeAll(BunServices.layer, RuntimeInfo.layerProcess))("agent-proxy info", (it) => {
+layer(
+  Layer.mergeAll(
+    BunServices.layer,
+    RuntimeInfo.layerProcess,
+    Processes.layerProcess,
+    FetchHttpClient.layer,
+    ProviderEndpoints.layer,
+    Layer.succeed(Browser, Browser.of({ open: () => Effect.die("no browser in this test") })),
+  ),
+)("agent-proxy info", (it) => {
   it.effect("prints runtime and config details as JSON", () =>
     Effect.gen(function* () {
       const output = yield* runCapturing(["info", "--json"], { XDG_CONFIG_HOME: "/xdg" })
@@ -33,7 +46,7 @@ layer(Layer.mergeAll(BunServices.layer, RuntimeInfo.layerProcess))("agent-proxy 
         runtime: "bun",
         runtimeVersion: Bun.version,
         platform: process.platform,
-        configPath: "/xdg/agent-proxy/config.json",
+        configPath: "/xdg/agent-proxy/config.toml",
       })
     }),
   )

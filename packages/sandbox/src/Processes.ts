@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { appendFileSync, closeSync, openSync } from "node:fs"
+import { appendFileSync, closeSync, openSync, readFileSync } from "node:fs"
 import { createServer } from "node:net"
 
 import { Data, Effect, Schedule } from "effect"
@@ -79,10 +79,25 @@ const signal = (pid: number, name: NodeJS.Signals | 0) =>
     catch: (cause) => new ProcessError({ message: `Could not signal ${pid}`, cause }),
   })
 
+/**
+ * True when `pid` has exited but was never reaped, which `kill(pid, 0)` still
+ * finds. Linux only: elsewhere the OS's init reaps orphans.
+ */
+const isZombie = (pid: number) => {
+  if (process.platform !== "linux" || pid <= 0) return false
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+    return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) === "Z"
+  } catch {
+    return false
+  }
+}
+
 const isAlive = (pid: number) =>
   signal(pid, 0).pipe(
     Effect.as(true),
     Effect.orElseSucceed(() => false),
+    Effect.map((alive) => alive && !isZombie(pid)),
   )
 
 /** The command line the OS reports for `pid`, or "" when there is no such process. */

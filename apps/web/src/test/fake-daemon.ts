@@ -1,0 +1,583 @@
+import type { OpenEventStream } from "../daemon-api.ts"
+
+/**
+ * A fake daemon API for component tests: it answers the routes the dashboard
+ * calls with the JSON the daemon serves, streams account events the way
+ * `GET /api/events` does, and can stop answering to stand in for a daemon
+ * that went down. Tests read back what the dashboard changed through `PATCH`
+ * and `DELETE`, which follow the daemon's rules: a move renumbers the pool, a
+ * removal closes the gap, and the pool's new sessions go to its
+ * highest-priority Active account.
+ *
+ * - `update`, `add` and `forget` change accounts as the daemon does on its
+ *   own (a cooldown, a sign-in expiring, the CLI), and stream the events.
+ * - Setting `accounts` changes what the daemon holds without streaming
+ *   anything, as when an event has not reached the page yet.
+ *
+ * Logins follow the daemon's too: a login waits until the test plays the
+ * provider's redirect reaching the daemon (`redirect`) or the dashboard posts
+ * a callback URL, then signs in `signInAs`, updating the account the daemon
+ * already holds for that identity or adding one at the bottom of its pool.
+ */
+
+export interface FakeAccount {
+  readonly id: string
+  readonly provider: "claude" | "codex"
+  readonly providerAccountId: string
+  readonly label: string
+  readonly email: string
+  readonly plan: string
+  readonly priority: number
+  readonly enabled: boolean
+  /** A string the dashboard does not know stands in for a status a newer daemon reports. */
+  readonly status: "active" | "cooling-down" | "needs-sign-in" | "disabled" | (string & {})
+  /** When a `cooling-down` account's cooldown ends; a daemon from before cooldowns leaves it out. */
+  readonly cooldownEndsAt?: string | null
+  readonly addedAt: string
+  readonly lastUsedAt: string | null
+}
+
+export interface FakePool {
+  readonly provider: "claude" | "codex"
+  readonly newSessionsAccountId: string | null
+}
+
+/** A Claude account with plausible defaults; `overrides` sets what a test cares about. */
+export const account = (overrides: Partial<FakeAccount> & Pick<FakeAccount, "id" | "label">) => ({
+  provider: "claude" as const,
+  providerAccountId: `account-${overrides.id}:org-${overrides.id}`,
+  email: `${overrides.label.toLowerCase().replaceAll(" ", ".")}@example.com`,
+  plan: "Pro",
+  priority: 1,
+  enabled: true,
+  status: "active" as const,
+  addedAt: "2026-11-01T12:00:00.000Z",
+  lastUsedAt: null,
+  ...overrides,
+})
+
+export type FakeLoginStatus = "pending" | "succeeded" | "failed" | "cancelled" | "expired"
+
+/** A login as the daemon reports it. */
+export interface FakeLogin {
+  readonly id: string
+  readonly provider: "claude" | "codex"
+  readonly authorizeUrl: string
+  readonly status: FakeLoginStatus
+  readonly error?: string
+  readonly account?: FakeAccount
+  readonly created?: boolean
+}
+
+/** Who signs in at the provider's page. */
+export interface FakeIdentity {
+  readonly providerAccountId: string
+  readonly email: string
+  readonly plan: string
+}
+
+const providerNames = { claude: "Claude", codex: "Codex" } as const
+
+/** Where each provider's redirect returns to, as the daemon's real logins use. */
+const redirects = {
+  claude: "http://localhost:54545/callback",
+  codex: "http://127.0.0.1:1455/auth/callback",
+} as const
+
+const authorizePages = {
+  claude: "https://claude.com/cai/oauth/authorize",
+  codex: "https://auth.openai.com/oauth/authorize",
+} as const
+
+/** The callback URL the provider redirects `login`'s browser to. */
+export const callbackUrl = (login: FakeLogin, params: Record<string, string> = {}): string => {
+  const url = new URL(new URL(login.authorizeUrl).searchParams.get("redirect_uri") ?? "")
+  url.searchParams.set("code", "code-from-provider")
+  url.searchParams.set("state", new URL(login.authorizeUrl).searchParams.get("state") ?? "")
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value)
+  return url.toString()
+}
+
+export interface FakeDaemon {
+  /** Serves the daemon API; hand it to the dashboard as its `fetch`. */
+  readonly fetch: typeof fetch
+  /**
+   * Serves `GET /api/events`; hand it to the dashboard as its `openEvents`.
+   * Like a browser's EventSource, a stream reconnects by itself a moment
+   * after it drops, except one the daemon refused.
+   */
+  readonly openEvents: OpenEventStream
+  /** How many event streams are open now. */
+  readonly streams: number
+  /** Changes account `id` as the daemon does on its own, and streams the change. */
+  readonly update: (id: string, changes: Partial<FakeAccount>) => void
+  /** Adds an account at the bottom of its pool, as a login does, and streams it. */
+  readonly add: (account: FakeAccount) => void
+  /** Forgets account `id`, as `accounts remove` from the CLI does, and streams it. */
+  readonly forget: (id: string) => void
+  accounts: ReadonlyArray<FakeAccount>
+  pools: ReadonlyArray<FakePool>
+  key: string
+  address: string
+  /**
+   * While false, every request fails the way `fetch` does when nothing
+   * listens, and open event streams drop.
+   */
+  reachable: boolean
+  /** While set, every request is refused with this 403 error message. */
+  refusal: string | undefined
+  /** While true, only the event stream is refused, as by a daemon from before live updates. */
+  eventsRefused: boolean
+  /**
+   * While true, every request hangs, as a suspended daemon's would, until its
+   * signal aborts it, and event streams bring nothing.
+   */
+  stalled: boolean
+  /** While set, every `PATCH` or `DELETE` is answered with this error message and status. */
+  rejection: { readonly status: number; readonly message: string } | undefined
+  /** Each `PATCH` and `DELETE` the dashboard sent, as "PATCH aa01 {...}" or "DELETE aa01". */
+  readonly changes: Array<string>
+  /** Every login started, oldest first, as the daemon holds it now. */
+  readonly logins: Array<FakeLogin>
+  /** Who signs in at the provider's page next. */
+  signInAs: FakeIdentity
+  /** While set, starting a login fails with this 409 error message, as when its port is taken. */
+  loginRefusal: string | undefined
+  /** While set, a started login reports this as its sign-in page instead of the provider's. */
+  authorizeUrlOverride: string | undefined
+  /** How many of the next `GET /api/logins/:id` hang, as a stuck daemon's would, until aborted. */
+  stallLoginPolls: number
+  /** The provider redirects the browser to the daemon: the latest waiting login signs in `signInAs`. */
+  readonly redirect: () => void
+  /** The latest waiting login ends without signing in, as `status`, with `error` for a failure. */
+  readonly endLogin: (status: "failed" | "expired" | "cancelled", error?: string) => void
+}
+
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+
+type Settings = { label?: string; priority?: number; enabled?: boolean }
+
+const settingsOf = (body: unknown): Settings | undefined => {
+  if (typeof body !== "object" || body === null) return undefined
+  const fields: Record<string, unknown> = { ...body }
+  const settings: Settings = {}
+  if (typeof fields["label"] === "string" && fields["label"].trim() !== "") {
+    settings.label = fields["label"].trim()
+  } else if ("label" in fields) return undefined
+  if (typeof fields["priority"] === "number") settings.priority = fields["priority"]
+  else if ("priority" in fields) return undefined
+  if (typeof fields["enabled"] === "boolean") settings.enabled = fields["enabled"]
+  else if ("enabled" in fields) return undefined
+  return settings
+}
+
+/** `accounts` with `provider`'s pool numbered 1, 2, 3… in the order given. */
+const renumbered = (
+  accounts: ReadonlyArray<FakeAccount>,
+  pool: ReadonlyArray<FakeAccount>,
+): ReadonlyArray<FakeAccount> =>
+  accounts.map((held) => {
+    const index = pool.findIndex((other) => other.id === held.id)
+    return index === -1 ? held : { ...held, priority: index + 1 }
+  })
+
+const poolsOf = (accounts: ReadonlyArray<FakeAccount>): ReadonlyArray<FakePool> =>
+  [...new Set(accounts.map((held) => held.provider))].map((provider) => ({
+    provider,
+    newSessionsAccountId:
+      accounts
+        .filter((held) => held.provider === provider && held.status === "active")
+        .toSorted((a, b) => a.priority - b.priority)[0]?.id ?? null,
+  }))
+
+/** How long a dropped fake stream waits before it reconnects. */
+const RECONNECT_MS = 10
+
+type StreamEvent = Readonly<Record<string, unknown>>
+
+/** The events that take `before` to `after`, as the daemon streams them. */
+const eventsBetween = (
+  before: ReadonlyArray<FakeAccount>,
+  after: ReadonlyArray<FakeAccount>,
+  pools: ReadonlyArray<FakePool>,
+): Array<StreamEvent> => {
+  const was = new Map(before.map((held) => [held.id, held]))
+  const kept = new Set(after.map((held) => held.id))
+  const events: Array<StreamEvent> = before
+    .filter((held) => !kept.has(held.id))
+    .map((held) => ({ type: "removed", account: held, pools }))
+  for (const held of after) {
+    if (!was.has(held.id)) events.push({ type: "added", account: held, pools })
+  }
+  for (const held of after) {
+    const previous = was.get(held.id)
+    if (previous === undefined) continue
+    if (
+      previous.status !== held.status ||
+      (previous.cooldownEndsAt ?? null) !== (held.cooldownEndsAt ?? null)
+    ) {
+      events.push({ type: "status-changed", account: held, previous, pools })
+    } else if (
+      (["label", "priority", "enabled", "email", "plan"] as const).some(
+        (key) => previous[key] !== held[key],
+      )
+    ) {
+      events.push({ type: "settings-changed", account: held, previous, pools })
+    } else if (previous.lastUsedAt !== held.lastUsedAt) {
+      events.push({ type: "used", account: held, pools })
+    }
+  }
+  return events
+}
+
+interface Stream {
+  readonly data: (data: string) => void
+  readonly error: (closed: boolean) => void
+  /** Open and bringing events; false while connecting, and once closed. */
+  live: boolean
+  closed: boolean
+}
+
+export const fakeDaemon = (
+  initial: { accounts?: ReadonlyArray<FakeAccount>; pools?: ReadonlyArray<FakePool> } = {},
+): FakeDaemon => {
+  const streams = new Set<Stream>()
+  let reachable = true
+  let stalled = false
+
+  /** Connects `stream` once the daemon answers, as EventSource keeps trying to. */
+  const connect = (stream: Stream) =>
+    setTimeout(() => {
+      if (stream.closed) return
+      if (!reachable) {
+        stream.error(false)
+        connect(stream)
+      } else if (stalled) {
+        connect(stream)
+      } else if (daemon.refusal !== undefined || daemon.eventsRefused) {
+        stream.closed = true
+        streams.delete(stream)
+        stream.error(true)
+      } else {
+        stream.live = true
+        const { accounts, pools } = daemon
+        stream.data(JSON.stringify({ type: "snapshot", accounts, pools }))
+      }
+    }, RECONNECT_MS)
+
+  /** Holds `accounts` from now on, and streams how they moved. */
+  const commit = (accounts: ReadonlyArray<FakeAccount>) => {
+    const before = daemon.accounts
+    daemon.accounts = accounts
+    daemon.pools = poolsOf(accounts)
+    for (const event of eventsBetween(before, accounts, daemon.pools)) {
+      for (const stream of streams) {
+        if (stream.live && !stalled) stream.data(JSON.stringify(event))
+      }
+    }
+  }
+
+  const daemon: FakeDaemon = {
+    accounts: initial.accounts ?? [],
+    pools: initial.pools ?? [],
+    key: "ap-Zx81Qm0T4vY2bWc9sLr7HnKd3fGa6eJp5uXi1oNq8Bs",
+    address: "http://127.0.0.1:8318",
+    get reachable() {
+      return reachable
+    },
+    set reachable(value) {
+      reachable = value
+      if (value) return
+      for (const stream of streams) {
+        if (!stream.live) continue
+        stream.live = false
+        stream.error(false)
+        connect(stream)
+      }
+    },
+    get stalled() {
+      return stalled
+    },
+    set stalled(value) {
+      stalled = value
+    },
+    get streams() {
+      return [...streams].filter((stream) => !stream.closed).length
+    },
+    refusal: undefined,
+    eventsRefused: false,
+    rejection: undefined,
+    changes: [],
+    openEvents: (url, handlers) => {
+      if (url !== "/api/events") throw new Error(`No event stream at ${url}`)
+      const stream: Stream = { ...handlers, live: false, closed: false }
+      streams.add(stream)
+      connect(stream)
+      return {
+        close: () => {
+          stream.closed = true
+          stream.live = false
+          streams.delete(stream)
+        },
+      }
+    },
+    update: (id, changes) =>
+      commit(daemon.accounts.map((held) => (held.id === id ? { ...held, ...changes } : held))),
+    add: (added) => {
+      const pool = daemon.accounts.filter((held) => held.provider === added.provider)
+      commit([...daemon.accounts, { ...added, priority: pool.length + 1 }])
+    },
+    forget: (id) => {
+      remove(id)
+    },
+    logins: [],
+    signInAs: { providerAccountId: "acct-new", email: "new@example.com", plan: "Max 5x" },
+    loginRefusal: undefined,
+    authorizeUrlOverride: undefined,
+    stallLoginPolls: 0,
+    redirect: () => {
+      const login = waiting()
+      if (login === undefined) throw new Error("No login is waiting.")
+      signIn(login)
+    },
+    endLogin: (status, error) => {
+      const login = waiting()
+      if (login === undefined) throw new Error("No login is waiting.")
+      setLogin({ ...login, status, ...(error === undefined ? {} : { error }) })
+    },
+    fetch: async (input, init) => {
+      if (!daemon.reachable) throw new TypeError("Failed to fetch")
+      if (daemon.stalled) {
+        await new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          )
+        })
+      }
+      if (daemon.refusal !== undefined) return json({ error: daemon.refusal }, 403)
+      const url = new URL(input instanceof Request ? input.url : String(input), "http://dashboard")
+      const method = init?.method ?? "GET"
+      const loginRoute = /^\/api\/logins(?:\/([^/]+))?(\/callback)?$/.exec(url.pathname)
+      if (loginRoute !== null && method === "GET" && daemon.stallLoginPolls > 0) {
+        daemon.stallLoginPolls--
+        await new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          )
+        })
+      }
+      if (loginRoute !== null) return loginCall(method, loginRoute[1], loginRoute[2], init?.body)
+      const accountId = /^\/api\/accounts\/([^/]+)$/.exec(url.pathname)?.[1]
+      if (accountId !== undefined && (method === "PATCH" || method === "DELETE")) {
+        const body: unknown =
+          method === "PATCH"
+            ? JSON.parse(typeof init?.body === "string" ? init.body : "null")
+            : undefined
+        daemon.changes.push(
+          method === "PATCH" ? `PATCH ${accountId} ${JSON.stringify(body)}` : `DELETE ${accountId}`,
+        )
+        if (daemon.rejection !== undefined) {
+          return json({ error: daemon.rejection.message }, daemon.rejection.status)
+        }
+        return method === "PATCH" ? update(accountId, body) : remove(accountId)
+      }
+      switch (url.pathname) {
+        case "/api/accounts":
+          return json({ accounts: daemon.accounts, pools: daemon.pools })
+        case "/api/daemon":
+          return json({
+            pid: 4242,
+            address: daemon.address,
+            version: "0.0.0",
+            // Ninety and a half minutes ago: "1h 30m" for as long as a test runs.
+            startedAt: new Date(Date.now() - (90 * 60 + 30) * 1000).toISOString(),
+            uptimeSeconds: 90 * 60,
+          })
+        case "/api/key":
+          return json({ key: daemon.key })
+        default:
+          return json({ error: "Not found" }, 404)
+      }
+    },
+  }
+
+  function update(id: string, body: unknown): Response {
+    const existing = daemon.accounts.find((held) => held.id === id)
+    if (existing === undefined) return json({ error: `No held ${id}.` }, 404)
+    const settings = settingsOf(body)
+    if (settings === undefined) return json({ error: "Expected a JSON body." }, 400)
+    const enabled = settings.enabled ?? existing.enabled
+    const changed: FakeAccount = {
+      ...existing,
+      label: settings.label ?? existing.label,
+      enabled,
+      status: !enabled ? "disabled" : existing.status === "disabled" ? "active" : existing.status,
+      // The daemon reports a cooldown only while it decides the status.
+      cooldownEndsAt: enabled ? (existing.cooldownEndsAt ?? null) : null,
+    }
+    const pool = daemon.accounts
+      .filter((held) => held.provider === existing.provider)
+      .toSorted((a, b) => a.priority - b.priority)
+    const position = settings.priority ?? existing.priority
+    if (position < 1 || position > pool.length) {
+      return json({ error: `The pool has ${pool.length} accounts.` }, 400)
+    }
+    const others = pool.filter((held) => held.id !== id)
+    const order = [...others.slice(0, position - 1), changed, ...others.slice(position - 1)]
+    const accounts = daemon.accounts.map((held) => (held.id === id ? changed : held))
+    commit(renumbered(accounts, order))
+    return json(daemon.accounts.find((held) => held.id === id))
+  }
+
+  function waiting(): FakeLogin | undefined {
+    return daemon.logins.findLast((login) => login.status === "pending")
+  }
+
+  function setLogin(login: FakeLogin): FakeLogin {
+    const index = daemon.logins.findIndex((held) => held.id === login.id)
+    daemon.logins[index] = login
+    return login
+  }
+
+  /** Signs `login` in as `signInAs`, updating the account held for that identity or adding one. */
+  function signIn(login: FakeLogin): FakeLogin {
+    const identity = daemon.signInAs
+    const held = daemon.accounts.find(
+      (other) =>
+        other.provider === login.provider && other.providerAccountId === identity.providerAccountId,
+    )
+    let signedIn: FakeAccount
+    if (held !== undefined) {
+      signedIn = {
+        ...held,
+        email: identity.email,
+        plan: identity.plan,
+        status: held.enabled ? "active" : "disabled",
+      }
+      commit(daemon.accounts.map((other) => (other.id === held.id ? signedIn : other)))
+    } else {
+      const pool = daemon.accounts.filter((other) => other.provider === login.provider)
+      const base = identity.email.split("@")[0] ?? identity.email
+      let label = base
+      for (let n = 2; pool.some((other) => other.label === label); n++) label = `${base} ${n}`
+      signedIn = {
+        id: `added-${daemon.accounts.length + 1}`,
+        provider: login.provider,
+        ...identity,
+        label,
+        priority: pool.length + 1,
+        enabled: true,
+        status: "active",
+        addedAt: "2026-11-17T09:00:00.000Z",
+        lastUsedAt: null,
+      }
+      commit([...daemon.accounts, signedIn])
+    }
+    return setLogin({
+      ...login,
+      status: "succeeded",
+      account: signedIn,
+      created: held === undefined,
+    })
+  }
+
+  function loginCall(
+    method: string,
+    id: string | undefined,
+    callback: string | undefined,
+    body: BodyInit | null | undefined,
+  ): Response {
+    const fields: Record<string, unknown> = {
+      ...JSON.parse(typeof body === "string" ? body : "{}"),
+    }
+    if (id === undefined && method === "POST") {
+      const provider = fields["provider"]
+      if (provider !== "claude" && provider !== "codex") {
+        return json({ error: "Expected a JSON body." }, 400)
+      }
+      if (daemon.loginRefusal !== undefined) return json({ error: daemon.loginRefusal }, 409)
+      // Starting a login cancels one still waiting for the same provider.
+      for (const other of daemon.logins) {
+        if (other.provider === provider && other.status === "pending") {
+          setLogin({ ...other, status: "cancelled" })
+        }
+      }
+      const n = daemon.logins.length + 1
+      const authorize = new URL(authorizePages[provider])
+      authorize.searchParams.set("redirect_uri", redirects[provider])
+      authorize.searchParams.set("state", `state-${n}`)
+      const login: FakeLogin = {
+        id: `login-${n}`,
+        provider,
+        authorizeUrl: daemon.authorizeUrlOverride ?? authorize.toString(),
+        status: "pending",
+      }
+      daemon.logins.push(login)
+      return json(login, 201)
+    }
+    const login = daemon.logins.find((held) => held.id === id)
+    if (login === undefined) {
+      return json({ error: `No login ${id}. It may have finished more than 10 minutes ago.` }, 404)
+    }
+    if (method === "GET" && callback === undefined) return json(login)
+    if (method === "DELETE" && callback === undefined) {
+      return json(login.status === "pending" ? setLogin({ ...login, status: "cancelled" }) : login)
+    }
+    if (method === "POST" && callback !== undefined) {
+      if (login.status !== "pending") return json(login)
+      const ended = pasted(login, typeof fields["url"] === "string" ? fields["url"] : "")
+      return ended instanceof Response ? ended : json(ended)
+    }
+    return json({ error: "Not found" }, 404)
+  }
+
+  /** Finishes `login` with a pasted callback URL, as the daemon reads one. */
+  function pasted(login: FakeLogin, text: string): FakeLogin | Response {
+    let url: URL
+    try {
+      url = new URL(text.trim())
+    } catch {
+      return json(
+        { error: "That is not a URL. Paste the whole address from the browser's address bar." },
+        400,
+      )
+    }
+    const name = providerNames[login.provider]
+    if (url.searchParams.get("state") !== new URL(login.authorizeUrl).searchParams.get("state")) {
+      return json(
+        { error: `That URL belongs to another ${name} sign-in, not the one in progress.` },
+        400,
+      )
+    }
+    const denied = url.searchParams.get("error")
+    if (denied !== null) {
+      return setLogin({
+        ...login,
+        status: "failed",
+        error: `${name} did not grant access: ${url.searchParams.get("error_description") ?? denied}`,
+      })
+    }
+    if (!url.searchParams.get("code")) {
+      return json({ error: "That URL has no authorization code in it." }, 400)
+    }
+    return signIn(login)
+  }
+
+  function remove(id: string): Response {
+    const removed = daemon.accounts.find((held) => held.id === id)
+    if (removed === undefined) return json({ error: `No held ${id}.` }, 404)
+    const accounts = daemon.accounts.filter((held) => held.id !== id)
+    commit(
+      renumbered(
+        accounts,
+        accounts
+          .filter((held) => held.provider === removed.provider)
+          .toSorted((a, b) => a.priority - b.priority),
+      ),
+    )
+    return json(removed)
+  }
+
+  return daemon
+}
