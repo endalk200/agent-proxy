@@ -113,6 +113,10 @@ export interface FakeDaemon {
   signInAs: FakeIdentity
   /** While set, starting a login fails with this 409 error message, as when its port is taken. */
   loginRefusal: string | undefined
+  /** While set, a started login reports this as its sign-in page instead of the provider's. */
+  authorizeUrlOverride: string | undefined
+  /** How many of the next `GET /api/logins/:id` hang, as a stuck daemon's would, until aborted. */
+  stallLoginPolls: number
   /** The provider redirects the browser to the daemon: the latest waiting login signs in `signInAs`. */
   readonly redirect: () => void
   /** The latest waiting login ends without signing in, as `status`, with `error` for a failure. */
@@ -173,6 +177,8 @@ export const fakeDaemon = (
     logins: [],
     signInAs: { providerAccountId: "acct-new", email: "new@example.com", plan: "Max 5x" },
     loginRefusal: undefined,
+    authorizeUrlOverride: undefined,
+    stallLoginPolls: 0,
     redirect: () => {
       const login = waiting()
       if (login === undefined) throw new Error("No login is waiting.")
@@ -196,6 +202,14 @@ export const fakeDaemon = (
       const url = new URL(input instanceof Request ? input.url : String(input), "http://dashboard")
       const method = init?.method ?? "GET"
       const loginRoute = /^\/api\/logins(?:\/([^/]+))?(\/callback)?$/.exec(url.pathname)
+      if (loginRoute !== null && method === "GET" && daemon.stallLoginPolls > 0) {
+        daemon.stallLoginPolls--
+        await new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          )
+        })
+      }
       if (loginRoute !== null) return loginCall(method, loginRoute[1], loginRoute[2], init?.body)
       const accountId = /^\/api\/accounts\/([^/]+)$/.exec(url.pathname)?.[1]
       if (accountId !== undefined && (method === "PATCH" || method === "DELETE")) {
@@ -339,7 +353,7 @@ export const fakeDaemon = (
       const login: FakeLogin = {
         id: `login-${n}`,
         provider,
-        authorizeUrl: authorize.toString(),
+        authorizeUrl: daemon.authorizeUrlOverride ?? authorize.toString(),
         status: "pending",
       }
       daemon.logins.push(login)

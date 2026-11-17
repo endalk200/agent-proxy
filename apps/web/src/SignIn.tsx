@@ -94,6 +94,16 @@ const daemonTrouble = (failure: DaemonFailure): string =>
 const providerOf = (request: SignInRequest): Provider | undefined =>
   request.kind === "again" ? request.account.provider : request.provider
 
+/** True for an absolute http or https URL: the only kind the dashboard opens or links. */
+const isWebUrl = (url: string): boolean => {
+  try {
+    const { protocol } = new URL(url)
+    return protocol === "https:" || protocol === "http:"
+  } catch {
+    return false
+  }
+}
+
 /** Opens `url` in a new tab that cannot reach back into the dashboard; false when the browser refused. */
 const openTab = (url: string): boolean => {
   const tab = window.open(url, "_blank")
@@ -107,6 +117,8 @@ export function SignInDialog(props: {
   client: DaemonClient
   /** How often a waiting login is asked how it stands, in milliseconds. */
   pollInterval: number
+  /** How long one question about a waiting login may go unanswered, in milliseconds. */
+  requestTimeout: number
   /** A login added or updated an account. */
   onSignedIn: () => void
   rename: (account: Account, label: string) => void
@@ -136,6 +148,7 @@ export function SignInDialog(props: {
               open={props.request !== undefined}
               client={props.client}
               pollInterval={props.pollInterval}
+              requestTimeout={props.requestTimeout}
               onSignedIn={props.onSignedIn}
               rename={props.rename}
               onClose={props.onClose}
@@ -164,11 +177,13 @@ function SignInFlow(props: {
   open: boolean
   client: DaemonClient
   pollInterval: number
+  /** How long one question about the waiting login may go unanswered, in milliseconds. */
+  requestTimeout: number
   onSignedIn: () => void
   rename: (account: Account, label: string) => void
   onClose: () => void
 }) {
-  const { client, request, pollInterval, open, rename, onSignedIn } = props
+  const { client, request, pollInterval, requestTimeout, open, rename, onSignedIn } = props
   const preset = providerOf(request)
   const [step, setStep] = useState<Step>(
     preset === undefined ? { kind: "pick" } : { kind: "starting", provider: preset, attempt: 0 },
@@ -216,7 +231,16 @@ function SignInFlow(props: {
 
     const poll = async (id: string) => {
       try {
-        const login = await client.login(id, controller.signal)
+        // Each question gets its own deadline: one the daemon never answers
+        // counts as connection trouble, and the next question still goes out.
+        const attempt = new AbortController()
+        const abort = () => attempt.abort()
+        controller.signal.addEventListener("abort", abort)
+        const deadline = setTimeout(abort, requestTimeout)
+        const login = await client.login(id, attempt.signal).finally(() => {
+          clearTimeout(deadline)
+          controller.signal.removeEventListener("abort", abort)
+        })
         if (over) return
         setPollTrouble(undefined)
         if (login.status !== "pending") return settle(login)
@@ -242,6 +266,19 @@ function SignInFlow(props: {
       (login) => {
         // Cancelled before the daemon answered: the login it started is not wanted.
         if (over) return void client.cancelLogin(login.id).catch(() => undefined)
+        // Only a web page is ever opened or linked: anything else could run in
+        // the dashboard's own origin.
+        if (!isWebUrl(login.authorizeUrl)) {
+          ended = true
+          void client.cancelLogin(login.id).catch(() => undefined)
+          setStep({
+            kind: "problem",
+            provider,
+            title: "Couldn't start the sign-in",
+            message: `The daemon did not give a web address for ${providerNames[provider]}'s sign-in page, so it was not opened.`,
+          })
+          return
+        }
         loginId = login.id
         setStep({
           kind: "waiting",
@@ -295,7 +332,7 @@ function SignInFlow(props: {
       controller.abort()
       if (loginId !== undefined && !ended) void client.cancelLogin(loginId).catch(() => undefined)
     }
-  }, [liveProvider, liveAttempt, client, pollInterval])
+  }, [liveProvider, liveAttempt, client, pollInterval, requestTimeout])
 
   // A sign-in changed the daemon's accounts: the page asks for them again.
   const signedIn = step.kind === "signed-in" ? step.account.id : undefined
@@ -622,12 +659,18 @@ function SignedIn(props: {
   const { account, created, provider } = props.step
   const name = providerNames[provider]
   const fieldId = useId()
+  const title = created ? `${name} account added` : `${account.label} is signed in again`
+  // "Sign in again" for one account, but another one signed in.
+  const intended = props.request.kind === "again" ? props.request.account : undefined
+  const mismatch = intended !== undefined && intended.id !== account.id ? intended : undefined
   return (
     <>
+      {/* The waiting step's controls are gone: say what happened. */}
+      <output className="sr-only">{title}</output>
       <Head
         icon={<IconCheck size={16} />}
         tone="ok"
-        title={created ? `${name} account added` : `${account.label} is signed in again`}
+        title={title}
         description={
           created
             ? account.priority === 1
@@ -655,12 +698,15 @@ function SignedIn(props: {
               {account.plan}
             </span>
           </div>
-          {created && props.request.kind === "again" && (
+          {mismatch !== undefined && (
             <div className="callout is-warn">
               <IconAlert size={15} />
               <span>
-                You signed in as <b>{account.email}</b>, not <b>{props.request.account.email}</b>,
-                so it was added as a new account. {props.request.account.label} still needs sign-in.
+                You signed in as <b>{account.email}</b>, not <b>{mismatch.email}</b>, so{" "}
+                {created
+                  ? "it was added as a new account"
+                  : `${account.label} was signed in again instead`}
+                . {mismatch.label} still needs sign-in.
               </span>
             </div>
           )}
@@ -685,7 +731,14 @@ function SignedIn(props: {
           )}
         </div>
         <div className="dialog-foot">
-          <button type="submit" className="btn is-primary">
+          <button
+            type="submit"
+            className="btn is-primary"
+            // With no label to name, Done is what is left: focus lands there,
+            // not on the page behind the dialog.
+            // oxlint-disable-next-line jsx-a11y/no-autofocus -- see above
+            autoFocus={!created}
+          >
             Done
           </button>
         </div>

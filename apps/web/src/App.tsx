@@ -170,6 +170,7 @@ function Dashboard(props: {
           request={signingIn}
           client={client}
           pollInterval={props.loginPollInterval ?? 1000}
+          requestTimeout={props.requestTimeout ?? 5000}
           onSignedIn={view.refresh}
           rename={actions.rename}
           onClose={() => setSigningIn(undefined)}

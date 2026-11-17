@@ -304,6 +304,68 @@ describe("sign in again", () => {
   })
 })
 
+describe("review fixes", () => {
+  it("never opens or links a sign-in page that is not http or https", async () => {
+    const daemon = twoAccounts()
+    daemon.authorizeUrlOverride = "javascript:alert(document.domain)"
+    show(daemon)
+    const dialog = await startClaude()
+    await within(dialog).findByText(/did not give a web address/)
+    expect(opened).toEqual([])
+    expect(document.querySelector('a[href^="javascript:"]')).toBeNull()
+  })
+
+  it("keeps asking after a login poll stalls, and finishes the sign-in", async () => {
+    const daemon = twoAccounts()
+    daemon.signInAs = { providerAccountId: "acct-new", email: "new@example.com", plan: "Pro" }
+    daemon.stallLoginPolls = 1
+    render(
+      <App fetch={daemon.fetch} pollInterval={60_000} loginPollInterval={20} requestTimeout={50} />,
+    )
+    await waitingFor(daemon, "Claude")
+    daemon.redirect()
+    const added = await screen.findByRole("dialog", { name: "Claude account added" })
+    expect(textOf(added)).toContain("new@example.com")
+  })
+
+  it("moves focus to Done and announces it when an account is signed in again", async () => {
+    const daemon = homeSignedOut()
+    daemon.signInAs = { providerAccountId: "acct-home", email: "home@example.com", plan: "Pro" }
+    show(daemon)
+    const table = await screen.findByRole("table", { name: "Claude accounts" })
+    fireEvent.click(within(table).getByRole("button", { name: "Sign in again to Home" }))
+    const dialog = await screen.findByRole("dialog", { name: "Sign in again to Home" })
+    await within(dialog).findByText("Waiting for you to sign in…")
+    daemon.redirect()
+
+    const done = await screen.findByRole("dialog", { name: "Home is signed in again" })
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(done).getByRole("button", { name: "Done" })),
+    )
+    expect(within(done).getByRole("status").textContent).toContain("Home is signed in again")
+  })
+
+  it("says so when another account already held signs in instead", async () => {
+    const daemon = homeSignedOut()
+    daemon.signInAs = {
+      providerAccountId: "account-a1:org-a1",
+      email: "work@example.com",
+      plan: "Pro",
+    }
+    show(daemon)
+    const table = await screen.findByRole("table", { name: "Claude accounts" })
+    fireEvent.click(within(table).getByRole("button", { name: "Sign in again to Home" }))
+    const dialog = await screen.findByRole("dialog", { name: "Sign in again to Home" })
+    await within(dialog).findByText("Waiting for you to sign in…")
+    daemon.redirect()
+
+    const done = await screen.findByRole("dialog", { name: "Work is signed in again" })
+    expect(done.textContent).toContain(
+      "You signed in as work@example.com, not home@example.com, so Work was signed in again instead. Home still needs sign-in.",
+    )
+  })
+})
+
 describe("cancelling", () => {
   it("cancels the login in the daemon when Cancel is pressed while it waits", async () => {
     const daemon = twoAccounts()
