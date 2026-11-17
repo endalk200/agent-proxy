@@ -220,6 +220,16 @@ export const opencode: ClientConnector = {
   snippet,
   note: "opencode shows the Claude Agent models once its Claude login is connected: run `opencode auth login claude-agent --method claude-login` if you have not.",
   change: (current, target, name) => {
+    // opencode swaps `{file:…}` into the raw text before it parses the JSON,
+    // so a path with a quote, backslash or `}` would be read back wrong and
+    // every request would go out with an empty key.
+    if (/["\\}]/.test(target.keyFile)) {
+      return Result.fail(
+        new ClientConfigError({
+          message: `The proxy key file ${target.keyFile} has a quote, backslash or } in its path, so connect cannot name it in {file:…} for opencode, and ${name} was left unchanged. Point XDG_DATA_HOME at a plainer path, or set the key in opencode by hand.`,
+        }),
+      )
+    }
     const text = Option.getOrElse(current, () => "")
     const parsed = text.trim() === "" ? Result.succeed<unknown>({}) : parseJsonc(text)
     if (Result.isFailure(parsed)) {

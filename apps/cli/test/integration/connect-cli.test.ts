@@ -901,6 +901,23 @@ layer(services)("agent-proxy connect opencode", (it) => {
   )
 
   it.effect(
+    "refuses a key file path opencode cannot read back from {file:}, and writes nothing",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const home = yield* makeHome({ env: (dir) => ({ XDG_DATA_HOME: `${dir}/odd "data"` }) })
+          yield* home.runDaemon
+
+          const message = yield* home.fails(["connect", "opencode"])
+
+          expect(message).toContain("cannot name it in {file:")
+          expect(yield* fs.exists(home.opencodeConfig)).toBe(false)
+        }),
+      ),
+  )
+
+  it.effect(
     "names the key file by its real path when XDG_DATA_HOME is not the default, with ~/ only under home",
     () =>
       TestClock.withLive(
