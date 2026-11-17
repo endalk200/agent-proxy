@@ -7,7 +7,7 @@ import { TestClock } from "effect/testing"
 import { Browser } from "../../src/browser.ts"
 import { runCli } from "../../src/cli.ts"
 import { Processes } from "../../src/processes.ts"
-import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
+import { ProviderEndpoints, realEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 import { alice, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
 
@@ -79,7 +79,7 @@ const makeHome = (claude: FakeClaude) =>
           Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
           Effect.provideService(
             ProviderEndpoints,
-            ProviderEndpoints.of({ claude: claude.endpoints }),
+            ProviderEndpoints.of({ ...realEndpoints, claude: claude.endpoints }),
           ),
         )
         return { stdout: stdout.join("\n"), stderr: stderr.join("\n") }

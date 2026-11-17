@@ -87,6 +87,60 @@ describe("accounts page", () => {
       ),
     ).toEqual(["true", "true", "false"])
   })
+
+  it("shows a Codex pool beside the Claude pool, each with its own accounts", async () => {
+    show(
+      fakeDaemon({
+        accounts: [
+          account({ id: "a1", label: "Work", plan: "Max 20x" }),
+          account({
+            id: "c1",
+            provider: "codex",
+            providerAccountId: "5e1d1c3a-cccc-4c4c-8c8c-000000000003",
+            label: "carol",
+            email: "carol@example.com",
+            plan: "Pro",
+          }),
+          account({
+            id: "c2",
+            provider: "codex",
+            providerAccountId: "5e1d1c3a-dddd-4d4d-8d8d-000000000004",
+            label: "dave",
+            email: "dave@example.com",
+            plan: "Plus",
+            priority: 2,
+            status: "needs-sign-in",
+          }),
+        ],
+        pools: [
+          { provider: "claude", newSessionsAccountId: "a1" },
+          { provider: "codex", newSessionsAccountId: "c1" },
+        ],
+      }),
+    )
+
+    const codex = await screen.findByRole("region", { name: "Codex" })
+    expect(within(codex).getByText(/New sessions go to/).textContent).toBe(
+      "New sessions go to carol",
+    )
+    expect(
+      rowsOf(within(codex).getByRole("table", { name: "Codex accounts" })).map((row) => [
+        row["Account"],
+        row["Plan"],
+        row["Status"],
+      ]),
+    ).toEqual([
+      ["carol New sessions carol@example.com", "Pro", "Active"],
+      ["dave dave@example.com", "Plus", "Needs sign-in"],
+    ])
+    const claude = screen.getByRole("region", { name: "Claude" })
+    expect(rowsOf(within(claude).getByRole("table", { name: "Claude accounts" }))).toHaveLength(1)
+    expect(
+      within(screen.getByRole("list", { name: "Pools" }))
+        .getAllByRole("listitem")
+        .map((item) => item.getAttribute("aria-label")),
+    ).toEqual(["Claude: new sessions go to Work", "Codex: new sessions go to carol"])
+  })
 })
 
 describe("sidebar", () => {

@@ -6,7 +6,7 @@ import { TestClock } from "effect/testing"
 
 import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
-import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
+import { ProviderEndpoints, realEndpoints } from "../../src/providers/endpoints.ts"
 import {
   alice,
   bob,
@@ -46,6 +46,7 @@ const makeHome = (
       XDG_DATA_HOME: options.dataHome ?? `${root}/data`,
     }
     const endpoints = ProviderEndpoints.of({
+      ...realEndpoints,
       claude: {
         ...claude.endpoints,
         apiBaseUrl: options.apiBaseUrl ?? claude.endpoints.apiBaseUrl,

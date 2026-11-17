@@ -1,10 +1,5 @@
 import { Clock, Context, DateTime, Duration, Effect, Layer, Option, Schema } from "effect"
-import {
-  HttpClient,
-  type HttpClientError,
-  HttpClientRequest,
-  type HttpClientResponse,
-} from "effect/http"
+import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
 
 import { ProviderEndpoints } from "./endpoints.ts"
 import {
@@ -12,8 +7,9 @@ import {
   type LoginAdapter,
   ProviderLoginError,
   RefreshOutcomeUnknown,
-  RefreshRejected,
-  RefreshUnavailable,
+  REFRESH_TIMEOUT,
+  refreshFailed,
+  refreshUnanswered,
   type TokenAdapter,
 } from "./provider.ts"
 
@@ -214,36 +210,6 @@ export class ClaudeLogin extends Context.Service<ClaudeLogin, LoginAdapter>()(
   )
 }
 
-/** How long a refresh may take before its outcome counts as unknown. */
-const REFRESH_TIMEOUT = "30 seconds"
-
-/**
- * Transport error codes that mean the connection was never made, so the
- * refresh request was never sent. Every other transport error may have
- * happened after Claude received it.
- */
-const NOT_CONNECTED = new Set([
-  "ECONNREFUSED",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "EHOSTUNREACH",
-  "ENETUNREACH",
-  "FailedToOpenSocket",
-  "ConnectionRefused",
-])
-
-const errorCode = (cause: unknown) =>
-  typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : undefined
-
-/** How a refresh request that got no answer ended. */
-const unanswered = (error: HttpClientError.HttpClientError) =>
-  error.reason._tag === "TransportError" && NOT_CONNECTED.has(errorCode(error.reason.cause) ?? "")
-    ? new RefreshUnavailable({ reason: "Could not reach Claude.", cause: error })
-    : new RefreshOutcomeUnknown({
-        reason: "The connection to Claude closed before it answered.",
-        cause: error,
-      })
-
 /**
  * The Claude adapter's token half: refreshes an account's tokens with Claude
  * Code's OAuth client, an hour before they expire. Claude's refresh tokens are
@@ -268,23 +234,10 @@ export class ClaudeTokens extends Context.Service<ClaudeTokens, TokenAdapter>()(
               client_id: CLIENT_ID,
             }),
             http.execute,
-            Effect.mapError(unanswered),
+            Effect.mapError(refreshUnanswered("Claude")),
           )
-          // Only 429 and 503 say the refresh was not taken. Any other server
-          // error, a gateway's 502 or 504 above all, may come after Claude
-          // spent the single-use refresh token, so it must never be sent again.
-          if (response.status === 429 || response.status === 503) {
-            return yield* new RefreshUnavailable({
-              reason: `Claude could not refresh the tokens now (HTTP ${response.status}).`,
-            })
-          }
-          if (response.status >= 500) {
-            return yield* new RefreshOutcomeUnknown({
-              reason: `Claude answered the refresh with HTTP ${response.status}, so whether it took the refresh token is unknown.`,
-            })
-          }
           if (response.status !== 200) {
-            return yield* new RefreshRejected({ reason: yield* describeRejection(response) })
+            return yield* refreshFailed("Claude", response, describeRejection)
           }
           const tokens = yield* response.json.pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(TokenResponse)),

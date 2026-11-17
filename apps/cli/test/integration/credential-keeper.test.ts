@@ -7,7 +7,7 @@ import { TestClock } from "effect/testing"
 import type { Credentials } from "../../src/accounts/account.ts"
 import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
-import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
+import { ProviderEndpoints, realEndpoints } from "../../src/providers/endpoints.ts"
 import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
 
 // The credential keeper, in-process: a real daemon on loopback in a throwaway
@@ -75,6 +75,7 @@ const makeHome = (
       Effect.provideService(
         ProviderEndpoints,
         ProviderEndpoints.of({
+          ...realEndpoints,
           claude: { ...claude.endpoints, tokenUrl: options.tokenUrl ?? claude.endpoints.tokenUrl },
         }),
       ),

@@ -21,6 +21,7 @@ import type { Provider } from "../accounts/account.ts"
 import { AccountStore, type AccountStoreError, type Upserted } from "../accounts/store.ts"
 import { type LoginView, toAccountView } from "../daemon/api.ts"
 import { ClaudeLogin } from "../providers/claude.ts"
+import { CodexLogin } from "../providers/codex.ts"
 import { type LoginAdapter, makePkce, ProviderLoginError } from "../providers/provider.ts"
 
 /**
@@ -162,7 +163,10 @@ export class Logins extends Context.Service<
     Logins,
     Effect.gen(function* () {
       const store = yield* AccountStore
-      const adapters: Readonly<Record<Provider, LoginAdapter>> = { claude: yield* ClaudeLogin }
+      const adapters: Readonly<Record<Provider, LoginAdapter>> = {
+        claude: yield* ClaudeLogin,
+        codex: yield* CodexLogin,
+      }
       const logins = yield* Ref.make(new Map<string, Login>())
       const flows = yield* FiberMap.make<string>()
 
@@ -203,7 +207,7 @@ export class Logins extends Context.Service<
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest
           const url = new URL(request.url, "http://localhost")
-          if (url.pathname !== "/callback") {
+          if (url.pathname !== new URL(adapter.redirectUri(adapter.callbackPort)).pathname) {
             return callbackPage(404, "Not found", "This address only receives sign-in redirects.")
           }
           const view = yield* deliver(login, adapter, url.toString())

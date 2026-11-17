@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto"
 
 import { Data, type Duration, Effect } from "effect"
+import type { HttpClientError, HttpClientResponse } from "effect/http"
 
 import type { Credentials, Identity, Provider } from "../accounts/account.ts"
 
@@ -94,3 +95,58 @@ export interface TokenAdapter {
   /** Exchanges a refresh token, once, for a new token pair. */
   readonly refresh: (refreshToken: string) => Effect.Effect<Credentials, RefreshError>
 }
+
+/** How long a refresh may take before its outcome counts as unknown. */
+export const REFRESH_TIMEOUT = "30 seconds"
+
+/**
+ * Transport error codes that mean the connection was never made, so the
+ * refresh request was never sent. Every other transport error may have
+ * happened after the provider received it.
+ */
+const NOT_CONNECTED = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "FailedToOpenSocket",
+  "ConnectionRefused",
+])
+
+const errorCode = (cause: unknown) =>
+  typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : undefined
+
+/** How a refresh request to `name` that got no answer ended. */
+export const refreshUnanswered = (name: string) => (error: HttpClientError.HttpClientError) =>
+  error.reason._tag === "TransportError" && NOT_CONNECTED.has(errorCode(error.reason.cause) ?? "")
+    ? new RefreshUnavailable({ reason: `Could not reach ${name}.`, cause: error })
+    : new RefreshOutcomeUnknown({
+        reason: `The connection to ${name} closed before it answered.`,
+        cause: error,
+      })
+
+/**
+ * Fails with how a refresh `name` answered with anything but 200 ended;
+ * `describe` reads why the provider refused it.
+ */
+export const refreshFailed = Effect.fnUntraced(function* (
+  name: string,
+  response: HttpClientResponse.HttpClientResponse,
+  describe: (response: HttpClientResponse.HttpClientResponse) => Effect.Effect<string>,
+) {
+  // Only 429 and 503 say the refresh was not taken. Any other server error,
+  // a gateway's 502 or 504 above all, may come after the provider spent the
+  // single-use refresh token, so it must never be sent again.
+  if (response.status === 429 || response.status === 503) {
+    return yield* new RefreshUnavailable({
+      reason: `${name} could not refresh the tokens now (HTTP ${response.status}).`,
+    })
+  }
+  if (response.status >= 500) {
+    return yield* new RefreshOutcomeUnknown({
+      reason: `${name} answered the refresh with HTTP ${response.status}, so whether it took the refresh token is unknown.`,
+    })
+  }
+  return yield* new RefreshRejected({ reason: yield* describe(response) })
+})
