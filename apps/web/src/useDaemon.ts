@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import {
+  type Account,
+  type AccountEvent,
   type AccountList,
+  type AccountSettings,
   type DaemonClient,
   DaemonCallError,
   type DaemonFailure,
   type DaemonInfo,
 } from "./daemon-api.ts"
+import { applyEvent } from "./model.ts"
 
 /** What the dashboard knows about its daemon. */
 export interface DaemonView {
@@ -14,9 +18,14 @@ export interface DaemonView {
   readonly accounts: AccountList | undefined
   /** The last daemon info the daemon reported. */
   readonly info: DaemonInfo | undefined
-  /** Why the latest refresh failed, while it keeps failing. */
+  /** Why the daemon can't be followed right now, while that lasts. */
   readonly failure: DaemonFailure | undefined
 }
+
+/** A change this dashboard makes: to account `id`'s settings, or its removal. */
+export type OwnChange =
+  | { readonly id: string; readonly settings: AccountSettings }
+  | { readonly id: string; readonly removed: true }
 
 export interface Daemon extends DaemonView {
   /** Asks the daemon for its accounts again now, as after something changed them elsewhere. */
@@ -25,12 +34,23 @@ export interface Daemon extends DaemonView {
    * Shows `preview` of the account list at once, runs `call`, then asks the
    * daemon for its accounts again, whether `call` succeeded or not, so the
    * page ends on what the daemon holds. When `call` fails, the page goes back
-   * to the daemon's last list at once. Settles as `call` does.
+   * to what the daemon holds at once. Settles as `call` does. The events
+   * `own` makes reach `onEvent` marked as this dashboard's own.
    */
   readonly change: <A>(
     preview: (list: AccountList) => AccountList,
     call: () => Promise<A>,
+    own?: OwnChange,
   ) => Promise<A>
+}
+
+export interface DaemonTiming {
+  /** How often to check that the daemon still answers, in milliseconds. */
+  readonly checkInterval: number
+  /** How long a request may take before the daemon counts as unreachable, in milliseconds. */
+  readonly requestTimeout: number
+  /** How long to wait before asking again for an event stream the daemon refused, in milliseconds. */
+  readonly reopenDelay: number
 }
 
 export const asFailure = (error: unknown): DaemonFailure =>
@@ -38,101 +58,245 @@ export const asFailure = (error: unknown): DaemonFailure =>
     ? error.failure
     : { kind: "error", message: error instanceof Error ? error.message : String(error) }
 
+interface Preview {
+  readonly apply: (list: AccountList) => AccountList
+  /** The count of settled changes once this one's call settled. */
+  settled: number | undefined
+}
+
+/** How long after a change settles its events still count as this dashboard's own. */
+const OWN_EVENT_WINDOW_MS = 5000
+
+/** True when `own` explains every way `event` moved its account. */
+const explains = (own: OwnChange, event: AccountEvent): boolean => {
+  if (event.account.id !== own.id) return false
+  if ("removed" in own) return event.type === "removed"
+  if (event.type !== "status-changed" && event.type !== "settings-changed") return false
+  const { previous: before, account: after } = event
+  const { settings } = own
+  const kept = (key: keyof Account) => before[key] === after[key]
+  return (
+    (kept("label") || settings.label === after.label) &&
+    (kept("enabled") || settings.enabled === after.enabled) &&
+    (kept("priority") || settings.priority !== undefined) &&
+    // Turning an account off or on moves its status to or from Disabled.
+    (kept("status") || !kept("enabled")) &&
+    kept("cooldownEndsAt") &&
+    kept("email") &&
+    kept("plan")
+  )
+}
+
 /**
- * Asks the daemon for its accounts and info now and every `pollInterval`
- * milliseconds after each answer, keeping the last answer when one fails.
- * Each refresh gets `requestTimeout` milliseconds: a daemon that stops
- * answering mid-request counts as unreachable, and a refresh never overlaps
- * the next one or outlives the component.
+ * Follows the daemon: its accounts through its event stream, which starts
+ * with every account as it is and then brings each change, and its info
+ * through a check every `checkInterval` milliseconds.
  *
- * A change made through `change` refreshes at once when it settles. An
- * answer to a refresh that started before a change settled is dropped, so a
- * slow poll never puts back what the change replaced.
+ * - The stream reconnects by itself when it drops, and each reconnection
+ *   starts again from the accounts as they are, so nothing missed lingers.
+ * - A stream the daemon refuses is asked for again every `reopenDelay`, and
+ *   meanwhile the list is asked for each time instead.
+ * - The check is how a daemon that stops answering without closing its
+ *   stream is noticed: the stream's keep-alives are comments, which a
+ *   browser never reports. A check that fails or takes longer than
+ *   `requestTimeout` shows the daemon as unreachable and opens the stream
+ *   again.
+ *
+ * `onEvent` hears each change as it arrives, with whether this dashboard
+ * made it through `change`.
  */
 export const useDaemon = (
   client: DaemonClient,
-  pollInterval: number,
-  requestTimeout: number,
+  timing: DaemonTiming,
+  onEvent: (event: AccountEvent, own: boolean) => void,
 ): Daemon => {
   const [view, setView] = useState<DaemonView>({
     accounts: undefined,
     info: undefined,
     failure: undefined,
   })
-  /** Bumped as each change starts and settles. */
-  const changes = useRef(0)
-  /** How many changes are waiting on the daemon. */
-  const pending = useRef(0)
-  const refreshNow = useRef<() => void>(() => {})
   /** The account list as the daemon last reported it, without any preview. */
   const confirmed = useRef<AccountList | undefined>(undefined)
+  /** Changes shown ahead of the daemon. */
+  const previews = useRef<ReadonlyArray<Preview>>([])
+  /** Changes this dashboard made, and until when their events count as its own. */
+  const owned = useRef<Array<{ readonly change: OwnChange; until: number }>>([])
+  /** Bumped by each message on the stream. */
+  const messages = useRef(0)
+  /** Bumped as each change settles. */
+  const settles = useRef(0)
+  const handleEvent = useRef(onEvent)
+  useEffect(() => {
+    handleEvent.current = onEvent
+  }, [onEvent])
+  const refreshNow = useRef<() => void>(() => {})
+  const { checkInterval, requestTimeout, reopenDelay } = timing
+
+  /** Shows the daemon's list with every preview still pending laid over it. */
+  const show = useCallback((patch: Partial<DaemonView> = {}) => {
+    const base = confirmed.current
+    const accounts =
+      base === undefined ? undefined : previews.current.reduce((list, p) => p.apply(list), base)
+    setView((last) => ({ ...last, ...patch, accounts: accounts ?? last.accounts }))
+  }, [])
 
   useEffect(() => {
     let stopped = false
-    let timer: ReturnType<typeof setTimeout> | undefined
-    let current: AbortController | undefined
-    const refresh = async () => {
-      clearTimeout(timer)
-      // A refresh started now replaces one still waiting for its answer.
-      current?.abort()
+    let closeStream: (() => void) | undefined
+    /** True from the stream's first message until it fails. */
+    let streaming = false
+    let reopenTimer: ReturnType<typeof setTimeout> | undefined
+    let checkTimer: ReturnType<typeof setTimeout> | undefined
+    /** The check whose answer counts. */
+    let checking: object | undefined
+    /** How many times the stream has started from a snapshot. */
+    let snapshots = 0
+
+    /** Runs `request`, aborted after `requestTimeout` or once settled. */
+    const withDeadline = async <A>(request: (signal: AbortSignal) => Promise<A>) => {
       const controller = new AbortController()
-      current = controller
-      const changesAtStart = changes.current
       const deadline = setTimeout(() => controller.abort(), requestTimeout)
-      let outcome:
-        | { readonly ok: true; readonly accounts: AccountList; readonly info: DaemonInfo }
-        | { readonly ok: false; readonly error: unknown }
       try {
-        const [accounts, info] = await Promise.all([
-          client.accounts(controller.signal),
-          client.daemon(controller.signal),
-        ])
-        outcome = { ok: true, accounts, info }
-      } catch (error) {
-        outcome = { ok: false, error }
+        return await request(controller.signal)
       } finally {
         clearTimeout(deadline)
-        // Whichever request is still pending after a failure is not needed.
         controller.abort()
       }
-      if (stopped || current !== controller) return
-      if (!outcome.ok) {
-        setView((last) => ({ ...last, failure: asFailure(outcome.error) }))
-      } else if (pending.current === 0 && changes.current === changesAtStart) {
-        confirmed.current = outcome.accounts
-        setView({ accounts: outcome.accounts, info: outcome.info, failure: undefined })
-      }
-      timer = setTimeout(() => void refresh(), pollInterval)
     }
-    refreshNow.current = () => void refresh()
-    void refresh()
+
+    /** Asks for the daemon's info, and again every `checkInterval`; a new check replaces one waiting. */
+    const check = async () => {
+      clearTimeout(checkTimer)
+      const run = {}
+      checking = run
+      let outcome: { readonly info: DaemonInfo } | { readonly error: unknown }
+      try {
+        outcome = { info: await withDeadline((signal) => client.daemon(signal)) }
+      } catch (error) {
+        outcome = { error }
+      }
+      if (stopped || checking !== run) return
+      if ("info" in outcome) {
+        const { info } = outcome
+        setView((last) => ({ ...last, info, failure: streaming ? undefined : last.failure }))
+      } else {
+        const failure = asFailure(outcome.error)
+        setView((last) => ({ ...last, failure }))
+        // A stream that stopped bringing anything is opened again.
+        if (streaming) open()
+      }
+      checkTimer = setTimeout(() => void check(), checkInterval)
+    }
+
+    const open = () => {
+      closeStream?.()
+      clearTimeout(reopenTimer)
+      streaming = false
+      closeStream = client.events({
+        message: (message) => {
+          if (stopped) return
+          messages.current += 1
+          if (message.type === "snapshot") {
+            streaming = true
+            confirmed.current = message.list
+            show({ failure: undefined })
+            // A reconnection may be to a restarted daemon: its info changed.
+            snapshots += 1
+            if (snapshots > 1) void check()
+            return
+          }
+          if (confirmed.current === undefined) return
+          confirmed.current = applyEvent(confirmed.current, message)
+          show()
+          const now = Date.now()
+          owned.current = owned.current.filter((own) => own.until > now)
+          handleEvent.current(
+            message,
+            owned.current.some((own) => explains(own.change, message)),
+          )
+        },
+        error: (closed) => {
+          if (stopped) return
+          streaming = false
+          if (closed) {
+            // The daemon refused the stream. Until it takes it again, which
+            // is asked every `reopenDelay`, the page shows the list as the
+            // daemon answers it, or why it can't.
+            const messagesAtStart = messages.current
+            withDeadline((signal) => client.accounts(signal)).then(
+              (list) => {
+                if (stopped || messages.current !== messagesAtStart) return
+                confirmed.current = list
+                show({ failure: undefined })
+              },
+              (error: unknown) => {
+                if (!stopped) setView((last) => ({ ...last, failure: asFailure(error) }))
+              },
+            )
+            reopenTimer = setTimeout(open, reopenDelay)
+          } else {
+            setView((last) => ({ ...last, failure: { kind: "unreachable" } }))
+          }
+        },
+      })
+    }
+
+    refreshNow.current = () => {
+      const messagesAtStart = messages.current
+      const settledAtStart = settles.current
+      withDeadline((signal) => client.accounts(signal))
+        .then(
+          (list) => {
+            // Anything the stream brought meanwhile is at least as new.
+            if (!stopped && messages.current === messagesAtStart) confirmed.current = list
+          },
+          () => {},
+        )
+        .finally(() => {
+          if (stopped) return
+          previews.current = previews.current.filter(
+            (preview) => preview.settled === undefined || preview.settled > settledAtStart,
+          )
+          show()
+        })
+    }
+
+    open()
+    void check()
     return () => {
       stopped = true
       refreshNow.current = () => {}
-      clearTimeout(timer)
-      current?.abort()
+      closeStream?.()
+      clearTimeout(reopenTimer)
+      clearTimeout(checkTimer)
     }
-  }, [client, pollInterval, requestTimeout])
+  }, [client, checkInterval, requestTimeout, reopenDelay, show])
 
   const change = useCallback(
-    async <A>(preview: (list: AccountList) => AccountList, call: () => Promise<A>) => {
-      changes.current += 1
-      pending.current += 1
-      setView((last) =>
-        last.accounts === undefined ? last : { ...last, accounts: preview(last.accounts) },
-      )
+    async <A>(
+      preview: (list: AccountList) => AccountList,
+      call: () => Promise<A>,
+      own?: OwnChange,
+    ) => {
+      const entry: Preview = { apply: preview, settled: undefined }
+      const record = own === undefined ? undefined : { change: own, until: Infinity }
+      previews.current = [...previews.current, entry]
+      if (record !== undefined) owned.current = [...owned.current, record]
+      show()
       try {
         return await call()
       } catch (error) {
-        setView((last) => ({ ...last, accounts: confirmed.current ?? last.accounts }))
+        previews.current = previews.current.filter((p) => p !== entry)
+        show()
         throw error
       } finally {
-        changes.current += 1
-        pending.current -= 1
+        settles.current += 1
+        entry.settled = settles.current
+        if (record !== undefined) record.until = Date.now() + OWN_EVENT_WINDOW_MS
         refreshNow.current()
       }
     },
-    [],
+    [show],
   )
 
   const refresh = useCallback(() => refreshNow.current(), [])

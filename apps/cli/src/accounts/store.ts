@@ -23,12 +23,14 @@ import {
   type Provider,
   providerNames,
 } from "./account.ts"
+import { AccountChanges } from "./changes.ts"
 
 /**
  * The accounts the daemon holds (ADR-0004): one JSON file per account, mode
  * 0600, in `accounts/` under the data directory, both directories mode 0700.
  * The daemon is the only writer, and every write replaces a file atomically.
- * Nothing outside this module knows the files exist.
+ * Nothing outside this module knows the files exist. Each change raises
+ * `AccountChanges`' signal once it is written.
  */
 
 export class AccountStoreError extends Data.TaggedError("AccountStoreError")<{
@@ -147,8 +149,16 @@ export class AccountStore extends Context.Service<
       const path = yield* Path.Path
       const dataDir = yield* resolveDataDir
       const dir = path.join(dataDir, "accounts")
+      const changes = yield* AccountChanges
       // Writes are serialized, so two logins finishing together never pick the same priority.
       const writes = yield* Semaphore.make(1)
+      /**
+       * Runs a change that may span several files: once it starts, it
+       * finishes, and then says some account may have changed, even when it
+       * failed partway.
+       */
+      const changing = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        writes.withPermit(Effect.uninterruptible(effect)).pipe(Effect.ensuring(changes.signal))
 
       // A crash between writing a temp file and renaming it leaves the temp
       // file, credentials and all. The daemon is the only writer and holds
@@ -219,106 +229,97 @@ export class AccountStore extends Context.Service<
           { discard: true },
         )
 
-      const upsert = Effect.fn("AccountStore.upsert")(
-        function* (
-          identity: Identity,
-          credentials: Credentials,
-          options: { readonly label?: string | undefined },
-        ) {
-          const accounts = yield* list
-          const existing = accounts.find(
-            (account) =>
-              account.provider === identity.provider &&
-              account.providerAccountId === identity.providerAccountId,
-          )
-          if (existing !== undefined) {
-            // A fresh sign-in settles any refresh a stopped daemon left unrecorded.
-            const { refreshStartedAt: _settled, ...kept } = existing
-            const account: Account = {
-              ...kept,
-              email: identity.email,
-              plan: identity.plan,
-              label: options.label?.trim() ?? existing.label,
-              needsSignIn: false,
-              credentials,
-            }
-            yield* write(account)
-            return { account, created: false }
-          }
-
-          const pool = accounts.filter((account) => account.provider === identity.provider)
-          const now = yield* DateTime.now
+      const upsert = Effect.fn("AccountStore.upsert")(function* (
+        identity: Identity,
+        credentials: Credentials,
+        options: { readonly label?: string | undefined },
+      ) {
+        const accounts = yield* list
+        const existing = accounts.find(
+          (account) =>
+            account.provider === identity.provider &&
+            account.providerAccountId === identity.providerAccountId,
+        )
+        if (existing !== undefined) {
+          // A fresh sign-in settles any refresh a stopped daemon left unrecorded.
+          const { refreshStartedAt: _settled, ...kept } = existing
           const account: Account = {
-            id: randomBytes(8).toString("hex"),
-            provider: identity.provider,
-            providerAccountId: identity.providerAccountId,
+            ...kept,
             email: identity.email,
             plan: identity.plan,
-            label: options.label?.trim() ?? suggestLabel(identity.email, pool),
-            priority: Math.max(0, ...pool.map((other) => other.priority)) + 1,
-            enabled: true,
+            label: options.label?.trim() ?? existing.label,
             needsSignIn: false,
-            addedAt: DateTime.formatIso(now),
-            lastUsedAt: null,
             credentials,
           }
           yield* write(account)
-          const upserted: Upserted = { account, created: true }
-          return upserted
-        },
-        // A change spans several files: once it starts, it finishes.
-        (effect) => writes.withPermit(Effect.uninterruptible(effect)),
-      )
+          return { account, created: false }
+        }
 
-      const updateSettings = Effect.fn("AccountStore.updateSettings")(
-        function* (id: string, settings: AccountSettings) {
-          const accounts = yield* list
-          const existing = accounts.find((account) => account.id === id)
-          if (existing === undefined) return yield* new AccountNotFound({ id })
-          const account: Account = {
-            ...existing,
-            label: settings.label?.trim() ?? existing.label,
-            enabled: settings.enabled ?? existing.enabled,
-          }
-          if (settings.priority === undefined) {
-            yield* write(account)
-            return account
-          }
+        const pool = accounts.filter((account) => account.provider === identity.provider)
+        const now = yield* DateTime.now
+        const account: Account = {
+          id: randomBytes(8).toString("hex"),
+          provider: identity.provider,
+          providerAccountId: identity.providerAccountId,
+          email: identity.email,
+          plan: identity.plan,
+          label: options.label?.trim() ?? suggestLabel(identity.email, pool),
+          priority: Math.max(0, ...pool.map((other) => other.priority)) + 1,
+          enabled: true,
+          needsSignIn: false,
+          addedAt: DateTime.formatIso(now),
+          lastUsedAt: null,
+          credentials,
+        }
+        yield* write(account)
+        const upserted: Upserted = { account, created: true }
+        return upserted
+      }, changing)
 
-          const pool = accounts.filter((other) => other.provider === account.provider)
-          const position = settings.priority
-          if (position < 1 || position > pool.length) {
-            return yield* new PriorityOutOfRange({
-              provider: account.provider,
-              poolSize: pool.length,
-            })
-          }
-          const others = pool.filter((other) => other.id !== id)
-          const moved: Account = { ...account, priority: position }
-          yield* write(moved)
-          yield* renumber([...others.slice(0, position - 1), moved, ...others.slice(position - 1)])
-          return moved
-        },
-        // A change spans several files: once it starts, it finishes.
-        (effect) => writes.withPermit(Effect.uninterruptible(effect)),
-      )
-
-      const remove = Effect.fn("AccountStore.remove")(
-        function* (id: string) {
-          const accounts = yield* list
-          const account = accounts.find((other) => other.id === id)
-          if (account === undefined) return yield* new AccountNotFound({ id })
-          yield* fs
-            .remove(path.join(dir, `${id}.json`))
-            .pipe(Effect.mapError(storeError(`Could not remove account ${id} from ${dir}`)))
-          yield* renumber(
-            accounts.filter((other) => other.provider === account.provider && other.id !== id),
-          )
+      const updateSettings = Effect.fn("AccountStore.updateSettings")(function* (
+        id: string,
+        settings: AccountSettings,
+      ) {
+        const accounts = yield* list
+        const existing = accounts.find((account) => account.id === id)
+        if (existing === undefined) return yield* new AccountNotFound({ id })
+        const account: Account = {
+          ...existing,
+          label: settings.label?.trim() ?? existing.label,
+          enabled: settings.enabled ?? existing.enabled,
+        }
+        if (settings.priority === undefined) {
+          yield* write(account)
           return account
-        },
-        // A change spans several files: once it starts, it finishes.
-        (effect) => writes.withPermit(Effect.uninterruptible(effect)),
-      )
+        }
+
+        const pool = accounts.filter((other) => other.provider === account.provider)
+        const position = settings.priority
+        if (position < 1 || position > pool.length) {
+          return yield* new PriorityOutOfRange({
+            provider: account.provider,
+            poolSize: pool.length,
+          })
+        }
+        const others = pool.filter((other) => other.id !== id)
+        const moved: Account = { ...account, priority: position }
+        yield* write(moved)
+        yield* renumber([...others.slice(0, position - 1), moved, ...others.slice(position - 1)])
+        return moved
+      }, changing)
+
+      const remove = Effect.fn("AccountStore.remove")(function* (id: string) {
+        const accounts = yield* list
+        const account = accounts.find((other) => other.id === id)
+        if (account === undefined) return yield* new AccountNotFound({ id })
+        yield* fs
+          .remove(path.join(dir, `${id}.json`))
+          .pipe(Effect.mapError(storeError(`Could not remove account ${id} from ${dir}`)))
+        yield* renumber(
+          accounts.filter((other) => other.provider === account.provider && other.id !== id),
+        )
+        return account
+      }, changing)
 
       // A change that failed between its file writes can leave a pool with a
       // gap or two accounts at one priority. Renumber every pool in its
@@ -360,18 +361,20 @@ export class AccountStore extends Context.Service<
           return Option.some(account)
         },
         (effect) =>
-          writes.withPermit(
-            effect.pipe(
-              Effect.catchTag("PlatformError", (cause) =>
-                Effect.fail(
-                  new AccountStoreError({
-                    message: `Could not read the accounts in ${dir}`,
-                    cause,
-                  }),
+          writes
+            .withPermit(
+              effect.pipe(
+                Effect.catchTag("PlatformError", (cause) =>
+                  Effect.fail(
+                    new AccountStoreError({
+                      message: `Could not read the accounts in ${dir}`,
+                      cause,
+                    }),
+                  ),
                 ),
               ),
-            ),
-          ),
+            )
+            .pipe(Effect.ensuring(changes.signal)),
       )
 
       const markUsed = Effect.fn("AccountStore.markUsed")(
@@ -384,18 +387,20 @@ export class AccountStore extends Context.Service<
           yield* write({ ...stored.value, lastUsedAt: at })
         },
         (effect) =>
-          writes.withPermit(
-            effect.pipe(
-              Effect.catchTag("PlatformError", (cause) =>
-                Effect.fail(
-                  new AccountStoreError({
-                    message: `Could not read the accounts in ${dir}`,
-                    cause,
-                  }),
+          writes
+            .withPermit(
+              effect.pipe(
+                Effect.catchTag("PlatformError", (cause) =>
+                  Effect.fail(
+                    new AccountStoreError({
+                      message: `Could not read the accounts in ${dir}`,
+                      cause,
+                    }),
+                  ),
                 ),
               ),
-            ),
-          ),
+            )
+            .pipe(Effect.ensuring(changes.signal)),
       )
 
       return AccountStore.of({ list, upsert, updateSettings, remove, updateCredentials, markUsed })

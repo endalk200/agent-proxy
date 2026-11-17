@@ -33,6 +33,11 @@ export interface SandboxDaemon {
   /** Runs the built `agent-proxy` with `args` in the sandbox and returns its stdout. */
   readonly agentProxy: (args: ReadonlyArray<string>) => Promise<string>
   readonly seed: (account: SeededAccount) => Promise<void>
+  /**
+   * Pins the daemon's listen address to the port it got, so a restart comes
+   * back at the same address, where an open dashboard reconnects.
+   */
+  readonly keepPort: () => Promise<void>
   /** Stops the daemon and removes the sandbox. */
   readonly dispose: () => Promise<void>
 }
@@ -113,5 +118,12 @@ export const startSandboxDaemon = async (
     await run(Effect.flatMap(FileSystem.FileSystem, (fs) => fs.remove(root, { recursive: true })))
   }
 
-  return { address, agentProxy, seed, dispose }
+  const keepPort = () =>
+    run(
+      Effect.flatMap(FileSystem.FileSystem, (fs) =>
+        fs.writeFileString(sandbox.configFile, `listen = "${new URL(address).host}"\n`),
+      ),
+    )
+
+  return { address, agentProxy, seed, keepPort, dispose }
 }

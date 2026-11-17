@@ -996,6 +996,68 @@ a.linkbtn {
   /* Dimmed, but still readable: the status column says Disabled. */
   opacity: 0.75;
 }
+/* Live updates: a row the daemon just changed flashes in its new status
+   colour, a tint with an edge on the left that fades out. Each flash flips
+   data-flash-turn between two identical animations, so a second one replays. */
+.row {
+  --flash: var(--accent);
+  --flash-soft: var(--accent-soft);
+}
+.row.is-active {
+  --flash: var(--green);
+  --flash-soft: var(--green-soft);
+}
+.row.is-cooling-down {
+  --flash: var(--amber);
+  --flash-soft: var(--amber-soft);
+}
+.row.is-needs-sign-in {
+  --flash: var(--red);
+  --flash-soft: var(--red-soft);
+}
+.row.is-disabled {
+  --flash: var(--faint);
+  --flash-soft: var(--subtle);
+}
+.row[data-flash-turn="0"] > td {
+  animation: row-flash-0 2.6s var(--ease) both;
+}
+.row[data-flash-turn="1"] > td {
+  animation: row-flash-1 2.6s var(--ease) both;
+}
+.row[data-flash-turn="0"] > td:first-child {
+  animation-name: row-flash-edge-0;
+}
+.row[data-flash-turn="1"] > td:first-child {
+  animation-name: row-flash-edge-1;
+}
+@keyframes row-flash-0 {
+  0%,
+  45% {
+    background-color: var(--flash-soft);
+  }
+}
+@keyframes row-flash-1 {
+  0%,
+  45% {
+    background-color: var(--flash-soft);
+  }
+}
+@keyframes row-flash-edge-0 {
+  0%,
+  45% {
+    background-color: var(--flash-soft);
+    box-shadow: inset 3px 0 0 var(--flash);
+  }
+}
+@keyframes row-flash-edge-1 {
+  0%,
+  45% {
+    background-color: var(--flash-soft);
+    box-shadow: inset 3px 0 0 var(--flash);
+  }
+}
+
 .used {
   font-size: 12.5px;
   color: var(--muted);
@@ -2341,6 +2403,12 @@ a.linkbtn {
 .notice.is-error .notice-icon {
   color: var(--red);
 }
+.notice.is-warn .notice-icon {
+  color: var(--amber);
+}
+.notice.is-ok .notice-icon {
+  color: var(--green);
+}
 .notice-body {
   flex: 1;
   min-width: 0;
@@ -2454,5 +2522,12 @@ a.linkbtn {
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+  /* A flash holds still for as long as it lasts. */
+  .row[data-flash] > td {
+    background-color: var(--flash-soft);
+  }
+  .row[data-flash] > td:first-child {
+    box-shadow: inset 3px 0 0 var(--flash);
   }
 }

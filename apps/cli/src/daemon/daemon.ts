@@ -1,8 +1,9 @@
 import { BunHttpServer } from "@effect/platform-bun"
-import { Clock, Data, DateTime, Effect, FileSystem, Layer, Logger } from "effect"
+import { Clock, Data, DateTime, Deferred, Effect, FileSystem, Layer, Logger } from "effect"
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http"
 
 import packageJson from "../../package.json" with { type: "json" }
+import { AccountChanges } from "../accounts/changes.ts"
 import { CredentialKeeper } from "../accounts/keeper.ts"
 import { Router } from "../accounts/router.ts"
 import { AccountStore } from "../accounts/store.ts"
@@ -17,8 +18,10 @@ import { CodexLogin, CodexTokens } from "../providers/codex.ts"
 import { claudeRoutes } from "../proxy/claude-routes.ts"
 import { codexRoutes } from "../proxy/codex-routes.ts"
 import { ProxyKey } from "../proxy/proxy-key.ts"
+import { AccountEvents } from "./account-events.ts"
 import { accountRoutes } from "./accounts-routes.ts"
 import { dashboardRoutes } from "./dashboard.ts"
+import { eventRoutes } from "./events-routes.ts"
 import { localOnly } from "./http.ts"
 import { keyRoutes } from "./key-routes.ts"
 import { acquireLock, removeStateFile, stateFiles, writeStateFile } from "./state.ts"
@@ -57,10 +60,13 @@ const routes = (info: {
   readonly address: string
   readonly listenHost: string
   readonly startedAt: DateTime.Utc
+  /** Done when the daemon starts shutting down. */
+  readonly closing: Deferred.Deferred<void>
 }) =>
   HttpRouter.use((router) =>
     Effect.all([
       accountRoutes(router, localOnly(info.listenHost)),
+      eventRoutes(router, localOnly(info.listenHost), info.closing),
       keyRoutes(router, localOnly(info.listenHost)),
       claudeRoutes(router),
       codexRoutes(router),
@@ -149,17 +155,22 @@ export const startDaemon = Effect.gen(function* () {
     const port = "port" in server.address ? server.address.port : config.listen.port
     const address = clientAddress(config.listen.host, port)
     const startedAt = yield* DateTime.now
+    const closing = yield* Deferred.make<void>()
 
     yield* Layer.build(
-      HttpRouter.serve(routes({ pid, address, listenHost: config.listen.host, startedAt }), {
-        disableLogger: true,
-        disableListenLog: true,
-      }).pipe(
+      HttpRouter.serve(
+        routes({ pid, address, listenHost: config.listen.host, startedAt, closing }),
+        {
+          disableLogger: true,
+          disableListenLog: true,
+        },
+      ).pipe(
         Layer.provide(
           Layer.mergeAll(
-            Layer.mergeAll(Logins.layer, CredentialKeeper.layer).pipe(
+            Layer.mergeAll(Logins.layer, CredentialKeeper.layer, AccountEvents.layer).pipe(
               Layer.provideMerge(Router.layer),
               Layer.provideMerge(AccountStore.layer),
+              Layer.provideMerge(AccountChanges.layer),
               Layer.provide(
                 Layer.mergeAll(
                   ClaudeLogin.layer,
@@ -177,6 +188,9 @@ export const startDaemon = Effect.gen(function* () {
         Layer.provide(Layer.succeed(HttpServer.HttpServer, server)),
       ),
     ).pipe(logToFile)
+    // Runs before the listener drains, so open event streams end rather than
+    // holding up shutdown for the whole grace period.
+    yield* Effect.addFinalizer(() => Deferred.succeed(closing, undefined))
 
     yield* writeStateFile(stateDir, { pid, port, address })
     yield* Effect.logInfo("daemon started").pipe(

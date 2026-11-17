@@ -23,7 +23,8 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-const show = (daemon: FakeDaemon) => render(<App fetch={daemon.fetch} pollInterval={20} />)
+const show = (daemon: FakeDaemon) =>
+  render(<App fetch={daemon.fetch} openEvents={daemon.openEvents} />)
 
 const claudeTable = async () =>
   within(await screen.findByRole("region", { name: "Claude" })).getByRole("table", {

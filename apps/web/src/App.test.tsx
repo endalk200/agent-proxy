@@ -10,7 +10,8 @@ import { rowsOf } from "./test/queries.ts"
 
 afterEach(cleanup)
 
-const show = (daemon: FakeDaemon) => render(<App fetch={daemon.fetch} pollInterval={20} />)
+const show = (daemon: FakeDaemon) =>
+  render(<App fetch={daemon.fetch} openEvents={daemon.openEvents} reopenDelay={20} />)
 
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
 
@@ -261,7 +262,14 @@ describe("when the daemon stops answering", () => {
       accounts: [account({ id: "a1", label: "Work" })],
       pools: [{ provider: "claude", newSessionsAccountId: "a1" }],
     })
-    render(<App fetch={daemon.fetch} pollInterval={20} requestTimeout={50} />)
+    render(
+      <App
+        fetch={daemon.fetch}
+        openEvents={daemon.openEvents}
+        checkInterval={20}
+        requestTimeout={50}
+      />,
+    )
     await screen.findByRole("table", { name: "Claude accounts" })
 
     daemon.stalled = true

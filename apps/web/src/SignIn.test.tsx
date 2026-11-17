@@ -43,9 +43,8 @@ const twoAccounts = () =>
   })
 
 const show = (daemon: FakeDaemon) => {
-  // A long poll, so the page shows a sign-in because the dashboard asked
-  // again once it finished; logins are polled quickly so tests stay fast.
-  render(<App fetch={daemon.fetch} pollInterval={60_000} loginPollInterval={20} />)
+  // Logins are polled quickly so tests stay fast.
+  render(<App fetch={daemon.fetch} openEvents={daemon.openEvents} loginPollInterval={20} />)
 }
 
 const stored = (daemon: FakeDaemon) =>
@@ -320,7 +319,12 @@ describe("review fixes", () => {
     daemon.signInAs = { providerAccountId: "acct-new", email: "new@example.com", plan: "Pro" }
     daemon.stallLoginPolls = 1
     render(
-      <App fetch={daemon.fetch} pollInterval={60_000} loginPollInterval={20} requestTimeout={50} />,
+      <App
+        fetch={daemon.fetch}
+        openEvents={daemon.openEvents}
+        loginPollInterval={20}
+        requestTimeout={50}
+      />,
     )
     await waitingFor(daemon, "Claude")
     daemon.redirect()
@@ -491,7 +495,7 @@ describe("when a sign-in goes wrong", () => {
       if (input === "/api/logins" && init?.method === "POST") await held.promise
       return daemon.fetch(input, init)
     }
-    render(<App fetch={slowStart} pollInterval={60_000} loginPollInterval={20} />)
+    render(<App fetch={slowStart} openEvents={daemon.openEvents} loginPollInterval={20} />)
     const dialog = await startClaude()
     await within(dialog).findByText("Starting sign-in…")
 
