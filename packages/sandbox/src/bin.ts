@@ -7,6 +7,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 import * as Browse from "./Browse.ts"
 import { runCli } from "./Cli.ts"
+import * as Daemon from "./Daemon.ts"
 import * as Doctor from "./Doctor.ts"
 import * as Processes from "./Processes.ts"
 import { defaultRepo as repo } from "./Repo.ts"
@@ -273,6 +274,7 @@ const browse = Command.make(
 )
 
 const tearDown = Effect.fn("tearDown")(function* (run: Runs.Run) {
+  yield* Console.log(`daemon   ${yield* Daemon.stop(repo, run.sandbox)}`)
   for (const record of run.manifest.processes) {
     const outcome = yield* Processes.stop(record)
     yield* Console.log(`${record.name.padEnd(8)} pid ${record.pid}: ${outcome}`)
