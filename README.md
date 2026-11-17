@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code at the daemon (`agent-proxy connect claude-code`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts and Codex from your Codex (ChatGPT) accounts, and a dashboard of your accounts at its own address (`http://127.0.0.1:8318/` by default); `connect codex` and opencode come later.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code and Codex at the daemon (`agent-proxy connect claude-code | codex`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts and Codex from your Codex (ChatGPT) accounts, and a dashboard of your accounts at its own address (`http://127.0.0.1:8318/` by default); opencode comes later.
 
 ## Requirements
 
@@ -137,7 +137,14 @@ Each request then goes to Claude as your highest-priority Active Claude account.
 
 ## Serving Codex
 
-Codex spends only your Codex accounts, and Claude Code only your Claude accounts. Until `agent-proxy connect codex` exists, add a provider to `~/.codex/config.toml` by hand:
+Codex spends only your Codex accounts, and Claude Code only your Claude accounts. Point Codex at the daemon:
+
+```sh
+agent-proxy connect codex          # show the change, ask, back up, write
+agent-proxy connect codex --print  # print the settings only; change nothing
+```
+
+`connect codex` sets `model_provider` and adds a provider table to `~/.codex/config.toml` (or `$CODEX_HOME/config.toml` when `CODEX_HOME` is set, as Codex reads it):
 
 ```toml
 model_provider = "agent-proxy"
@@ -148,6 +155,8 @@ base_url = "http://127.0.0.1:8318/backend-api/codex" # must end in /backend-api/
 wire_api = "responses"
 auth = { command = "agent-proxy", args = ["key"] }
 ```
+
+The rest of the file stays byte for byte, comments included. A `model_provider` naming another provider is replaced in place, and an existing `[model_providers.agent-proxy]` table is replaced whole; the diff shows both. It asks, backs up and writes as `connect claude-code` does, keeps a linked file a link, and refuses a file that is not valid TOML. A file it cannot change without changing its meaning (the provider in dotted keys, a subtable of it, a multi-line string with a line that starts with `[`) is refused and left alone; add the `--print` settings by hand, with `model_provider` above the first table. The file holds no secret: Codex fetches the key by running `agent-proxy key`.
 
 Leave `supports_websockets` unset. The daemon serves `POST /responses` (streamed), `GET /models` and `POST /alpha/search` under `/backend-api/codex` from `chatgpt.com`, as your highest-priority Active Codex account: it puts that account's token in `Authorization` and its ChatGPT workspace in `chatgpt-account-id`, and passes everything else through, the `x-codex-*` limit headers included. It refuses a WebSocket upgrade with 426, and Codex falls back to HTTP. When the backend rejects the account's token, the daemon refreshes it once and retries on the same account. opencode's OpenAI Responses provider works with the same base URL and the key as its `apiKey`.
 
