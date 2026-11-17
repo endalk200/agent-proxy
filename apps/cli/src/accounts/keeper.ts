@@ -7,13 +7,17 @@ import {
   Fiber,
   Layer,
   Option,
+  Queue,
   Ref,
-  Schedule,
   Semaphore,
 } from "effect"
 
 import { ClaudeTokens } from "../providers/claude.ts"
-import type { RefreshError, TokenAdapter } from "../providers/provider.ts"
+import {
+  type RefreshError,
+  RefreshOutcomeUnknown,
+  type TokenAdapter,
+} from "../providers/provider.ts"
 import type { Account, Credentials, Provider } from "./account.ts"
 import { AccountStore, type AccountStoreError } from "./store.ts"
 
@@ -169,6 +173,18 @@ export class CredentialKeeper extends Context.Service<
               const account = (yield* store.list).find((candidate) => candidate.id === id)
               if (account === undefined || account.needsSignIn) return Option.none<Account>()
               const now = yield* Clock.currentTimeMillis
+              // Under the lock no refresh of this account is running, so a
+              // marker means one whose outcome was never stored, such as one
+              // whose new tokens could not be saved: never replay it.
+              if (account.refreshStartedAt !== undefined) {
+                return yield* failed(
+                  account,
+                  new RefreshOutcomeUnknown({
+                    reason: "An earlier refresh never stored its outcome.",
+                  }),
+                  now,
+                )
+              }
               const retry = (yield* Ref.get(retryAt)).get(id)
               if (!wanted(account) || (retry !== undefined && now < retry)) {
                 return Option.some(account)
@@ -228,7 +244,18 @@ export class CredentialKeeper extends Context.Service<
         }
       }).pipe(Effect.ignore({ log: "Error", message: "could not check accounts for refresh" }))
 
-      yield* check.pipe(Effect.repeat(Schedule.spaced(CHECK_EVERY)), Effect.forkScoped)
+      // A ticker asks for a check every minute, and a checker runs one check
+      // per ask. A tick while a check is still running asks for one more
+      // check after it rather than being lost, so each check sees the time of
+      // the latest tick at least, however long the store takes to read.
+      const ticks = yield* Queue.sliding<void>(1)
+      yield* Queue.offer(ticks, undefined)
+      yield* Effect.sleep(CHECK_EVERY).pipe(
+        Effect.andThen(Queue.offer(ticks, undefined)),
+        Effect.forever,
+        Effect.forkScoped,
+      )
+      yield* Queue.take(ticks).pipe(Effect.andThen(check), Effect.forever, Effect.forkScoped)
 
       return CredentialKeeper.of({ credentialsFor, credentialsAfterRejection })
     }),
