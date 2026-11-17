@@ -13,6 +13,7 @@ import {
 } from "effect"
 
 import { ClaudeTokens } from "../providers/claude.ts"
+import { CodexTokens } from "../providers/codex.ts"
 import {
   type RefreshError,
   RefreshOutcomeUnknown,
@@ -76,7 +77,10 @@ export class CredentialKeeper extends Context.Service<
     CredentialKeeper,
     Effect.gen(function* () {
       const store = yield* AccountStore
-      const adapters: Readonly<Record<Provider, TokenAdapter>> = { claude: yield* ClaudeTokens }
+      const adapters: Readonly<Record<Provider, TokenAdapter>> = {
+        claude: yield* ClaudeTokens,
+        codex: yield* CodexTokens,
+      }
       const scope = yield* Effect.scope
       const locks = new Map<string, Semaphore.Semaphore>()
       /** Accounts whose last refresh did not happen, and when to try again. */

@@ -1,11 +1,14 @@
 import { Schema } from "effect"
 
 /** The providers whose accounts agent-proxy can hold. */
-export const Provider = Schema.Literals(["claude"])
+export const Provider = Schema.Literals(["claude", "codex"])
 export type Provider = typeof Provider.Type
 
 /** Each provider's name as the owner reads it. */
-export const providerNames: Readonly<Record<Provider, string>> = { claude: "Claude" }
+export const providerNames: Readonly<Record<Provider, string>> = {
+  claude: "Claude",
+  codex: "Codex",
+}
 
 /** A provider's OAuth tokens for one account. */
 export const Credentials = Schema.Struct({

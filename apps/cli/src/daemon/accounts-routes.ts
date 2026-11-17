@@ -23,6 +23,8 @@ const pathId = Effect.map(HttpRouter.params, (params) => params["id"] ?? "")
 const badRequest = (expected: string) => () =>
   Effect.succeed(apiError(400, `Expected a JSON body ${expected}.`))
 
+const startLoginShape = '{ "provider": "claude" | "codex", "label"?: string }'
+
 const updateAccountShape = '{ "label"?: string, "priority"?: integer, "enabled"?: boolean }'
 
 /** Adds the routes to `router`, each served only to clients `localOnly` lets through. */
@@ -86,8 +88,8 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
           return HttpServerResponse.jsonUnsafe(login, { status: 201 })
         }).pipe(
           Effect.catchTags({
-            SchemaError: badRequest('{ "provider": "claude", "label"?: string }'),
-            HttpServerError: badRequest('{ "provider": "claude", "label"?: string }'),
+            SchemaError: badRequest(startLoginShape),
+            HttpServerError: badRequest(startLoginShape),
             LoginStartError: (error) => Effect.succeed(apiError(409, error.message)),
           }),
         ),

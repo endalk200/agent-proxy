@@ -23,6 +23,7 @@ import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
+import { carol, dave, fakeCodex } from "../support/fake-codex.ts"
 
 // `accounts` and `accounts add`, driven in-process through the real command
 // tree against an in-process daemon (`daemon run`) whose Claude logins go to a
@@ -76,6 +77,7 @@ const makeHome = (
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
+    const codex = yield* fakeCodex
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-accounts-cli-" })
     yield* fs.makeDirectory(`${root}/config/agent-proxy`, { recursive: true })
     yield* fs.writeFileString(`${root}/config/agent-proxy/config.toml`, 'listen = "127.0.0.1:0"\n')
@@ -87,7 +89,8 @@ const makeHome = (
       ...(options.endpoints === "env"
         ? {
             AGENT_PROXY_PROVIDER_ENDPOINTS:
-              options.endpointsJson ?? JSON.stringify({ claude: claude.endpoints }),
+              options.endpointsJson ??
+              JSON.stringify({ claude: claude.endpoints, codex: codex.endpoints }),
           }
         : {}),
     }
@@ -110,7 +113,7 @@ const makeHome = (
             ? Effect.provide(ProviderEndpoints.layer)
             : Effect.provideService(
                 ProviderEndpoints,
-                ProviderEndpoints.of({ claude: claude.endpoints }),
+                ProviderEndpoints.of({ claude: claude.endpoints, codex: codex.endpoints }),
               ),
           Effect.provideService(Console.Console, console),
           Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
@@ -174,7 +177,7 @@ const makeHome = (
       return (yield* fs.exists(dir)) ? (yield* fs.readDirectory(dir)).toSorted() : []
     })
 
-    return { cli, runDaemon, printed, typed, add, list, order, fails, accountFiles }
+    return { codex, cli, runDaemon, printed, typed, add, list, order, fails, accountFiles }
   })
 
 layer(
@@ -210,7 +213,7 @@ layer(
         const home = yield* makeHome(yield* fakeClaude)
         yield* home.runDaemon
         expect(yield* home.cli(["accounts"])).toBe(
-          "No accounts yet. Add one with `agent-proxy accounts add claude`.",
+          "No accounts yet. Add one with `agent-proxy accounts add claude` or `agent-proxy accounts add codex`.",
         )
       }),
     ),
@@ -348,6 +351,73 @@ layer(
         expect(output).toContain("After you sign in, the browser is sent to http://localhost:")
         expect(output).toMatch(
           /Added Claude account "alice" \(alice@example\.com, Max 20x\) at priority 1\.$/,
+        )
+      }),
+    ),
+  )
+
+  it.effect("accounts add codex signs in through the browser and adds the account", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.runDaemon
+        home.codex.signInAs(carol)
+        const output = yield* home.cli(["accounts", "add", "codex"])
+        expect(output).toContain("Opening your browser to sign in to Codex.")
+        expect(output).toMatch(/^ {2}http:\/\/127\.0\.0\.1:\d+\/oauth\/authorize\?/m)
+        expect(output).toMatch(
+          /Added Codex account "carol" \(carol@example\.com, Pro\) at priority 1\.$/,
+        )
+
+        const again = yield* home.cli(["accounts", "add", "codex", "--label", "Work"])
+        expect(again).toMatch(
+          /Signed in again to Codex account "Work" \(carol@example\.com, Pro\); its credentials are updated\.$/,
+        )
+      }),
+    ),
+  )
+
+  it.effect("accounts add codex --no-browser prints the URL and takes the pasted callback", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.runDaemon
+        home.codex.signInAs(dave)
+        const command = yield* Effect.forkScoped(
+          home.cli(["accounts", "add", "codex", "--no-browser"], browserThatIdles),
+        )
+        const url = yield* home.printed(/http:\/\/127\.0\.0\.1:\d+\/oauth\/authorize\?\S+/)
+        yield* home.printed(/paste it here:$/)
+        yield* Queue.offer(home.typed, yield* signInWithoutReachingDaemon(url))
+
+        const output = yield* Fiber.join(command)
+        expect(output).toMatch(
+          /After you sign in, the browser is sent to http:\/\/127\.0\.0\.1:\d+\/auth\/callback\./,
+        )
+        expect(output).toMatch(
+          /Added Codex account "dave" \(dave@example\.com, Plus\) at priority 1\.$/,
+        )
+      }),
+    ),
+  )
+
+  it.effect("accounts lists Claude and Codex accounts, and who gets each pool's new sessions", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.runDaemon
+        home.codex.signInAs(carol)
+        yield* home.cli(["accounts", "add", "codex"])
+        yield* home.add(alice)
+        expect(yield* home.cli(["accounts"])).toBe(
+          [
+            "PROVIDER  LABEL  EMAIL              PLAN     PRIORITY  STATUS",
+            "claude    alice  alice@example.com  Max 20x  1         Active",
+            "codex     carol  carol@example.com  Pro      1         Active",
+            "",
+            'New Claude sessions go to "alice".',
+            'New Codex sessions go to "carol".',
+          ].join("\n"),
         )
       }),
     ),

@@ -73,7 +73,7 @@ layer(BunServices.layer)("agent-proxy accounts (built binary)", (it) => {
           const { agentProxy, seed } = yield* sandboxed
           expect((yield* agentProxy(["daemon", "start"])).exitCode).toBe(0)
           expect((yield* agentProxy(["accounts"])).stdout.trim()).toBe(
-            "No accounts yet. Add one with `agent-proxy accounts add claude`.",
+            "No accounts yet. Add one with `agent-proxy accounts add claude` or `agent-proxy accounts add codex`.",
           )
 
           yield* seed({

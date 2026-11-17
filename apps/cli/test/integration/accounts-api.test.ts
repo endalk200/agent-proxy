@@ -7,7 +7,7 @@ import { TestClock } from "effect/testing"
 import { AccountList, LoginView } from "../../src/daemon/api.ts"
 import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
-import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
+import { ProviderEndpoints, realEndpoints } from "../../src/providers/endpoints.ts"
 import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
 
 // The daemon's account and login API, in-process: a real listener on loopback,
@@ -35,7 +35,10 @@ const makeHome = (claude: FakeClaude, options: { readonly dataHome?: string } = 
     const accountsDir = `${dataDir}/accounts`
     const daemon = yield* startDaemon.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
-      Effect.provideService(ProviderEndpoints, ProviderEndpoints.of({ claude: claude.endpoints })),
+      Effect.provideService(
+        ProviderEndpoints,
+        ProviderEndpoints.of({ ...realEndpoints, claude: claude.endpoints }),
+      ),
     )
 
     /** Calls the daemon API the way the CLI and dashboard do: JSON in, JSON out. */

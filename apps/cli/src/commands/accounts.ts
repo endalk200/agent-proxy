@@ -11,7 +11,7 @@ import {
 import { Argument, Command, Flag } from "effect/cli"
 import type { HttpClient } from "effect/http"
 
-import { type AccountStatus, providerNames } from "../accounts/account.ts"
+import { type AccountStatus, Provider, providerNames } from "../accounts/account.ts"
 import { Browser } from "../browser.ts"
 import type { AccountList, AccountView, LoginView, PoolView } from "../daemon/api.ts"
 import {
@@ -46,7 +46,7 @@ const formatPool = (pool: PoolView, accounts: ReadonlyArray<AccountView>) => {
 /** The accounts as an aligned table and who gets each pool's new sessions, or how to add the first one. */
 export const formatAccounts = ({ accounts, pools }: AccountList): string => {
   if (accounts.length === 0) {
-    return "No accounts yet. Add one with `agent-proxy accounts add claude`."
+    return "No accounts yet. Add one with `agent-proxy accounts add claude` or `agent-proxy accounts add codex`."
   }
   const rows = [
     ["PROVIDER", "LABEL", "EMAIL", "PLAN", "PRIORITY", "STATUS"],
@@ -159,7 +159,7 @@ const report = (login: LoginView, name: string) => {
 const add = Command.make(
   "add",
   {
-    provider: Argument.Literals("provider", ["claude"]).pipe(
+    provider: Argument.Literals("provider", Provider.literals).pipe(
       Argument.withDescription("The provider to sign in to"),
     ),
     label: Flag.String("label").pipe(
