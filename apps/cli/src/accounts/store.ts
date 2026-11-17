@@ -222,7 +222,7 @@ export class AccountStore extends Context.Service<
               ...existing,
               email: identity.email,
               plan: identity.plan,
-              label: options.label ?? existing.label,
+              label: options.label?.trim() ?? existing.label,
               needsSignIn: false,
               credentials,
             }
@@ -238,7 +238,7 @@ export class AccountStore extends Context.Service<
             providerAccountId: identity.providerAccountId,
             email: identity.email,
             plan: identity.plan,
-            label: options.label ?? suggestLabel(identity.email, pool),
+            label: options.label?.trim() ?? suggestLabel(identity.email, pool),
             priority: Math.max(0, ...pool.map((other) => other.priority)) + 1,
             enabled: true,
             needsSignIn: false,
@@ -250,7 +250,8 @@ export class AccountStore extends Context.Service<
           const upserted: Upserted = { account, created: true }
           return upserted
         },
-        (effect) => writes.withPermit(effect),
+        // A change spans several files: once it starts, it finishes.
+        (effect) => writes.withPermit(Effect.uninterruptible(effect)),
       )
 
       const updateSettings = Effect.fn("AccountStore.updateSettings")(
@@ -260,7 +261,7 @@ export class AccountStore extends Context.Service<
           if (existing === undefined) return yield* new AccountNotFound({ id })
           const account: Account = {
             ...existing,
-            label: settings.label ?? existing.label,
+            label: settings.label?.trim() ?? existing.label,
             enabled: settings.enabled ?? existing.enabled,
           }
           if (settings.priority === undefined) {
@@ -282,7 +283,8 @@ export class AccountStore extends Context.Service<
           yield* renumber([...others.slice(0, position - 1), moved, ...others.slice(position - 1)])
           return moved
         },
-        (effect) => writes.withPermit(effect),
+        // A change spans several files: once it starts, it finishes.
+        (effect) => writes.withPermit(Effect.uninterruptible(effect)),
       )
 
       const remove = Effect.fn("AccountStore.remove")(
@@ -298,7 +300,26 @@ export class AccountStore extends Context.Service<
           )
           return account
         },
-        (effect) => writes.withPermit(effect),
+        // A change spans several files: once it starts, it finishes.
+        (effect) => writes.withPermit(Effect.uninterruptible(effect)),
+      )
+
+      // A change that failed between its file writes can leave a pool with a
+      // gap or two accounts at one priority. Renumber every pool in its
+      // listed order, so priorities are 1, 2, 3… again.
+      yield* list.pipe(
+        Effect.flatMap((all) =>
+          Effect.forEach(
+            [...new Set(all.map((account) => account.provider))],
+            (provider) => renumber(all.filter((account) => account.provider === provider)),
+            { discard: true },
+          ),
+        ),
+        Effect.catch((cause) =>
+          Effect.logWarning("could not repair account priorities").pipe(
+            Effect.annotateLogs({ dir, cause: cause.message }),
+          ),
+        ),
       )
 
       return AccountStore.of({ list, upsert, updateSettings, remove })

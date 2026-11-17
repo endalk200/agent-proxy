@@ -23,8 +23,11 @@ export const writeFileAtomic = (file: string, content: string) =>
         yield* handle.writeAll(new TextEncoder().encode(content))
         yield* handle.sync
       }),
+    ).pipe(
+      Effect.andThen(fs.rename(temp, file)),
+      // A failed write never leaves its content, credentials and all, behind.
+      Effect.onError(() => fs.remove(temp, { force: true }).pipe(Effect.ignore)),
     )
-    yield* fs.rename(temp, file)
   })
 
 /** Creates `directory` and its parents, and makes it readable by the owner only, even if it existed. */
