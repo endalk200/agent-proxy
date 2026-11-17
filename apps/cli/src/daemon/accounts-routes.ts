@@ -4,7 +4,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { AccountStore } from "../accounts/store.ts"
 import { Logins } from "../logins/logins.ts"
 import { StartLogin, SubmitCallback, toAccountView } from "./api.ts"
-import { apiError, loopbackOnly } from "./http.ts"
+import { apiError, type LocalOnly } from "./http.ts"
 
 /**
  * The daemon API's account and login operations:
@@ -20,12 +20,13 @@ const loginId = Effect.map(HttpRouter.params, (params) => params["id"] ?? "")
 const badRequest = (expected: string) => () =>
   Effect.succeed(apiError(400, `Expected a JSON body ${expected}.`))
 
-export const accountRoutes = (router: HttpRouter.HttpRouter) =>
+/** Adds the routes to `router`, each served only to clients `localOnly` lets through. */
+export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnly) =>
   Effect.all([
     router.add(
       "GET",
       "/api/accounts",
-      loopbackOnly(
+      localOnly(
         Effect.gen(function* () {
           const accounts = yield* (yield* AccountStore).list
           return HttpServerResponse.jsonUnsafe({ accounts: accounts.map(toAccountView) })
@@ -39,7 +40,7 @@ export const accountRoutes = (router: HttpRouter.HttpRouter) =>
     router.add(
       "POST",
       "/api/logins",
-      loopbackOnly(
+      localOnly(
         Effect.gen(function* () {
           const body = yield* HttpServerRequest.schemaBodyJson(StartLogin)
           const login = yield* (yield* Logins).start(body)
@@ -56,7 +57,7 @@ export const accountRoutes = (router: HttpRouter.HttpRouter) =>
     router.add(
       "GET",
       "/api/logins/:id",
-      loopbackOnly(
+      localOnly(
         Effect.gen(function* () {
           const login = yield* (yield* Logins).get(yield* loginId)
           return HttpServerResponse.jsonUnsafe(login)
@@ -68,7 +69,7 @@ export const accountRoutes = (router: HttpRouter.HttpRouter) =>
     router.add(
       "POST",
       "/api/logins/:id/callback",
-      loopbackOnly(
+      localOnly(
         Effect.gen(function* () {
           const { url } = yield* HttpServerRequest.schemaBodyJson(SubmitCallback)
           const login = yield* (yield* Logins).submitCallback(yield* loginId, url)
@@ -86,7 +87,7 @@ export const accountRoutes = (router: HttpRouter.HttpRouter) =>
     router.add(
       "DELETE",
       "/api/logins/:id",
-      loopbackOnly(
+      localOnly(
         Effect.gen(function* () {
           const login = yield* (yield* Logins).cancel(yield* loginId)
           return HttpServerResponse.jsonUnsafe(login)

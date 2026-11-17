@@ -43,14 +43,14 @@ export type DaemonInfo = typeof DaemonInfo.Type
 /** How long the CLI waits for a daemon on this machine before calling it not running. */
 const REQUEST_TIMEOUT = "2 seconds"
 
-/** The running daemon's address from the state file, or `DaemonNotRunning`. */
+/** The running daemon's state file, or `DaemonNotRunning`. */
 const discover = Effect.gen(function* () {
   const stateDir = yield* resolveStateDir
   const state = yield* readStateFile(stateDir)
   if (Option.isNone(state)) {
     return yield* new DaemonNotRunning()
   }
-  return state.value.address
+  return state.value
 })
 
 /** True when the daemon at `address` answers `/healthz` with 200. */
@@ -61,23 +61,41 @@ export const isHealthy = (address: string) =>
     return response.status === 200
   }).pipe(Effect.orElseSucceed(() => false))
 
-/** Asks the running daemon who it is. A missing or unreachable daemon is `DaemonNotRunning`. */
+/**
+ * Asks the running daemon who it is. A missing or unreachable daemon is `DaemonNotRunning`.
+ *
+ * The answer must come from the daemon the state file names: after a crash, its
+ * address may now belong to another state directory's daemon, which this
+ * directory's commands must never report or signal.
+ */
 export const fetchDaemonInfo = Effect.gen(function* () {
-  const address = yield* discover
+  const state = yield* discover
   const client = yield* HttpClient.HttpClient
-  const response = yield* client.get(`${address}/api/daemon`).pipe(
-    Effect.timeout(REQUEST_TIMEOUT),
+  const info = yield* client.get(`${state.address}/api/daemon`).pipe(
     Effect.mapError(() => new DaemonNotRunning()),
+    Effect.flatMap((response) =>
+      HttpClientResponse.filterStatusOk(response).pipe(
+        Effect.flatMap(HttpClientResponse.schemaBodyJson(DaemonInfo)),
+        Effect.mapError((cause) => new DaemonUnexpectedResponse({ address: state.address, cause })),
+      ),
+    ),
+    // The whole exchange, body included: a stale address may answer and then stall.
+    Effect.timeoutOrElse({
+      duration: REQUEST_TIMEOUT,
+      orElse: () => Effect.fail(new DaemonNotRunning()),
+    }),
   )
-  return yield* HttpClientResponse.filterStatusOk(response).pipe(
-    Effect.flatMap(HttpClientResponse.schemaBodyJson(DaemonInfo)),
-    Effect.mapError((cause) => new DaemonUnexpectedResponse({ address, cause })),
-  )
+  if (info.pid !== state.pid) {
+    return yield* new DaemonNotRunning()
+  }
+  return info
 })
 
 /**
  * Sends `request` to the running daemon's API and decodes the answer with
  * `schema`. A refusal with an `{ "error": … }` body is `DaemonApiError`.
+ * Only the daemon the state file names is asked (see `fetchDaemonInfo`), and
+ * the whole exchange, body included, must finish within `timeout`.
  */
 const callApi = <A>(
   request: HttpClientRequest.HttpClientRequest,
@@ -85,21 +103,25 @@ const callApi = <A>(
   timeout: Duration.Input = REQUEST_TIMEOUT,
 ) =>
   Effect.gen(function* () {
-    const address = yield* discover
+    const { address } = yield* fetchDaemonInfo
     const client = yield* HttpClient.HttpClient
-    const response = yield* client.execute(HttpClientRequest.prependUrl(request, address)).pipe(
-      Effect.timeout(timeout),
-      Effect.mapError(() => new DaemonNotRunning()),
-    )
     const unexpected = (cause: unknown) => new DaemonUnexpectedResponse({ address, cause })
-    if (response.status >= 400) {
-      const body = yield* HttpClientResponse.schemaBodyJson(ApiError)(response).pipe(
-        Effect.mapError(unexpected),
-      )
-      return yield* new DaemonApiError({ status: response.status, message: body.error })
-    }
-    return yield* HttpClientResponse.schemaBodyJson(schema)(response).pipe(
-      Effect.mapError(unexpected),
+    return yield* client.execute(HttpClientRequest.prependUrl(request, address)).pipe(
+      Effect.mapError(() => new DaemonNotRunning()),
+      Effect.flatMap((response) =>
+        response.status >= 400
+          ? HttpClientResponse.schemaBodyJson(ApiError)(response).pipe(
+              Effect.mapError(unexpected),
+              Effect.flatMap((body) =>
+                Effect.fail(new DaemonApiError({ status: response.status, message: body.error })),
+              ),
+            )
+          : HttpClientResponse.schemaBodyJson(schema)(response).pipe(Effect.mapError(unexpected)),
+      ),
+      Effect.timeoutOrElse({
+        duration: timeout,
+        orElse: () => Effect.fail(new DaemonNotRunning()),
+      }),
     )
   })
 

@@ -10,7 +10,7 @@ import { resolveStateDir } from "../paths.ts"
 import { Processes } from "../processes.ts"
 import { ClaudeLogin } from "../providers/claude.ts"
 import { accountRoutes } from "./accounts-routes.ts"
-import { loopbackOnly } from "./http.ts"
+import { localOnly } from "./http.ts"
 import { acquireLock, removeStateFile, stateFiles, writeStateFile } from "./state.ts"
 
 /**
@@ -44,16 +44,17 @@ const clientAddress = (host: string, port: number) => {
 const routes = (info: {
   readonly pid: number
   readonly address: string
+  readonly listenHost: string
   readonly startedAt: DateTime.Utc
 }) =>
   HttpRouter.use((router) =>
     Effect.all([
-      accountRoutes(router),
+      accountRoutes(router, localOnly(info.listenHost)),
       router.add("GET", "/healthz", HttpServerResponse.jsonUnsafe({ status: "ok" })),
       router.add(
         "GET",
         "/api/daemon",
-        loopbackOnly(
+        localOnly(info.listenHost)(
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis
             const uptimeMs = now - DateTime.toEpochMillis(info.startedAt)
@@ -127,7 +128,7 @@ export const startDaemon = Effect.gen(function* () {
     const startedAt = yield* DateTime.now
 
     yield* Layer.build(
-      HttpRouter.serve(routes({ pid, address, startedAt }), {
+      HttpRouter.serve(routes({ pid, address, listenHost: config.listen.host, startedAt }), {
         disableLogger: true,
         disableListenLog: true,
       }).pipe(

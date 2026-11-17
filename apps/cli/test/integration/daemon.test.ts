@@ -1,3 +1,5 @@
+import { networkInterfaces } from "node:os"
+
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
 import { ConfigProvider, Effect, FileSystem, Layer, Schema } from "effect"
@@ -106,6 +108,36 @@ layer(
       expect(error.message).toBe(
         `Another agent-proxy daemon (pid ${process.pid}) is already running for ${home.stateDir}.`,
       )
+    }),
+  )
+
+  it.effect(
+    "takes over a lock left by a crash even when its pid now belongs to another process",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome(freePortConfig)
+        yield* fs.makeDirectory(home.stateDir, { recursive: true })
+        // After a reboot, the crashed daemon's pid can be reused by any process: here, pid 1.
+        yield* fs.writeFileString(`${home.stateDir}/daemon.lock`, "1\n")
+        const daemon = yield* home.start
+        const health = yield* get(`${daemon.address}/healthz`)
+        expect(health.status).toBe(200)
+      }),
+  )
+
+  const lanAddress = Object.values(networkInterfaces())
+    .flat()
+    .find((entry) => entry !== undefined && entry.family === "IPv4" && !entry.internal)?.address
+
+  // Passes trivially on a machine with no non-loopback IPv4 interface.
+  it.effect("serves its API to this machine when it listens on a non-loopback local address", () =>
+    Effect.gen(function* () {
+      if (lanAddress === undefined) return
+      const home = yield* makeHome(`listen = "${lanAddress}:0"\n`)
+      const daemon = yield* home.start
+      const response = yield* get(`${daemon.address}/api/daemon`)
+      expect(response.status).toBe(200)
     }),
   )
 

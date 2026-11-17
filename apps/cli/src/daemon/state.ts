@@ -1,11 +1,13 @@
-import { Data, Effect, FileSystem, Option, Schema } from "effect"
+import { dlopen, FFIType } from "bun:ffi"
+import { closeSync, constants, ftruncateSync, openSync, writeSync } from "node:fs"
 
-import { Processes } from "../processes.ts"
+import { Data, Effect, FileSystem, Option, Schema } from "effect"
 
 /**
  * The daemon's files in its state directory (ADR-0002):
  *
- * - `daemon.lock` holds the pid of the one daemon allowed per directory.
+ * - `daemon.lock` is held with `flock(2)` by the one daemon allowed per directory,
+ *   and records its pid while held.
  * - `daemon.json`, the state file, tells the CLI where the running daemon listens.
  * - `daemon.log` holds its logs, one JSON object per line.
  */
@@ -46,46 +48,69 @@ const lockHolder = (lockFile: string) =>
     })
   })
 
+export class LockFileError extends Data.TaggedError("LockFileError")<{
+  readonly lockFile: string
+  readonly cause: unknown
+}> {
+  override get message() {
+    return `Could not lock ${this.lockFile}: ${this.cause instanceof Error ? this.cause.message : String(this.cause)}`
+  }
+}
+
+const LOCK_EX = 2
+const LOCK_NB = 4
+
+let libc:
+  | { readonly symbols: { readonly flock: (fd: number, operation: number) => number } }
+  | undefined
+
+/**
+ * `flock(2)`, non-blocking and exclusive: true when this process now holds the lock.
+ *
+ * A kernel lock, not a pid in a file: the OS releases it the moment its holder
+ * dies, however it dies, so a crash never leaves a lock behind, a reused pid
+ * never looks like a live daemon, and two starters can never both take over.
+ */
+const tryFlock = (fd: number) => {
+  libc ??= dlopen(process.platform === "darwin" ? "libc.dylib" : "libc.so.6", {
+    flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+  })
+  return libc.symbols.flock(fd, LOCK_EX | LOCK_NB) === 0
+}
+
 /**
  * Takes the state directory's lock for `pid` until the scope closes.
  *
- * The lock file is created exclusively. A lock whose process no longer exists
- * was left by a daemon that crashed, and is taken over.
+ * The lock file stays in place: deleting a flock'd file would let a second
+ * daemon lock a new file of the same name. While held, it records the holder's pid.
  */
 export const acquireLock = Effect.fn("acquireLock")(function* (stateDir: string, pid: number) {
-  const fs = yield* FileSystem.FileSystem
-  const processes = yield* Processes
   const { lock } = stateFiles(stateDir)
 
-  const tryCreate = fs.writeFileString(lock, `${pid}\n`, { flag: "wx", mode: 0o600 }).pipe(
-    Effect.as(true),
-    Effect.catchIf(
-      (error) => error.reason._tag === "AlreadyExists",
-      () => Effect.succeed(false),
-    ),
+  const fd = yield* Effect.acquireRelease(
+    Effect.try({
+      try: () => openSync(lock, constants.O_RDWR | constants.O_CREAT, 0o600),
+      catch: (cause) => new LockFileError({ lockFile: lock, cause }),
+    }),
+    (descriptor) => Effect.sync(() => closeSync(descriptor)),
   )
 
-  if (!(yield* tryCreate)) {
+  if (!tryFlock(fd)) {
     const holder = yield* lockHolder(lock)
-    if (Option.isSome(holder) && (yield* processes.isAlive(holder.value))) {
-      return yield* new DaemonAlreadyRunning({ pid: holder.value, stateDir })
-    }
-    yield* fs.remove(lock, { force: true })
-    if (!(yield* tryCreate)) {
-      const winner = yield* lockHolder(lock)
-      return yield* new DaemonAlreadyRunning({ pid: Option.getOrElse(winner, () => 0), stateDir })
-    }
+    return yield* new DaemonAlreadyRunning({ pid: Option.getOrElse(holder, () => 0), stateDir })
   }
 
-  yield* Effect.addFinalizer(() =>
-    Effect.gen(function* () {
-      // Release only a lock that is still ours.
-      const holder = yield* lockHolder(lock)
-      if (Option.contains(holder, pid)) {
-        yield* fs.remove(lock, { force: true })
-      }
-    }).pipe(Effect.ignore),
-  )
+  yield* Effect.try({
+    try: () => {
+      ftruncateSync(fd, 0)
+      writeSync(fd, `${pid}\n`, 0)
+    },
+    catch: (cause) => new LockFileError({ lockFile: lock, cause }),
+  })
+
+  // Runs before the descriptor closes, which releases the lock: clear the pid
+  // so the file never names a daemon that is gone.
+  yield* Effect.addFinalizer(() => Effect.sync(() => ftruncateSync(fd, 0)).pipe(Effect.ignore))
 })
 
 /** Replaces the state file atomically, so a reader never sees half of it. */
