@@ -23,7 +23,7 @@ const StatusJson = Schema.fromJsonString(
   }),
 )
 
-const makeHome = (config: string) =>
+const makeHome = (config: string, extraEnv: Record<string, string> = {}) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-cli-" })
@@ -33,6 +33,7 @@ const makeHome = (config: string) =>
       HOME: `${root}/home`,
       XDG_CONFIG_HOME: `${root}/config`,
       XDG_STATE_HOME: `${root}/state`,
+      ...extraEnv,
     }
     const stateDir = `${root}/state/agent-proxy`
 
@@ -192,6 +193,18 @@ layer(
         const error = yield* Effect.flip(home.cli(["daemon", "run"]))
         expect(error._tag === "UserError" && error.userMessage).toMatch(
           /config\.toml, line 2: unknown key "port" \(the only key is "listen"\)$/,
+        )
+      }),
+    ),
+  )
+
+  it.effect("run refuses a config file named by AGENT_PROXY_CONFIG that does not exist", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome("", { AGENT_PROXY_CONFIG: "/nonexistent/agent-proxy.toml" })
+        const error = yield* Effect.flip(home.cli(["daemon", "run"]))
+        expect(error._tag === "UserError" && error.userMessage).toBe(
+          "AGENT_PROXY_CONFIG names /nonexistent/agent-proxy.toml, which does not exist.",
         )
       }),
     ),

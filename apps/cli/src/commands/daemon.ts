@@ -1,11 +1,11 @@
 import { Console, Effect, FileSystem, Option, References, Schedule, Schema } from "effect"
 import { CliError, Command, Flag } from "effect/cli"
 
-import { loadConfig } from "../config.ts"
+import { loadConfigFile } from "../config.ts"
 import { fetchDaemonInfo, isHealthy, type DaemonInfo } from "../daemon/client.ts"
 import { startDaemon } from "../daemon/daemon.ts"
 import { readStateFile, stateFiles } from "../daemon/state.ts"
-import { resolveConfigPath, resolveStateDir } from "../paths.ts"
+import { resolveStateDir } from "../paths.ts"
 import { Processes } from "../processes.ts"
 
 /** Shows an error's own message to the user, without a stack trace. */
@@ -92,7 +92,7 @@ const start = Command.make(
     const logFile = stateFiles(stateDir).log
 
     // Fail here, in the user's terminal, rather than in a background process.
-    yield* resolveConfigPath.pipe(Effect.flatMap(loadConfig), Effect.mapError(asUserError))
+    yield* loadConfigFile.pipe(Effect.mapError(asUserError))
     const existing = yield* fetchDaemonInfo.pipe(
       Effect.asSome,
       Effect.catchTag("DaemonNotRunning", () => Effect.succeedNone),

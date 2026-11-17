@@ -3,8 +3,8 @@ import { Clock, Data, DateTime, Effect, FileSystem, Layer, Logger, Option } from
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 
 import packageJson from "../../package.json" with { type: "json" }
-import { type ListenAddress, loadConfig } from "../config.ts"
-import { resolveConfigPath, resolveStateDir } from "../paths.ts"
+import { type ListenAddress, loadConfigFile } from "../config.ts"
+import { resolveStateDir } from "../paths.ts"
 import { Processes } from "../processes.ts"
 import { acquireLock, removeStateFile, stateFiles, writeStateFile } from "./state.ts"
 
@@ -111,11 +111,10 @@ const bind = (listen: ListenAddress) => {
 export const startDaemon = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const { pid } = yield* Processes
-  const configPath = yield* resolveConfigPath
   const stateDir = yield* resolveStateDir
   const files = stateFiles(stateDir)
 
-  const config = yield* loadConfig(configPath)
+  const { path: configPath, config } = yield* loadConfigFile
   yield* fs.makeDirectory(stateDir, { recursive: true, mode: 0o700 })
   const fileLogger = yield* Logger.toFile(Logger.formatJson, files.log)
   const logToFile = Effect.provideService(Logger.CurrentLoggers, new Set([fileLogger]))

@@ -1,5 +1,7 @@
 import { Data, Effect, FileSystem, Option, Result, Schema, SchemaIssue } from "effect"
 
+import { resolveConfigFile } from "./paths.ts"
+
 /**
  * The owner's `config.toml` (ADR-0004): hand-edited, never written by agent-proxy.
  * A missing file means every default applies.
@@ -125,8 +127,14 @@ export const parseConfig = (
   return Result.succeed({ listen: Option.getOrElse(listen, () => defaultConfig.listen) })
 }
 
-/** Loads the config file at `path`. A missing file yields `defaultConfig`. */
-export const loadConfig = Effect.fn("loadConfig")(function* (path: string) {
+/**
+ * Loads the config file at `path`. A missing file yields `defaultConfig`,
+ * unless `explicit` says the owner named it, where a missing file is a mistake.
+ */
+export const loadConfig = Effect.fn("loadConfig")(function* (
+  path: string,
+  options?: { readonly explicit?: boolean },
+) {
   const fs = yield* FileSystem.FileSystem
   const text = yield* fs.readFileString(path).pipe(
     Effect.asSome,
@@ -140,7 +148,19 @@ export const loadConfig = Effect.fn("loadConfig")(function* (path: string) {
     ),
   )
   if (Option.isNone(text)) {
+    if (options?.explicit === true) {
+      return yield* new ConfigFileError({
+        message: `AGENT_PROXY_CONFIG names ${path}, which does not exist.`,
+      })
+    }
     return defaultConfig
   }
   return yield* Effect.fromResult(parseConfig(path, text.value))
+})
+
+/** Finds the config file (see `resolveConfigFile`) and loads it. */
+export const loadConfigFile = Effect.gen(function* () {
+  const file = yield* resolveConfigFile
+  const config = yield* loadConfig(file.path, { explicit: file.explicit })
+  return { path: file.path, config }
 })
