@@ -14,6 +14,7 @@ import { ClaudeLogin, ClaudeTokens } from "../providers/claude.ts"
 import { claudeRoutes } from "../proxy/claude-routes.ts"
 import { ProxyKey } from "../proxy/proxy-key.ts"
 import { accountRoutes } from "./accounts-routes.ts"
+import { dashboardRoutes } from "./dashboard.ts"
 import { localOnly } from "./http.ts"
 import { keyRoutes } from "./key-routes.ts"
 import { acquireLock, removeStateFile, stateFiles, writeStateFile } from "./state.ts"
@@ -22,7 +23,7 @@ import { acquireLock, removeStateFile, stateFiles, writeStateFile } from "./stat
  * The daemon: one HTTP listener that serves agent-proxy, meeting ADR-0002.
  *
  * It serves its health and identity, the daemon API under `/api/`, and the
- * proxy's Claude routes; the dashboard joins this listener when it is built.
+ * proxy's Claude routes, and the built dashboard at `/` for every other GET.
  */
 
 export interface RunningDaemon {
@@ -57,6 +58,7 @@ const routes = (info: {
       accountRoutes(router, localOnly(info.listenHost)),
       keyRoutes(router, localOnly(info.listenHost)),
       claudeRoutes(router),
+      dashboardRoutes(router, localOnly(info.listenHost)),
       router.add("GET", "/healthz", HttpServerResponse.jsonUnsafe({ status: "ok" })),
       router.add(
         "GET",
