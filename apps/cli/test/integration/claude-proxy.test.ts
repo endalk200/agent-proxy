@@ -132,6 +132,19 @@ const makeHome = (
         )
       })
 
+    /** Calls the daemon API the way the CLI and dashboard do, and reads the JSON answer. */
+    const api = (method: "GET" | "PATCH" | "DELETE", path: string, body?: unknown) =>
+      Effect.promise(async () => {
+        const response = await fetch(`${daemon.address}${path}`, {
+          method,
+          ...(body === undefined
+            ? {}
+            : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+        })
+        const json: unknown = await response.json()
+        return { status: response.status, json }
+      })
+
     /** Sends a short message request with the proxy key. */
     const sendMessage = Effect.gen(function* () {
       const key = yield* proxyKey
@@ -150,6 +163,7 @@ const makeHome = (
       signIn,
       seedAccount,
       sendMessage,
+      api,
     }
   })
 
@@ -493,6 +507,88 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
           expect((yield* home.sendMessage).status).toBe(200)
           expect(claude.apiRequests().map((request) => request.headers["authorization"])).toEqual([
             `Bearer ${aliceToken}`,
+          ])
+        }),
+      ),
+    )
+
+    it.effect("a disabled account is skipped, and re-enabled serves again from its slot", () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const claude = yield* fakeClaude
+          const home = yield* makeHome(claude)
+          yield* home.seedAccount(alice, { priority: 1, enabled: true, needsSignIn: false })
+          yield* home.seedAccount(bob, { priority: 2, enabled: true, needsSignIn: false })
+          const servedBy = Effect.gen(function* () {
+            expect((yield* home.sendMessage).status).toBe(200)
+            return claude.apiRequests().at(-1)?.headers["authorization"]
+          })
+
+          const disabled = yield* home.api("PATCH", "/api/accounts/seeded1", { enabled: false })
+          expect(disabled).toMatchObject({
+            status: 200,
+            json: { enabled: false, status: "disabled", priority: 1 },
+          })
+          expect(yield* servedBy).toBe("Bearer sk-ant-oat01-seeded-2")
+
+          yield* home.api("PATCH", "/api/accounts/seeded1", { enabled: true })
+          expect(yield* servedBy).toBe("Bearer sk-ant-oat01-seeded-1")
+        }),
+      ),
+    )
+
+    it.effect("a request streaming on a removed account completes, and the next goes on", () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const claude = yield* fakeClaude
+          const home = yield* makeHome(claude)
+          yield* home.seedAccount(alice, { priority: 1, enabled: true, needsSignIn: false })
+          yield* home.seedAccount(bob, { priority: 2, enabled: true, needsSignIn: false })
+          const key = yield* home.proxyKey
+          const first = 'event: message_start\ndata: {"type":"message_start"}\n\n'
+          const rest = 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+          // Claude sends the rest only once the account has been removed.
+          const { promise: removed, resolve: onRemoved } = Promise.withResolvers<void>()
+          claude.answerApiWith(
+            () =>
+              new Response(
+                new ReadableStream<Uint8Array>({
+                  async start(controller) {
+                    controller.enqueue(new TextEncoder().encode(first))
+                    await removed
+                    controller.enqueue(new TextEncoder().encode(rest))
+                    controller.close()
+                  },
+                }),
+                { headers: { "content-type": "text/event-stream" } },
+              ),
+          )
+
+          const response = yield* Effect.promise(() =>
+            fetch(`${home.address}/v1/messages?beta=true`, {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-api-key": key },
+              body: messagesBody,
+            }),
+          )
+          const reader = (response.body ?? new ReadableStream<Uint8Array>()).getReader()
+          yield* Effect.promise(() => reader.read())
+          expect(yield* home.api("DELETE", "/api/accounts/seeded1")).toMatchObject({ status: 200 })
+          onRemoved()
+          const decoder = new TextDecoder()
+          const readRest = async (text: string): Promise<string> => {
+            const chunk = await reader.read()
+            return chunk.done
+              ? text
+              : readRest(text + decoder.decode(chunk.value, { stream: true }))
+          }
+          const received = yield* Effect.promise(() => readRest(""))
+          expect(received).toBe(rest)
+
+          expect((yield* home.sendMessage).status).toBe(200)
+          expect(claude.apiRequests().map((request) => request.headers["authorization"])).toEqual([
+            "Bearer sk-ant-oat01-seeded-1",
+            "Bearer sk-ant-oat01-seeded-2",
           ])
         }),
       ),
