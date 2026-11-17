@@ -122,7 +122,7 @@ const cli = Command.make(
     extraEnv: Flag.KeyValuePair("env").pipe(
       Flag.optional,
       Flag.withDescription(
-        "Set or override a variable for this invocation, e.g. --env AGENT_PROXY_CONFIG=/tmp/c.json",
+        "Set or override a variable for this invocation, e.g. --env AGENT_PROXY_CONFIG=/tmp/c.toml",
       ),
     ),
     unset: Flag.String("unset").pipe(

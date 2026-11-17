@@ -33,7 +33,7 @@ layer(Layer.mergeAll(BunServices.layer, RuntimeInfo.layerProcess))("agent-proxy 
         runtime: "bun",
         runtimeVersion: Bun.version,
         platform: process.platform,
-        configPath: "/xdg/agent-proxy/config.json",
+        configPath: "/xdg/agent-proxy/config.toml",
       })
     }),
   )
