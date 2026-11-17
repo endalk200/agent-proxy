@@ -82,3 +82,7 @@ export type StartLogin = typeof StartLogin.Type
 
 /** `POST /api/logins/:id/callback`: finish a login with the callback URL the owner pasted. */
 export const SubmitCallback = Schema.Struct({ url: Schema.String })
+
+/** `GET /api/key` and `POST /api/key/rotate`: the proxy key clients present (ADR-0005). */
+export const ProxyKeyView = Schema.Struct({ key: Schema.String })
+export type ProxyKeyView = typeof ProxyKeyView.Type

@@ -46,3 +46,15 @@ export type AccountStatus = typeof AccountStatus.Type
 
 export const accountStatus = (account: Account): AccountStatus =>
   !account.enabled ? "disabled" : account.needsSignIn ? "needs-sign-in" : "active"
+
+/**
+ * The account that serves `provider`'s next request: the Active account
+ * highest in its pool's priority, if there is one.
+ */
+export const chooseAccount = (
+  accounts: ReadonlyArray<Account>,
+  provider: Provider,
+): Account | undefined =>
+  accounts
+    .filter((account) => account.provider === provider && accountStatus(account) === "active")
+    .toSorted((a, b) => a.priority - b.priority)[0]

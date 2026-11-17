@@ -1,7 +1,12 @@
 import { Context, Layer } from "effect"
 
-/** Where Claude's OAuth login lives, and the loopback port its redirect returns to. */
-export interface ClaudeOAuthEndpoints {
+/**
+ * Where Claude's API and OAuth login live, and the loopback port the login's
+ * redirect returns to.
+ */
+export interface ClaudeEndpoints {
+  /** The origin of Claude's API, which proxied requests go to with their path and query. */
+  readonly apiBaseUrl: string
   readonly authorizeUrl: string
   readonly tokenUrl: string
   readonly profileUrl: string
@@ -15,13 +20,14 @@ export interface ClaudeOAuthEndpoints {
  */
 export class ProviderEndpoints extends Context.Service<
   ProviderEndpoints,
-  { readonly claude: ClaudeOAuthEndpoints }
+  { readonly claude: ClaudeEndpoints }
 >()("agent-proxy/ProviderEndpoints") {
   /** The real providers, as confirmed by the spike against Claude Code 2.1.326. */
   static readonly layer = Layer.succeed(
     ProviderEndpoints,
     ProviderEndpoints.of({
       claude: {
+        apiBaseUrl: "https://api.anthropic.com",
         authorizeUrl: "https://claude.com/cai/oauth/authorize",
         tokenUrl: "https://platform.claude.com/v1/oauth/token",
         profileUrl: "https://api.anthropic.com/api/oauth/profile",

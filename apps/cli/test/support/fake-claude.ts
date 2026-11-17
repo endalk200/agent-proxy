@@ -2,11 +2,12 @@ import { createHash, randomBytes } from "node:crypto"
 
 import { Effect } from "effect"
 
-import type { ClaudeOAuthEndpoints } from "../../src/providers/endpoints.ts"
+import type { ClaudeEndpoints } from "../../src/providers/endpoints.ts"
 
 /**
- * A fake of Claude's OAuth login, standing in for claude.com (authorize),
- * platform.claude.com (token) and api.anthropic.com (profile).
+ * A fake of Claude's OAuth login and API, standing in for claude.com
+ * (authorize), platform.claude.com (token) and api.anthropic.com (profile and
+ * messages).
  *
  * It holds the daemon to the login parameters the spike confirmed against
  * Claude Code 2.1.326: an authorize request missing one is refused, the token
@@ -53,8 +54,49 @@ const base64url = (bytes: Buffer) => bytes.toString("base64url")
 
 const json = (body: unknown, status = 200) => Response.json(body, { status })
 
+/** A request that reached the fake's API, as it arrived. */
+export interface ApiRequest {
+  readonly method: string
+  /** The path and query string. */
+  readonly path: string
+  readonly headers: Readonly<Record<string, string>>
+  readonly body: string
+}
+
+/** Answers an API request; the default answers like a short, successful message. */
+export type ApiHandler = (request: Request) => Response | Promise<Response>
+
+/** The limit headers a real response carries (spike #6), with fixed values. */
+export const limitHeaders: Readonly<Record<string, string>> = {
+  "anthropic-ratelimit-unified-status": "allowed",
+  "anthropic-ratelimit-unified-reset": "1795000000",
+  "anthropic-ratelimit-unified-representative-claim": "five_hour",
+  "anthropic-ratelimit-unified-fallback-percentage": "0.5",
+  "anthropic-ratelimit-unified-overage-status": "rejected",
+  "anthropic-ratelimit-unified-5h-status": "allowed",
+  "anthropic-ratelimit-unified-5h-reset": "1795000000",
+  "anthropic-ratelimit-unified-5h-utilization": "0.12",
+  "anthropic-ratelimit-unified-7d-status": "allowed",
+  "anthropic-ratelimit-unified-7d-reset": "1795500000",
+  "anthropic-ratelimit-unified-7d-utilization": "0.34",
+}
+
+const answerMessage: ApiHandler = () =>
+  Response.json(
+    {
+      id: "msg_fake",
+      type: "message",
+      role: "assistant",
+      model: "claude-sonnet-4-5",
+      content: [{ type: "text", text: "Hello from the fake." }],
+      stop_reason: "end_turn",
+      usage: { input_tokens: 3, output_tokens: 5 },
+    },
+    { headers: { ...limitHeaders, "request-id": "req_fake" } },
+  )
+
 export interface FakeClaude {
-  readonly endpoints: ClaudeOAuthEndpoints
+  readonly endpoints: ClaudeEndpoints
   /** Who signs in at the next authorize request. */
   readonly signInAs: (user: ClaudeUser) => void
   /** The next authorize request is denied, the way a user clicking "Deny" is. */
@@ -66,6 +108,10 @@ export interface FakeClaude {
    * resolves once that request has arrived.
    */
   readonly hangNextToken: () => Promise<void>
+  /** The requests the API received so far, oldest first. */
+  readonly apiRequests: () => ReadonlyArray<ApiRequest>
+  /** Answers every later API request with `handler`. */
+  readonly answerApiWith: (handler: ApiHandler) => void
 }
 
 /** Starts the fake on a free loopback port until the scope closes. */
@@ -75,6 +121,8 @@ export const fakeClaude = Effect.gen(function* () {
   let hang: (() => void) | undefined
   const codes = new Map<string, PendingCode>()
   const accessTokens = new Map<string, ClaudeUser>()
+  const apiRequests: Array<ApiRequest> = []
+  let answerApi: ApiHandler = answerMessage
 
   const authorize = (url: URL) => {
     const params = url.searchParams
@@ -170,6 +218,16 @@ export const fakeClaude = Effect.gen(function* () {
     })
   }
 
+  const api = async (request: Request, url: URL) => {
+    apiRequests.push({
+      method: request.method,
+      path: url.pathname + url.search,
+      headers: Object.fromEntries(request.headers),
+      body: await request.clone().text(),
+    })
+    return answerApi(request)
+  }
+
   const server = yield* Effect.acquireRelease(
     Effect.sync(() =>
       Bun.serve({
@@ -186,6 +244,9 @@ export const fakeClaude = Effect.gen(function* () {
           if (request.method === "GET" && url.pathname === "/api/oauth/profile") {
             return profile(request)
           }
+          if (url.pathname.startsWith("/v1/messages")) {
+            return api(request, url)
+          }
           return json({ error: "not_found" }, 404)
         },
       }),
@@ -196,6 +257,7 @@ export const fakeClaude = Effect.gen(function* () {
   const origin = `http://127.0.0.1:${server.port}`
   const fake: FakeClaude = {
     endpoints: {
+      apiBaseUrl: origin,
       authorizeUrl: `${origin}/cai/oauth/authorize`,
       tokenUrl: `${origin}/v1/oauth/token`,
       profileUrl: `${origin}/api/oauth/profile`,
@@ -212,6 +274,10 @@ export const fakeClaude = Effect.gen(function* () {
       new Promise<void>((resolve) => {
         hang = resolve
       }),
+    apiRequests: () => [...apiRequests],
+    answerApiWith: (handler) => {
+      answerApi = handler
+    },
   }
   return fake
 })
