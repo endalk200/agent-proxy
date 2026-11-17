@@ -88,7 +88,7 @@ const parseCallback = (
   if (params.get("state") !== oauthState) {
     return Effect.fail(
       new CallbackRejected({
-        message: `That URL does not belong to this ${adapter.name} sign-in. Paste the address the browser was sent to after signing in.`,
+        message: `That URL belongs to another ${adapter.name} sign-in, not the one in progress.`,
       }),
     )
   }

@@ -424,8 +424,7 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
         })
         expect(rejected.status).toBe(400)
         expect(rejected.json).toEqual({
-          error:
-            "That URL does not belong to this Claude sign-in. Paste the address the browser was sent to after signing in.",
+          error: "That URL belongs to another Claude sign-in, not the one in progress.",
         })
         expect((yield* home.login(started.id)).status).toBe("pending")
 
