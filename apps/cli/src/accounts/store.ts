@@ -15,7 +15,13 @@ import {
 
 import { ensurePrivateDirectory, writeFileAtomic } from "../atomic-file.ts"
 import { resolveDataDir } from "../paths.ts"
-import { Account, type Credentials, type Identity } from "./account.ts"
+import {
+  Account,
+  type Credentials,
+  type Identity,
+  type Provider,
+  providerNames,
+} from "./account.ts"
 
 /**
  * The accounts the daemon holds (ADR-0004): one JSON file per account, mode
@@ -28,6 +34,35 @@ export class AccountStoreError extends Data.TaggedError("AccountStoreError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
+
+/** No account has this id. */
+export class AccountNotFound extends Data.TaggedError("AccountNotFound")<{ readonly id: string }> {
+  override get message() {
+    return `No account ${this.id}.`
+  }
+}
+
+/** A priority past either end of the account's pool. */
+export class PriorityOutOfRange extends Data.TaggedError("PriorityOutOfRange")<{
+  readonly provider: Provider
+  readonly poolSize: number
+}> {
+  override get message() {
+    const pool = `The ${providerNames[this.provider]} pool`
+    return this.poolSize === 1
+      ? `${pool} has 1 account, so its priority is 1.`
+      : `${pool} has ${this.poolSize} accounts, so a priority is 1${this.poolSize === 2 ? " or 2" : ` to ${this.poolSize}`}.`
+  }
+}
+
+/** The settings the owner changes on an account; each one left out stays as it is. */
+export interface AccountSettings {
+  readonly label?: string | undefined
+  /** A position in the account's pool, 1 first; the accounts from there down move one place. */
+  readonly priority?: number | undefined
+  /** A disabled account sits out of its pool but keeps its priority. */
+  readonly enabled?: boolean | undefined
+}
 
 /** What signing in produced: the stored account, and whether it is new. */
 export interface Upserted {
@@ -74,6 +109,20 @@ export class AccountStore extends Context.Service<
       credentials: Credentials,
       options: { readonly label?: string | undefined },
     ) => Effect.Effect<Upserted, AccountStoreError>
+    /**
+     * Changes the owner's settings on the account with `id`, and returns it as
+     * stored. A new priority moves it within its pool, and the others shift
+     * to keep the pool's priorities 1, 2, 3 and so on.
+     */
+    readonly updateSettings: (
+      id: string,
+      settings: AccountSettings,
+    ) => Effect.Effect<Account, AccountStoreError | AccountNotFound | PriorityOutOfRange>
+    /**
+     * Forgets the account with `id`, credentials and all, and returns it as it
+     * was. The accounts below it in its pool move up one place.
+     */
+    readonly remove: (id: string) => Effect.Effect<Account, AccountStoreError | AccountNotFound>
   }
 >()("agent-proxy/AccountStore") {
   /** The store in the data directory resolved from the environment. */
@@ -122,7 +171,13 @@ export class AccountStore extends Context.Service<
         const accounts = yield* Effect.forEach(files, read)
         return accounts
           .flatMap((account) => (Option.isSome(account) ? [account.value] : []))
-          .toSorted((a, b) => a.provider.localeCompare(b.provider) || a.priority - b.priority)
+          .toSorted(
+            (a, b) =>
+              a.provider.localeCompare(b.provider) ||
+              a.priority - b.priority ||
+              a.addedAt.localeCompare(b.addedAt) ||
+              a.id.localeCompare(b.id),
+          )
       }).pipe(Effect.mapError(storeError(`Could not read the accounts in ${dir}`)))
 
       /** Replaces the account's file atomically, both directories readable by the owner only. */
@@ -138,6 +193,16 @@ export class AccountStore extends Context.Service<
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
           Effect.mapError(storeError(`Could not save account ${account.id} in ${dir}`)),
+        )
+
+      /** Gives a pool, listed in its new order, the priorities 1, 2, 3…, writing only the accounts that move. */
+      const renumber = (pool: ReadonlyArray<Account>) =>
+        Effect.forEach(
+          pool.flatMap((account, index) =>
+            account.priority === index + 1 ? [] : [{ ...account, priority: index + 1 }],
+          ),
+          write,
+          { discard: true },
         )
 
       const upsert = Effect.fn("AccountStore.upsert")(
@@ -188,7 +253,55 @@ export class AccountStore extends Context.Service<
         (effect) => writes.withPermit(effect),
       )
 
-      return AccountStore.of({ list, upsert })
+      const updateSettings = Effect.fn("AccountStore.updateSettings")(
+        function* (id: string, settings: AccountSettings) {
+          const accounts = yield* list
+          const existing = accounts.find((account) => account.id === id)
+          if (existing === undefined) return yield* new AccountNotFound({ id })
+          const account: Account = {
+            ...existing,
+            label: settings.label ?? existing.label,
+            enabled: settings.enabled ?? existing.enabled,
+          }
+          if (settings.priority === undefined) {
+            yield* write(account)
+            return account
+          }
+
+          const pool = accounts.filter((other) => other.provider === account.provider)
+          const position = settings.priority
+          if (position < 1 || position > pool.length) {
+            return yield* new PriorityOutOfRange({
+              provider: account.provider,
+              poolSize: pool.length,
+            })
+          }
+          const others = pool.filter((other) => other.id !== id)
+          const moved: Account = { ...account, priority: position }
+          yield* write(moved)
+          yield* renumber([...others.slice(0, position - 1), moved, ...others.slice(position - 1)])
+          return moved
+        },
+        (effect) => writes.withPermit(effect),
+      )
+
+      const remove = Effect.fn("AccountStore.remove")(
+        function* (id: string) {
+          const accounts = yield* list
+          const account = accounts.find((other) => other.id === id)
+          if (account === undefined) return yield* new AccountNotFound({ id })
+          yield* fs
+            .remove(path.join(dir, `${id}.json`))
+            .pipe(Effect.mapError(storeError(`Could not remove account ${id} from ${dir}`)))
+          yield* renumber(
+            accounts.filter((other) => other.provider === account.provider && other.id !== id),
+          )
+          return account
+        },
+        (effect) => writes.withPermit(effect),
+      )
+
+      return AccountStore.of({ list, upsert, updateSettings, remove })
     }),
   )
 }
