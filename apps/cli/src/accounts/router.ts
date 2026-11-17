@@ -1,6 +1,7 @@
 import { Clock, Context, Duration, Effect, Layer } from "effect"
 
 import { type Account, type AccountStatus, accountStatus, type Provider } from "./account.ts"
+import { AccountChanges } from "./changes.ts"
 import { AccountStore, type AccountStoreError } from "./store.ts"
 
 /**
@@ -14,8 +15,8 @@ import { AccountStore, type AccountStoreError } from "./store.ts"
  *   highest-priority Active account; equal priorities go to the most
  *   headroom, and unknown headroom counts as full.
  * - A limit the provider reports cools the account down until the limit
- *   resets. A daemon that restarts has no cooldowns until the provider
- *   reports them again.
+ *   resets, and raises `AccountChanges`' signal. A daemon that restarts has
+ *   no cooldowns until the provider reports them again.
  */
 
 /** What a provider's answer says about the account's limits, as its adapter reads it. */
@@ -107,6 +108,7 @@ export class Router extends Context.Service<
     Router,
     Effect.gen(function* () {
       const store = yield* AccountStore
+      const changes = yield* AccountChanges
       const bindings = new Map<string, Binding>()
       const cooldowns = new Map<string, Cooldown>()
       const headroom = new Map<string, number>()
@@ -181,6 +183,7 @@ export class Router extends Context.Service<
               until: new Date(cooldown.until).toISOString(),
               window: cooldown.window ?? "rate limit",
             }),
+            Effect.andThen(changes.signal),
           )
         })
 

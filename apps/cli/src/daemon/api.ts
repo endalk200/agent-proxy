@@ -71,6 +71,82 @@ export const toAccountList = (
   })),
 })
 
+/**
+ * The first message on `GET /api/events`: every account and pool as they are
+ * when the stream opens, the same as `GET /api/accounts` answers. Every
+ * message after it is an {@link AccountEvent} that happened later.
+ */
+export const AccountSnapshot = Schema.Struct({
+  type: Schema.Literal("snapshot"),
+  accounts: Schema.Array(AccountView),
+  pools: Schema.Array(PoolView),
+})
+export type AccountSnapshot = typeof AccountSnapshot.Type
+
+/**
+ * A change to one account, on `GET /api/events`. Each event carries the
+ * account as it is now and every pool as it is now, so a client applies it
+ * without asking again:
+ *
+ * - `added`: the daemon holds a new account.
+ * - `removed`: the daemon forgot `account`, shown as it was.
+ * - `status-changed`: its status or cooldown end changed: a cooldown started
+ *   or ended, it needs sign-in or was signed in again, or it was disabled or
+ *   enabled. `previous` is the account before.
+ * - `settings-changed`: its label or priority changed, or its email or plan
+ *   after a fresh sign-in, and its status did not. `previous` is the account before.
+ *
+ * Last used alone never makes an event.
+ */
+export const AccountEvent = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literals(["added", "removed"]),
+    account: AccountView,
+    pools: Schema.Array(PoolView),
+  }),
+  Schema.Struct({
+    type: Schema.Literals(["status-changed", "settings-changed"]),
+    account: AccountView,
+    previous: AccountView,
+    pools: Schema.Array(PoolView),
+  }),
+])
+export type AccountEvent = typeof AccountEvent.Type
+
+/** The fields of an account view that make a `settings-changed` event when they change. */
+const settingsChanged = (before: AccountView, after: AccountView) =>
+  before.label !== after.label ||
+  before.priority !== after.priority ||
+  before.enabled !== after.enabled ||
+  before.email !== after.email ||
+  before.plan !== after.plan ||
+  before.provider !== after.provider ||
+  before.providerAccountId !== after.providerAccountId
+
+/** The events that take a client from `before` to `after`: removals, then additions, then changes. */
+export const accountEvents = (before: AccountList, after: AccountList): Array<AccountEvent> => {
+  const pools = after.pools
+  const was = new Map(before.accounts.map((account) => [account.id, account]))
+  const now = new Set(after.accounts.map((account) => account.id))
+  const events: Array<AccountEvent> = before.accounts
+    .filter((account) => !now.has(account.id))
+    .map((account) => ({ type: "removed", account, pools }))
+  for (const account of after.accounts) {
+    const previous = was.get(account.id)
+    if (previous === undefined) events.push({ type: "added", account, pools })
+  }
+  for (const account of after.accounts) {
+    const previous = was.get(account.id)
+    if (previous === undefined) continue
+    if (previous.status !== account.status || previous.cooldownEndsAt !== account.cooldownEndsAt) {
+      events.push({ type: "status-changed", account, previous, pools })
+    } else if (settingsChanged(previous, account)) {
+      events.push({ type: "settings-changed", account, previous, pools })
+    }
+  }
+  return events
+}
+
 /** `PATCH /api/accounts/:id`: change an account's settings; each one left out stays as it is. */
 /** A label: at least one character that is not a space; it is stored trimmed. */
 const Label = Schema.String.check(Schema.makeFilter((value) => value.trim() !== ""))
