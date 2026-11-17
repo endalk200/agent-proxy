@@ -40,7 +40,7 @@ export class DaemonStartError extends Data.TaggedError("DaemonStartError")<{
 const GRACEFUL_SHUTDOWN = "5 seconds"
 
 /** The URL a client on this machine uses to reach `host:port`. */
-const clientAddress = (host: string, port: number) => {
+export const clientAddress = (host: string, port: number) => {
   const reachable = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host
   return `http://${reachable.includes(":") ? `[${reachable}]` : reachable}:${port}`
 }
