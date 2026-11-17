@@ -211,6 +211,25 @@ describe("a change made on this page", () => {
     expect(rowOf(table, "Work").dataset["flash"]).toBeUndefined()
   })
 
+  it("shows no notice or flash for turning off an account that is cooling down", async () => {
+    const daemon = fakeDaemon({
+      accounts: [
+        account({ id: "a1", label: "Work", status: "cooling-down", cooldownEndsAt: inMinutes(30) }),
+        account({ id: "a2", label: "Home", priority: 2 }),
+      ],
+      pools: [{ provider: "claude", newSessionsAccountId: "a2" }],
+    })
+    const table = await show(daemon)
+
+    fireEvent.click(screen.getByRole("switch", { name: "Work enabled" }))
+    await waitFor(() => expect(statusOf(table, "Work")).toBe("Disabled"))
+    daemon.update("a2", { status: "needs-sign-in" })
+    await notice("Home needs sign-in")
+
+    expect(notices()).toHaveLength(1)
+    expect(rowOf(table, "Work").dataset["flash"]).toBeUndefined()
+  })
+
   it("shows no notice for an account its sign-in dialog adds, as the dialog says so", async () => {
     const daemon = twoAccounts()
     daemon.signInAs = { providerAccountId: "acct-lab", email: "lab@example.com", plan: "Pro" }

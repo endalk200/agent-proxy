@@ -241,7 +241,18 @@ const makeHome = (options: { readonly listen?: string; readonly scope?: Scope.Sc
       })
     })
 
-    return { claude, codex, address: daemon.address, seed, api, signIn, claudeMessage, cli, start }
+    return {
+      claude,
+      codex,
+      address: daemon.address,
+      dataHome: env.XDG_DATA_HOME,
+      seed,
+      api,
+      signIn,
+      claudeMessage,
+      cli,
+      start,
+    }
   })
 
 layer(
@@ -270,6 +281,27 @@ layer(
         pools: [{ provider: "claude", newSessionsAccountId: "work" }],
       })
     }),
+  )
+
+  it.effect(
+    "sends no snapshot when it cannot read the accounts, so no client sees an empty list",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome()
+        yield* home.seed("claude", "work", 1)
+        const dir = `${home.dataHome}/agent-proxy/accounts`
+        yield* fs.chmod(dir, 0o000)
+        yield* Effect.addFinalizer(() => fs.chmod(dir, 0o700).pipe(Effect.ignore))
+
+        // The stream ends, cleanly or not, before any data: the client reconnects.
+        const events = yield* openEvents(home.address)
+        let exit = yield* Effect.exit(events.next)
+        while (Exit.isSuccess(exit) && exit.value !== undefined && exit.value.kind !== "data") {
+          exit = yield* Effect.exit(events.next)
+        }
+        expect(Exit.isSuccess(exit) && exit.value?.kind === "data").toBe(false)
+      }),
   )
 
   it.effect("an account disabled through the daemon API arrives as a status change", () =>

@@ -413,6 +413,8 @@ export const fakeDaemon = (
       label: settings.label ?? existing.label,
       enabled,
       status: !enabled ? "disabled" : existing.status === "disabled" ? "active" : existing.status,
+      // The daemon reports a cooldown only while it decides the status.
+      cooldownEndsAt: enabled ? (existing.cooldownEndsAt ?? null) : null,
     }
     const pool = daemon.accounts
       .filter((held) => held.provider === existing.provider)

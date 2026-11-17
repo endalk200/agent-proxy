@@ -79,9 +79,11 @@ const explains = (own: OwnChange, event: AccountEvent): boolean => {
     (kept("label") || settings.label === after.label) &&
     (kept("enabled") || settings.enabled === after.enabled) &&
     (kept("priority") || settings.priority !== undefined) &&
-    // Turning an account off or on moves its status to or from Disabled.
+    // Turning an account off or on moves its status to or from Disabled, and
+    // hides or shows a cooldown still running, which the daemon reports only
+    // while it decides the status.
     (kept("status") || !kept("enabled")) &&
-    kept("cooldownEndsAt") &&
+    (kept("cooldownEndsAt") || !kept("enabled")) &&
     kept("email") &&
     kept("plan")
   )

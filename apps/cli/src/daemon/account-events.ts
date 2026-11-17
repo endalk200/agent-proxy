@@ -11,6 +11,9 @@ import {
   toAccountList,
 } from "./api.ts"
 
+/** How many events a subscriber that stops reading may fall behind before the oldest are dropped. */
+const EVENT_BACKLOG = 1024
+
 /**
  * Account events for the daemon API's event stream. A watcher reads the
  * accounts again whenever the store or router signal a change, and when the
@@ -31,7 +34,10 @@ export class AccountEvents extends Context.Service<
       const store = yield* AccountStore
       const router = yield* Router
       const changes = yield* AccountChanges
-      const events = yield* PubSub.unbounded<AccountEvent>()
+      // Bounded, dropping the oldest event for a subscriber that stops reading,
+      // so one stuck client can never grow the daemon's memory; a client that
+      // reconnects gets a fresh snapshot anyway.
+      const events = yield* PubSub.sliding<AccountEvent>(EVENT_BACKLOG)
       yield* Effect.addFinalizer(() => PubSub.shutdown(events))
       // Held while the watcher publishes and while a subscriber joins, so a
       // subscriber's snapshot is exactly the list its first event starts from.
@@ -79,7 +85,16 @@ export class AccountEvents extends Context.Service<
           Effect.gen(function* () {
             // The snapshot is as fresh as `GET /api/accounts`; whatever moved
             // since the last read reaches the subscribers already listening.
-            yield* catchUp.pipe(Effect.ignore({ log: "Warn" }))
+            // Accounts that cannot be read end the stream instead of looking
+            // like none: the client reconnects, and `GET /api/accounts` says why.
+            yield* catchUp.pipe(
+              Effect.tapError((error) =>
+                Effect.logWarning("could not read the accounts for the event stream").pipe(
+                  Effect.annotateLogs({ cause: error.message }),
+                ),
+              ),
+              Effect.orDie,
+            )
             const subscription = yield* PubSub.subscribe(events)
             const snapshot: AccountSnapshot = { type: "snapshot", ...current }
             return Stream.concat(Stream.make(snapshot), Stream.fromSubscription(subscription))
