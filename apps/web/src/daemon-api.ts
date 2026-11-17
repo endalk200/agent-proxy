@@ -58,8 +58,8 @@ export class DaemonCallError extends Error {
 }
 
 export interface DaemonClient {
-  readonly accounts: () => Promise<AccountList>
-  readonly daemon: () => Promise<DaemonInfo>
+  readonly accounts: (signal?: AbortSignal) => Promise<AccountList>
+  readonly daemon: (signal?: AbortSignal) => Promise<DaemonInfo>
   readonly key: () => Promise<string>
 }
 
@@ -144,14 +144,23 @@ const errorMessage = (value: unknown): string | undefined => {
 // -------------------------------------------------------------------- client
 
 export const createDaemonClient = (fetchImpl: typeof fetch): DaemonClient => {
-  const get = async <A>(path: string, decode: (body: unknown) => A): Promise<A> => {
+  const get = async <A>(
+    path: string,
+    decode: (body: unknown) => A,
+    signal?: AbortSignal,
+  ): Promise<A> => {
     let response: Response
     try {
-      response = await fetchImpl(path, { headers: { accept: "application/json" } })
+      response = await fetchImpl(path, {
+        headers: { accept: "application/json" },
+        ...(signal === undefined ? {} : { signal }),
+      })
     } catch {
       throw new DaemonCallError({ kind: "unreachable" })
     }
     const body: unknown = await response.json().catch(() => undefined)
+    // A body cut off by the deadline is a daemon that stopped answering.
+    if (signal?.aborted === true) throw new DaemonCallError({ kind: "unreachable" })
     if (!response.ok) {
       const message =
         errorMessage(body) ?? `The daemon answered ${path} with HTTP ${response.status}.`
@@ -168,8 +177,8 @@ export const createDaemonClient = (fetchImpl: typeof fetch): DaemonClient => {
   }
 
   return {
-    accounts: () => get("/api/accounts", decodeAccountList),
-    daemon: () => get("/api/daemon", decodeDaemonInfo),
+    accounts: (signal) => get("/api/accounts", decodeAccountList, signal),
+    daemon: (signal) => get("/api/daemon", decodeDaemonInfo, signal),
     key: () => get("/api/key", decodeKey),
   }
 }

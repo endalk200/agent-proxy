@@ -825,7 +825,8 @@ p {
 .row.is-disabled .plan,
 .row.is-disabled .prio,
 .row.is-disabled .used {
-  opacity: 0.5;
+  /* Dimmed, but still readable: the status column says Disabled. */
+  opacity: 0.75;
 }
 .used {
   font-size: 12.5px;
@@ -1022,6 +1023,7 @@ p {
   flex: none;
 }
 .key-label {
+  flex: none;
   font-weight: 500;
   color: var(--text);
   white-space: nowrap;
@@ -1114,25 +1116,31 @@ p {
   padding: 18px 20px 20px;
 }
 
+/* Single-track grids that may shrink below their content's width, so a long
+   command ellipsizes instead of pushing the copy buttons out of the dialog. */
 .connect {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 .connect-row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 7px;
 }
 .connect-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 6px 10px;
 }
 .connect-head b {
   font-weight: 560;
 }
 .connect-pools {
   display: inline-flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 .chip {
@@ -1156,6 +1164,7 @@ p {
   border-style: dashed;
 }
 .connect-key {
+  min-width: 0;
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }

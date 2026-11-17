@@ -126,3 +126,25 @@ test("says the daemon is unreachable once it stops, and keeps showing what it la
   await expect(page.getByRole("table", { name: "Claude accounts" })).toBeVisible()
   await expect(page.getByRole("button", { name: "Actions for Work" })).toBeDisabled()
 })
+
+test("Connect clients fits a phone screen, every copy button inside the dialog", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await seedThree()
+  await open(page)
+
+  await page.getByRole("button", { name: "Connect clients" }).click()
+  const dialog = page.getByRole("dialog", { name: "Connect clients" })
+  const frame = await dialog.boundingBox()
+  expect(frame).not.toBeNull()
+  const copies = dialog.getByRole("button", { name: /^Copy / })
+  await expect(copies).toHaveCount(4)
+  const boxes = await Promise.all((await copies.all()).map((copy) => copy.boundingBox()))
+  for (const box of boxes) {
+    expect(box).not.toBeNull()
+    if (box === null || frame === null) continue
+    expect(box.x).toBeGreaterThanOrEqual(frame.x)
+    expect(box.x + box.width).toBeLessThanOrEqual(frame.x + frame.width)
+  }
+})

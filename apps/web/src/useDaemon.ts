@@ -26,8 +26,15 @@ const asFailure = (error: unknown): DaemonFailure =>
 /**
  * Asks the daemon for its accounts and info now and every `pollInterval`
  * milliseconds after each answer, keeping the last answer when one fails.
+ * Each refresh gets `requestTimeout` milliseconds: a daemon that stops
+ * answering mid-request counts as unreachable, and a refresh never overlaps
+ * the next one or outlives the component.
  */
-export const useDaemon = (client: DaemonClient, pollInterval: number): DaemonView => {
+export const useDaemon = (
+  client: DaemonClient,
+  pollInterval: number,
+  requestTimeout: number,
+): DaemonView => {
   const [view, setView] = useState<DaemonView>({
     accounts: undefined,
     info: undefined,
@@ -37,12 +44,23 @@ export const useDaemon = (client: DaemonClient, pollInterval: number): DaemonVie
   useEffect(() => {
     let stopped = false
     let timer: ReturnType<typeof setTimeout> | undefined
+    let inFlight: AbortController | undefined
     const refresh = async () => {
+      const controller = new AbortController()
+      inFlight = controller
+      const deadline = setTimeout(() => controller.abort(), requestTimeout)
       try {
-        const [accounts, info] = await Promise.all([client.accounts(), client.daemon()])
+        const [accounts, info] = await Promise.all([
+          client.accounts(controller.signal),
+          client.daemon(controller.signal),
+        ])
         if (!stopped) setView({ accounts, info, failure: undefined })
       } catch (error) {
         if (!stopped) setView((last) => ({ ...last, failure: asFailure(error) }))
+      } finally {
+        clearTimeout(deadline)
+        // Whichever request is still pending after a failure is not needed.
+        controller.abort()
       }
       if (!stopped) timer = setTimeout(() => void refresh(), pollInterval)
     }
@@ -50,8 +68,9 @@ export const useDaemon = (client: DaemonClient, pollInterval: number): DaemonVie
     return () => {
       stopped = true
       clearTimeout(timer)
+      inFlight?.abort()
     }
-  }, [client, pollInterval])
+  }, [client, pollInterval, requestTimeout])
 
   return view
 }

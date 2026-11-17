@@ -48,6 +48,8 @@ export interface FakeDaemon {
   reachable: boolean
   /** While set, every request is refused with this 403 error message. */
   refusal: string | undefined
+  /** While true, every request hangs, as a suspended daemon's would, until its signal aborts it. */
+  stalled: boolean
 }
 
 const json = (body: unknown, status = 200) =>
@@ -63,8 +65,16 @@ export const fakeDaemon = (
     address: "http://127.0.0.1:8318",
     reachable: true,
     refusal: undefined,
-    fetch: async (input) => {
+    stalled: false,
+    fetch: async (input, init) => {
       if (!daemon.reachable) throw new TypeError("Failed to fetch")
+      if (daemon.stalled) {
+        await new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("The operation was aborted.", "AbortError")),
+          )
+        })
+      }
       if (daemon.refusal !== undefined) return json({ error: daemon.refusal }, 403)
       const url = new URL(input instanceof Request ? input.url : String(input), "http://dashboard")
       switch (url.pathname) {

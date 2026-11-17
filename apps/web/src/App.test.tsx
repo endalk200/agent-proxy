@@ -225,6 +225,23 @@ describe("when the daemon stops answering", () => {
     screen.getByRole("button", { name: "This Mac 127.0.0.1:8318" })
   })
 
+  it("treats a daemon that stops answering mid-request as unreachable, and recovers", async () => {
+    const daemon = fakeDaemon({
+      accounts: [account({ id: "a1", label: "Work" })],
+      pools: [{ provider: "claude", newSessionsAccountId: "a1" }],
+    })
+    render(<App fetch={daemon.fetch} pollInterval={20} requestTimeout={50} />)
+    await screen.findByRole("table", { name: "Claude accounts" })
+
+    daemon.stalled = true
+    const banner = await screen.findByRole("status")
+    expect(banner.textContent).toContain("Can't reach the daemon")
+    screen.getByRole("table", { name: "Claude accounts" })
+
+    daemon.stalled = false
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull())
+  })
+
   it("shows the error the daemon answers with", async () => {
     const daemon = fakeDaemon()
     daemon.refusal = "The daemon API is served to clients on this machine only."

@@ -15,13 +15,17 @@ const browserFetch: typeof fetch = (input, init) => window.fetch(input, init)
 
 /**
  * The dashboard: a sidebar app shell around the Accounts page, reading the
- * daemon API of the daemon that serves it. `fetch` and `pollInterval` exist
+ * daemon API of the daemon that serves it. `fetch`, `pollInterval` and `requestTimeout` exist
  * for tests.
  */
-export function App(props: { fetch?: typeof fetch; pollInterval?: number }) {
+export function App(props: {
+  fetch?: typeof fetch
+  pollInterval?: number
+  requestTimeout?: number
+}) {
   const fetchImpl = props.fetch ?? browserFetch
   const client = useMemo(() => createDaemonClient(fetchImpl), [fetchImpl])
-  const view = useDaemon(client, props.pollInterval ?? 3000)
+  const view = useDaemon(client, props.pollInterval ?? 3000, props.requestTimeout ?? 5000)
   const now = useNow(15_000)
   const [connecting, setConnecting] = useState(false)
 

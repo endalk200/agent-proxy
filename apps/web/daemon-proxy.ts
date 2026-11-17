@@ -41,7 +41,8 @@ const forward: Connect.NextHandleFunction = (req, res, next) => {
   if (target === undefined) return req.socket.destroy()
   const upstream = request(
     {
-      hostname: target.hostname,
+      // URL keeps an IPv6 host in brackets; `request` wants it bare.
+      hostname: target.hostname.replace(/^\[(.*)\]$/, "$1"),
       port: target.port,
       method: req.method,
       path: req.url,
