@@ -2,12 +2,16 @@ import { Tooltip } from "@base-ui/react/tooltip"
 import { useMemo, useState } from "react"
 
 import "./styles.css"
-import { AccountsPage } from "./AccountsPage.tsx"
+import { AccountSheet } from "./AccountSheet.tsx"
+import { type AccountControls, AccountsPage } from "./AccountsPage.tsx"
 import { ConnectClientsDialog } from "./ConnectClients.tsx"
-import { createDaemonClient } from "./daemon-api.ts"
-import { hostOf } from "./model.ts"
+import { type Account, createDaemonClient } from "./daemon-api.ts"
+import { accountsOf, hostOf } from "./model.ts"
+import { NoticeProvider } from "./Notices.tsx"
+import { RemoveAccountDialog } from "./RemoveAccount.tsx"
 import { Sidebar } from "./Sidebar.tsx"
 import { IconPower } from "./ui.tsx"
+import { useAccountActions } from "./useAccountActions.ts"
 import { useDaemon, useNow } from "./useDaemon.ts"
 
 /** The browser's own fetch, called through so it keeps `window` as `this`. */
@@ -23,19 +27,51 @@ export function App(props: {
   pollInterval?: number
   requestTimeout?: number
 }) {
+  return (
+    <NoticeProvider>
+      <Dashboard {...props} />
+    </NoticeProvider>
+  )
+}
+
+function Dashboard(props: {
+  fetch?: typeof fetch
+  pollInterval?: number
+  requestTimeout?: number
+}) {
   const fetchImpl = props.fetch ?? browserFetch
   const client = useMemo(() => createDaemonClient(fetchImpl), [fetchImpl])
   const view = useDaemon(client, props.pollInterval ?? 3000, props.requestTimeout ?? 5000)
+  const actions = useAccountActions(view, client)
   const now = useNow(15_000)
   const [connecting, setConnecting] = useState(false)
+  const [openId, setOpenId] = useState<string | undefined>()
+  const [removing, setRemoving] = useState<Account | undefined>()
+  const [announcement, setAnnouncement] = useState("")
 
   const address = view.info?.address ?? window.location.origin
   const reachable = view.failure === undefined
   const failure = view.failure
+  const list = view.accounts
+  const sheetOpen = list?.accounts.some((account) => account.id === openId) ?? false
+
+  const controls: AccountControls = {
+    readOnly: !reachable,
+    openId,
+    open: (account) => setOpenId(account.id),
+    setEnabled: actions.setEnabled,
+    rename: actions.rename,
+    move: (account, priority) => {
+      actions.move(account, priority)
+      const poolSize = list === undefined ? priority : accountsOf(list, account.provider).length
+      setAnnouncement(`${account.label} moved to priority ${priority} of ${poolSize}.`)
+    },
+    askRemove: setRemoving,
+  }
 
   return (
     <Tooltip.Provider delay={400}>
-      <div className="app">
+      <div className={`app ${sheetOpen ? "has-sheet" : ""}`}>
         <Sidebar
           list={view.accounts}
           info={view.info}
@@ -68,7 +104,9 @@ export function App(props: {
             )}
 
             <header className="pagehead">
-              <h1>Accounts</h1>
+              <h1 id="page-title" tabIndex={-1}>
+                Accounts
+              </h1>
               <p>
                 Each client spends only its own provider's accounts. Within a pool, the
                 highest-priority account that is Active gets new sessions.
@@ -82,12 +120,31 @@ export function App(props: {
                   now={now}
                   address={hostOf(address)}
                   client={client}
-                  readOnly={!reachable}
+                  controls={controls}
                 />
               </div>
             )}
           </div>
         </main>
+
+        <div className="sr-only" aria-live="polite">
+          {announcement}
+        </div>
+
+        <AccountSheet
+          list={list}
+          now={now}
+          controls={controls}
+          covered={removing !== undefined || connecting}
+          onClose={() => setOpenId(undefined)}
+        />
+
+        <RemoveAccountDialog
+          account={removing}
+          list={list}
+          remove={actions.remove}
+          onClose={() => setRemoving(undefined)}
+        />
 
         <ConnectClientsDialog
           open={connecting}

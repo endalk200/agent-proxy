@@ -22,7 +22,16 @@ export interface Account {
   readonly priority: number
   readonly enabled: boolean
   readonly status: AccountStatus
+  readonly addedAt: string
   readonly lastUsedAt: string | null
+}
+
+/** The settings the owner changes on an account; each one left out stays as it is. */
+export interface AccountSettings {
+  readonly label?: string
+  /** A place in the account's pool, 1 first; the others shift to make room. */
+  readonly priority?: number
+  readonly enabled?: boolean
 }
 
 export interface Pool {
@@ -48,8 +57,11 @@ export interface DaemonInfo {
 export type DaemonFailure =
   /** Nothing answered: the daemon is stopped, or the network is down. */
   | { readonly kind: "unreachable" }
-  /** The daemon answered with an error, or with something the dashboard cannot read. */
-  | { readonly kind: "error"; readonly message: string }
+  /**
+   * The daemon answered with an error (`status` is its HTTP status), or with
+   * something the dashboard cannot read.
+   */
+  | { readonly kind: "error"; readonly message: string; readonly status?: number }
 
 export class DaemonCallError extends Error {
   constructor(readonly failure: DaemonFailure) {
@@ -61,6 +73,10 @@ export interface DaemonClient {
   readonly accounts: (signal?: AbortSignal) => Promise<AccountList>
   readonly daemon: (signal?: AbortSignal) => Promise<DaemonInfo>
   readonly key: () => Promise<string>
+  /** `PATCH /api/accounts/:id`. */
+  readonly updateAccount: (id: string, settings: AccountSettings) => Promise<Account>
+  /** `DELETE /api/accounts/:id`. */
+  readonly removeAccount: (id: string) => Promise<Account>
 }
 
 // ------------------------------------------------------------------ decoding
@@ -104,6 +120,7 @@ const decodeAccount = (value: unknown): Account => {
     priority: json["priority"],
     enabled: json["enabled"],
     status: oneOf(STATUSES, json["status"]),
+    addedAt: string(json["addedAt"]),
     lastUsedAt: nullableString(json["lastUsedAt"]),
   }
 }
@@ -143,16 +160,24 @@ const errorMessage = (value: unknown): string | undefined => {
 
 // -------------------------------------------------------------------- client
 
+const accountPath = (id: string) => `/api/accounts/${encodeURIComponent(id)}`
+
 export const createDaemonClient = (fetchImpl: typeof fetch): DaemonClient => {
-  const get = async <A>(
+  const call = async <A>(
     path: string,
     decode: (body: unknown) => A,
-    signal?: AbortSignal,
+    options: { method?: string; body?: unknown; signal?: AbortSignal | undefined } = {},
   ): Promise<A> => {
+    const { method = "GET", signal } = options
     let response: Response
     try {
       response = await fetchImpl(path, {
-        headers: { accept: "application/json" },
+        method,
+        headers:
+          options.body === undefined
+            ? { accept: "application/json" }
+            : { accept: "application/json", "content-type": "application/json" },
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
         ...(signal === undefined ? {} : { signal }),
       })
     } catch {
@@ -163,22 +188,25 @@ export const createDaemonClient = (fetchImpl: typeof fetch): DaemonClient => {
     if (signal?.aborted === true) throw new DaemonCallError({ kind: "unreachable" })
     if (!response.ok) {
       const message =
-        errorMessage(body) ?? `The daemon answered ${path} with HTTP ${response.status}.`
-      throw new DaemonCallError({ kind: "error", message })
+        errorMessage(body) ?? `The daemon answered ${method} ${path} with HTTP ${response.status}.`
+      throw new DaemonCallError({ kind: "error", message, status: response.status })
     }
     try {
       return decode(body)
     } catch {
       throw new DaemonCallError({
         kind: "error",
-        message: `The daemon's answer to ${path} is not what this dashboard expects.`,
+        message: `The daemon's answer to ${method} ${path} is not what this dashboard expects.`,
       })
     }
   }
 
   return {
-    accounts: (signal) => get("/api/accounts", decodeAccountList, signal),
-    daemon: (signal) => get("/api/daemon", decodeDaemonInfo, signal),
-    key: () => get("/api/key", decodeKey),
+    accounts: (signal) => call("/api/accounts", decodeAccountList, { signal }),
+    daemon: (signal) => call("/api/daemon", decodeDaemonInfo, { signal }),
+    key: () => call("/api/key", decodeKey),
+    updateAccount: (id, settings) =>
+      call(accountPath(id), decodeAccount, { method: "PATCH", body: settings }),
+    removeAccount: (id) => call(accountPath(id), decodeAccount, { method: "DELETE" }),
   }
 }

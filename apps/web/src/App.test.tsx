@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest"
 
 import { App } from "./App.tsx"
 import { account, type FakeDaemon, fakeDaemon } from "./test/fake-daemon.ts"
+import { rowsOf } from "./test/queries.ts"
 
 // The dashboard against a fake daemon API, found the way a user (or a screen
 // reader) finds things: by ARIA role and accessible name.
@@ -10,32 +11,6 @@ import { account, type FakeDaemon, fakeDaemon } from "./test/fake-daemon.ts"
 afterEach(cleanup)
 
 const show = (daemon: FakeDaemon) => render(<App fetch={daemon.fetch} pollInterval={20} />)
-
-/** The text a cell shows, its pieces separated by single spaces. */
-const textOf = (element: Element): string => {
-  const pieces: Array<string> = []
-  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT)
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    const text = node.textContent?.trim()
-    if (text) pieces.push(text)
-  }
-  return pieces.join(" ")
-}
-
-/** Each body row of `table` as { column header: cell text }. */
-const rowsOf = (table: HTMLElement) => {
-  const [head, ...body] = within(table).getAllByRole("row")
-  const headers = within(head!)
-    .getAllByRole("columnheader")
-    .map((th) => th.getAttribute("aria-label") ?? textOf(th))
-  return body.map((row) =>
-    Object.fromEntries(
-      within(row)
-        .getAllByRole("cell")
-        .map((cell, index) => [headers[index], textOf(cell)]),
-    ),
-  )
-}
 
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
 
