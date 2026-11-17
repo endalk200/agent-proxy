@@ -37,8 +37,22 @@ export const Account = Schema.Struct({
   addedAt: Schema.String,
   lastUsedAt: Schema.NullOr(Schema.String),
   credentials: Credentials,
+  /**
+   * When a refresh of `credentials` started whose outcome is not yet recorded,
+   * as an ISO 8601 timestamp. Written before the refresh is sent, so a daemon
+   * that stops mid-refresh finds it on its next start: refresh tokens are
+   * single-use, so such a refresh is never replayed.
+   */
+  refreshStartedAt: Schema.optionalKey(Schema.String),
 })
 export type Account = typeof Account.Type
+
+/** The part of an account its credential keeper changes. */
+export interface CredentialState {
+  readonly credentials: Credentials
+  readonly needsSignIn: boolean
+  readonly refreshStartedAt?: string
+}
 
 /** Where an account stands with its pool (see GLOSSARY.md). */
 export const AccountStatus = Schema.Literals(["active", "needs-sign-in", "disabled"])

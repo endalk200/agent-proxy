@@ -1,8 +1,21 @@
-import { Clock, Context, DateTime, Effect, Layer, Option, Schema } from "effect"
-import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
+import { Clock, Context, DateTime, Duration, Effect, Layer, Option, Schema } from "effect"
+import {
+  HttpClient,
+  type HttpClientError,
+  HttpClientRequest,
+  type HttpClientResponse,
+} from "effect/http"
 
 import { ProviderEndpoints } from "./endpoints.ts"
-import { type ExchangeParams, type LoginAdapter, ProviderLoginError } from "./provider.ts"
+import {
+  type ExchangeParams,
+  type LoginAdapter,
+  ProviderLoginError,
+  RefreshOutcomeUnknown,
+  RefreshRejected,
+  RefreshUnavailable,
+  type TokenAdapter,
+} from "./provider.ts"
 
 /**
  * The Claude adapter's login half: Claude Code's OAuth client, with the
@@ -25,6 +38,14 @@ const TokenResponse = Schema.Struct({
   access_token: Schema.String,
   refresh_token: Schema.String,
   expires_in: Schema.Finite,
+})
+type TokenResponse = typeof TokenResponse.Type
+
+/** The credentials a token response grants, as of `now`. */
+const toCredentials = (tokens: TokenResponse, now: number) => ({
+  accessToken: tokens.access_token,
+  refreshToken: tokens.refresh_token,
+  expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + Math.round(tokens.expires_in * 1000))),
 })
 
 const TokenError = Schema.Struct({
@@ -154,13 +175,7 @@ export class ClaudeLogin extends Context.Service<ClaudeLogin, LoginAdapter>()(
               email: profile.account.email,
               plan: claudePlan(profile.organization),
             },
-            credentials: {
-              accessToken: tokens.access_token,
-              refreshToken: tokens.refresh_token,
-              expiresAt: DateTime.formatIso(
-                DateTime.makeUnsafe(now + Math.round(tokens.expires_in * 1000)),
-              ),
-            },
+            credentials: toCredentials(tokens, now),
           }
         },
         Effect.timeoutOrElse({
@@ -195,6 +210,96 @@ export class ClaudeLogin extends Context.Service<ClaudeLogin, LoginAdapter>()(
         },
         exchange,
       })
+    }),
+  )
+}
+
+/** How long a refresh may take before its outcome counts as unknown. */
+const REFRESH_TIMEOUT = "30 seconds"
+
+/**
+ * Transport error codes that mean the connection was never made, so the
+ * refresh request was never sent. Every other transport error may have
+ * happened after Claude received it.
+ */
+const NOT_CONNECTED = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "FailedToOpenSocket",
+  "ConnectionRefused",
+])
+
+const errorCode = (cause: unknown) =>
+  typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : undefined
+
+/** How a refresh request that got no answer ended. */
+const unanswered = (error: HttpClientError.HttpClientError) =>
+  error.reason._tag === "TransportError" && NOT_CONNECTED.has(errorCode(error.reason.cause) ?? "")
+    ? new RefreshUnavailable({ reason: "Could not reach Claude.", cause: error })
+    : new RefreshOutcomeUnknown({
+        reason: "The connection to Claude closed before it answered.",
+        cause: error,
+      })
+
+/**
+ * The Claude adapter's token half: refreshes an account's tokens with Claude
+ * Code's OAuth client, an hour before they expire. Claude's refresh tokens are
+ * single-use: a refresh replaces both tokens.
+ */
+export class ClaudeTokens extends Context.Service<ClaudeTokens, TokenAdapter>()(
+  "agent-proxy/ClaudeTokens",
+) {
+  static readonly layer = Layer.effect(
+    ClaudeTokens,
+    Effect.gen(function* () {
+      const { claude: endpoints } = yield* ProviderEndpoints
+      const http = yield* HttpClient.HttpClient
+
+      const refresh = Effect.fn("ClaudeTokens.refresh")(
+        function* (refreshToken: string) {
+          const response = yield* HttpClientRequest.post(endpoints.tokenUrl).pipe(
+            HttpClientRequest.acceptJson,
+            HttpClientRequest.bodyJsonUnsafe({
+              grant_type: "refresh_token",
+              refresh_token: refreshToken,
+              client_id: CLIENT_ID,
+            }),
+            http.execute,
+            Effect.mapError(unanswered),
+          )
+          if (response.status === 429 || response.status >= 500) {
+            return yield* new RefreshUnavailable({
+              reason: `Claude could not refresh the tokens now (HTTP ${response.status}).`,
+            })
+          }
+          if (response.status !== 200) {
+            return yield* new RefreshRejected({ reason: yield* describeRejection(response) })
+          }
+          const tokens = yield* response.json.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(TokenResponse)),
+            Effect.mapError(
+              (cause) =>
+                new RefreshOutcomeUnknown({
+                  reason: "Claude's answer to the refresh could not be read.",
+                  cause,
+                }),
+            ),
+          )
+          return toCredentials(tokens, yield* Clock.currentTimeMillis)
+        },
+        Effect.timeoutOrElse({
+          duration: REFRESH_TIMEOUT,
+          orElse: () =>
+            Effect.fail(
+              new RefreshOutcomeUnknown({ reason: "Claude did not answer within 30 seconds." }),
+            ),
+        }),
+      )
+
+      return ClaudeTokens.of({ provider: "claude", refreshLead: Duration.hours(1), refresh })
     }),
   )
 }

@@ -3,13 +3,14 @@ import { Clock, Data, DateTime, Effect, FileSystem, Layer, Logger } from "effect
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http"
 
 import packageJson from "../../package.json" with { type: "json" }
+import { CredentialKeeper } from "../accounts/keeper.ts"
 import { AccountStore } from "../accounts/store.ts"
 import { type ListenAddress, loadConfigFile } from "../config.ts"
 import { Logins } from "../logins/logins.ts"
 import { resolveDataDir, resolveStateDir } from "../paths.ts"
 import { Processes } from "../processes.ts"
 import { ClaudeApi } from "../providers/claude-api.ts"
-import { ClaudeLogin } from "../providers/claude.ts"
+import { ClaudeLogin, ClaudeTokens } from "../providers/claude.ts"
 import { claudeRoutes } from "../proxy/claude-routes.ts"
 import { ProxyKey } from "../proxy/proxy-key.ts"
 import { accountRoutes } from "./accounts-routes.ts"
@@ -148,9 +149,9 @@ export const startDaemon = Effect.gen(function* () {
       }).pipe(
         Layer.provide(
           Layer.mergeAll(
-            Logins.layer.pipe(
+            Layer.mergeAll(Logins.layer, CredentialKeeper.layer).pipe(
               Layer.provideMerge(AccountStore.layer),
-              Layer.provide(ClaudeLogin.layer),
+              Layer.provide(Layer.mergeAll(ClaudeLogin.layer, ClaudeTokens.layer)),
             ),
             ProxyKey.layer,
             ClaudeApi.layer,
