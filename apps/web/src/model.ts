@@ -16,8 +16,10 @@ export const providerNames: Readonly<Record<Provider, string>> = {
 
 export const statusLabels: Readonly<Record<AccountStatus, string>> = {
   active: "Active",
+  "cooling-down": "Cooling down",
   "needs-sign-in": "Needs sign-in",
   disabled: "Disabled",
+  unknown: "Unknown",
 }
 
 export interface Client {
@@ -83,18 +85,62 @@ export const withSettings = (
  * What a pool does with a new session:
  * - `serving`: `account` gets it;
  * - `off`: every account in the pool is disabled;
- * - `blocked`: no enabled account can take it, as each one needs sign-in.
+ * - `blocked`: no enabled account can take it, as each one is cooling down or
+ *   needs sign-in. `nextReset` is when the first cooldown ends (epoch
+ *   milliseconds), if any is running, and `allCooling` says every enabled
+ *   account is cooling down.
  */
 export type PoolState =
   | { readonly kind: "serving"; readonly account: Account }
   | { readonly kind: "off" }
-  | { readonly kind: "blocked" }
+  | { readonly kind: "blocked"; readonly nextReset: number | null; readonly allCooling: boolean }
+
+/** When `account`'s cooldown ends, in epoch milliseconds, if it is cooling down. */
+export const cooldownEnd = (account: Account): number | null =>
+  account.status === "cooling-down" && account.cooldownEndsAt !== null
+    ? Date.parse(account.cooldownEndsAt)
+    : null
 
 export const poolState = (list: AccountList, pool: Pool): PoolState => {
   const accounts = accountsOf(list, pool.provider)
   const serving = accounts.find((account) => account.id === pool.newSessionsAccountId)
   if (serving !== undefined) return { kind: "serving", account: serving }
-  return accounts.every((account) => !account.enabled) ? { kind: "off" } : { kind: "blocked" }
+  const enabled = accounts.filter((account) => account.enabled)
+  if (enabled.length === 0) return { kind: "off" }
+  const resets = enabled.flatMap((account) => {
+    const end = cooldownEnd(account)
+    return end === null ? [] : [end]
+  })
+  return {
+    kind: "blocked",
+    nextReset: resets.length === 0 ? null : Math.min(...resets),
+    allCooling: resets.length === enabled.length,
+  }
+}
+
+/** Times as the owner's browser shows them, with plain spaces so they wrap like the text around them. */
+const localTime = (options: Intl.DateTimeFormatOptions) => {
+  const format = new Intl.DateTimeFormat(undefined, options)
+  return (at: number) => format.format(at).replaceAll("\u202f", " ")
+}
+const timeOfDay = localTime({ hour: "numeric", minute: "2-digit" })
+const day = localTime({ month: "short", day: "numeric" })
+
+/** "3:47 PM" for a time later today, else "Nov 20, 10:30 AM". */
+export const clockText = (at: number, now: number): string =>
+  new Date(at).toDateString() === new Date(now).toDateString()
+    ? timeOfDay(at)
+    : `${day(at)}, ${timeOfDay(at)}`
+
+/** "in 30s", "in 47m", "in 1h 12m", "in 2d 19h": how long until `at`. */
+export const countdown = (at: number, now: number): string => {
+  const seconds = Math.max(0, Math.round((at - now) / 1000))
+  if (seconds < 60) return `in ${seconds}s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `in ${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `in ${hours}h ${minutes % 60}m`
+  return `in ${Math.floor(hours / 24)}d ${hours % 24}h`
 }
 
 /** How much a plan carries, for its badge's weight: 1 the smallest. */
