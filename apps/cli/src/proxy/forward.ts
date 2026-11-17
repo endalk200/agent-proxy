@@ -1,4 +1,4 @@
-import { type Context, Effect, Option } from "effect"
+import { Clock, type Context, Effect, Option } from "effect"
 import {
   Headers,
   HttpClientResponse,
@@ -7,19 +7,21 @@ import {
   HttpServerResponse,
 } from "effect/http"
 
-import { type Account, chooseAccount, type Provider, providerNames } from "../accounts/account.ts"
+import { type Account, type Provider, providerNames } from "../accounts/account.ts"
 import { CredentialKeeper } from "../accounts/keeper.ts"
-import { AccountStore } from "../accounts/store.ts"
+import { type Cooldown, Router } from "../accounts/router.ts"
 import type { UpstreamApi } from "../providers/upstream.ts"
 import { ProxyKey } from "./proxy-key.ts"
 
 /**
  * The proxy's request handling, the same for every provider (native routing):
- * a request that carries the proxy key goes to its provider as the
- * highest-priority Active account of that provider's pool. When the provider
- * rejects the account's token (401), the token is refreshed once and the
- * request retried on the same account. The provider's answer streams back as
- * it arrives.
+ * a request that carries the proxy key goes to its provider as the account
+ * the router chooses from that provider's pool. When the provider rejects the
+ * account's token (401), the token is refreshed once and the request retried
+ * on the same account. When it answers that the account hit a limit, the
+ * account cools down and the request goes to the next account; nothing has
+ * reached the client yet, so it never notices. Any other answer streams back
+ * as it arrives, and is never retried once it has started.
  */
 
 /** What went wrong, for a provider's own error shape. */
@@ -32,10 +34,24 @@ export type ErrorResponse = (
   message: string,
 ) => HttpServerResponse.HttpServerResponse
 
+/**
+ * A provider's own limit answer, so its clients show when work can resume:
+ * every account is cooling down, and `cooldown` ends first. `now` is the
+ * current time in epoch milliseconds.
+ */
+export type CoolingDownResponse = (
+  cooldown: Cooldown,
+  now: number,
+) => HttpServerResponse.HttpServerResponse
+
+/** A cooldown's end for a client's message, to the second: "2026-11-17T15:42:00Z". */
+export const untilText = (until: number) => `${new Date(until).toISOString().slice(0, 19)}Z`
+
 export interface ProxiedProvider<I> {
   readonly provider: Provider
   readonly upstream: Context.Key<I, UpstreamApi>
   readonly error: ErrorResponse
+  readonly coolingDown: CoolingDownResponse
 }
 
 /**
@@ -74,8 +90,36 @@ const discard = (upstream: HttpClientResponse.HttpClientResponse) =>
       Effect.promise(() => (response.body?.cancel() ?? Promise.resolve()).catch(() => undefined)),
   })
 
+/** A provider's answer whose body, if any, was read in full before relaying. */
+interface BufferedAnswer {
+  readonly status: number
+  readonly headers: Headers.Headers
+  readonly body: Uint8Array | undefined
+}
+
+const decoder = new TextDecoder()
+
+/** How long a 429's body may take to arrive before it is judged by its headers alone. */
+const LIMIT_BODY_TIMEOUT = "5 seconds"
+
+/** A 429's body, read in full, or none when it cannot be read in time. */
+const readLimitBody = (response: HttpClientResponse.HttpClientResponse) =>
+  response.arrayBuffer.pipe(
+    Effect.map((buffer) => new Uint8Array(buffer)),
+    Effect.timeoutOption(LIMIT_BODY_TIMEOUT),
+    Effect.map(Option.getOrUndefined),
+    Effect.orElseSucceed(() => undefined),
+  )
+
+/** A provider's answer read in full, sent to the client as it came. */
+const replay = (answer: BufferedAnswer) =>
+  HttpServerResponse.uint8Array(answer.body ?? new Uint8Array(), {
+    status: answer.status,
+    headers: Headers.removeMany(answer.headers, NOT_RELAYED),
+  })
+
 /** The handler that proxies a request to `provider`. */
-export const forward = <I>({ provider, upstream, error }: ProxiedProvider<I>) => {
+export const forward = <I>({ provider, upstream, error, coolingDown }: ProxiedProvider<I>) => {
   const name = providerNames[provider]
   /**
    * Key errors are 401s: after a 401 Claude Code runs its `apiKeyHelper` again
@@ -111,33 +155,75 @@ export const forward = <I>({ provider, upstream, error }: ProxiedProvider<I>) =>
     if (presented === undefined) return noKey
     if (!(yield* (yield* ProxyKey).matches(presented))) return wrongKey
 
-    const body = new Uint8Array(yield* request.arrayBuffer)
-    const store = yield* AccountStore
+    const proxied = {
+      method,
+      url: request.url,
+      headers: request.headers,
+      body: new Uint8Array(yield* request.arrayBuffer),
+    }
     const keeper = yield* CredentialKeeper
+    const router = yield* Router
     const api = yield* upstream
-    const send = (account: Account, accessToken: string) =>
-      api.send({ method, url: request.url, headers: request.headers, body }, account, accessToken)
+    const session = api.sessionOf(proxied)
+    const send = (account: Account, accessToken: string) => api.send(proxied, account, accessToken)
 
-    // An account can turn out unable to serve only once chosen, when its tokens
-    // cannot be refreshed; the choice is then made again without it.
-    for (;;) {
-      const accounts = yield* store.list
-      const account = chooseAccount(accounts, provider)
-      if (account === undefined) return noAccount(accounts)
+    /**
+     * The provider's answer to the request sent as `account`, or none when the
+     * account turns out unable to serve: its tokens cannot be refreshed.
+     */
+    const attempt = Effect.fnUntraced(function* (account: Account) {
       const credentials = yield* keeper.credentialsFor(account)
-      if (Option.isNone(credentials)) continue
-
+      if (Option.isNone(credentials)) return Option.none()
       const answer = yield* send(account, credentials.value.accessToken)
-      if (answer.status !== 401) return relay(answer)
+      if (answer.status !== 401) return Option.some(answer)
 
       // The provider rejected the token: refresh once and retry on the same account.
       const retry = yield* keeper.credentialsAfterRejection(account, credentials.value.accessToken)
       if (Option.isSome(retry) && retry.value.accessToken === credentials.value.accessToken) {
-        return relay(answer)
+        return Option.some(answer)
       }
       yield* discard(answer)
-      if (Option.isNone(retry)) continue
-      return relay(yield* send(account, retry.value.accessToken))
+      if (Option.isNone(retry)) return Option.none()
+      return Option.some(yield* send(account, retry.value.accessToken))
+    })
+
+    // Accounts this request found limited or unable to serve.
+    const tried = new Set<string>()
+    // The last limit answer, read in full: when its account is the first to
+    // be free again, the client gets the provider's own answer.
+    let limited: { readonly accountId: string; readonly answer: BufferedAnswer } | undefined
+    for (;;) {
+      const choice = yield* router.choose(provider, session, tried)
+      if (choice._tag === "CoolingDown") {
+        return limited?.accountId === choice.accountId && limited.answer.body !== undefined
+          ? replay(limited.answer)
+          : coolingDown(choice.cooldown, yield* Clock.currentTimeMillis)
+      }
+      if (choice._tag === "Unavailable") return noAccount(choice.accounts)
+      const account = choice.account
+      tried.add(account.id)
+
+      const answer = yield* attempt(account)
+      if (Option.isNone(answer)) continue
+      const response = answer.value
+      // Only a 429 is read before the client gets it: it may say the account hit a limit.
+      const buffered: BufferedAnswer =
+        response.status === 429
+          ? { status: 429, headers: response.headers, body: yield* readLimitBody(response) }
+          : { status: response.status, headers: response.headers, body: undefined }
+      const signal = api.limitsOf(
+        {
+          ...buffered,
+          body: buffered.body === undefined ? undefined : decoder.decode(buffered.body),
+        },
+        yield* Clock.currentTimeMillis,
+      )
+      yield* router.record(account, session, signal)
+      if (signal._tag === "Within") {
+        return buffered.body === undefined ? relay(response) : replay(buffered)
+      }
+      if (buffered.body === undefined) yield* discard(response)
+      limited = { accountId: account.id, answer: buffered }
     }
   }).pipe(
     Effect.catchTags({

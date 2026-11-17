@@ -9,8 +9,11 @@
 
 export type Provider = "claude" | "codex"
 
-/** Where an account stands with its pool (see GLOSSARY.md). */
-export type AccountStatus = "active" | "needs-sign-in" | "disabled"
+/**
+ * Where an account stands with its pool (see GLOSSARY.md). `unknown` stands
+ * for a status a newer daemon reports that this dashboard does not know.
+ */
+export type AccountStatus = "active" | "cooling-down" | "needs-sign-in" | "disabled" | "unknown"
 
 export interface Account {
   readonly id: string
@@ -22,6 +25,8 @@ export interface Account {
   readonly priority: number
   readonly enabled: boolean
   readonly status: AccountStatus
+  /** When a `cooling-down` account's cooldown ends, as an ISO 8601 timestamp. */
+  readonly cooldownEndsAt: string | null
   readonly addedAt: string
   readonly lastUsedAt: string | null
 }
@@ -133,7 +138,12 @@ const oneOf = <A extends string>(options: ReadonlyArray<A>, value: unknown): A =
   return found
 }
 const PROVIDERS: ReadonlyArray<Provider> = ["claude", "codex"]
-const STATUSES: ReadonlyArray<AccountStatus> = ["active", "needs-sign-in", "disabled"]
+const STATUSES: ReadonlyArray<AccountStatus> = [
+  "active",
+  "cooling-down",
+  "needs-sign-in",
+  "disabled",
+]
 const LOGIN_STATUSES: ReadonlyArray<LoginStatus> = [
   "pending",
   "succeeded",
@@ -155,7 +165,11 @@ const decodeAccount = (value: unknown): Account => {
     plan: string(json["plan"]),
     priority: json["priority"],
     enabled: json["enabled"],
-    status: oneOf(STATUSES, json["status"]),
+    // One account in a status this dashboard does not know leaves the rest readable.
+    status: STATUSES.find((status) => status === json["status"]) ?? "unknown",
+    // A daemon from before cooldowns does not send it.
+    cooldownEndsAt:
+      json["cooldownEndsAt"] === undefined ? null : nullableString(json["cooldownEndsAt"]),
     addedAt: string(json["addedAt"]),
     lastUsedAt: nullableString(json["lastUsedAt"]),
   }

@@ -7,6 +7,9 @@ import { type AccountControls, LabelInput } from "./AccountsPage.tsx"
 import type { Account, AccountList } from "./daemon-api.ts"
 import {
   accountsOf,
+  clockText,
+  cooldownEnd,
+  countdown,
   lastUsedText,
   ordinal,
   planWeight,
@@ -19,6 +22,7 @@ import {
   IconChart,
   IconChevronDown,
   IconChevronUp,
+  IconClock,
   IconPencil,
   IconTrash,
   IconX,
@@ -193,7 +197,7 @@ function SheetBody(props: {
           </div>
         </header>
 
-        <StatusCard account={account} list={list} controls={controls} />
+        <StatusCard account={account} list={list} controls={controls} now={props.now} />
 
         <Tabs.Root className="tabs" defaultValue="overview">
           <Tabs.List className="tabs-list">
@@ -363,8 +367,14 @@ function Planned({ icon, children }: { icon: ReactNode; children: ReactNode }) {
 }
 
 /** Where the account stands, in a sentence, and what the owner can do about it. */
-function StatusCard(props: { account: Account; list: AccountList; controls: AccountControls }) {
+function StatusCard(props: {
+  account: Account
+  list: AccountList
+  controls: AccountControls
+  now: number
+}) {
   const { account, list } = props
+  const end = cooldownEnd(account)
   const provider = providerNames[account.provider]
   const pool = list.pools.find((candidate) => candidate.provider === account.provider)
   const state = pool === undefined ? undefined : poolState(list, pool)
@@ -377,10 +387,14 @@ function StatusCard(props: { account: Account; list: AccountList; controls: Acco
         return state?.kind === "serving"
           ? `Ready. Takes new sessions when ${state.account.label} can't.`
           : `Ready to take new ${provider} sessions.`
+      case "cooling-down":
+        return "It hit its plan's limit. agent-proxy skips it until the limit resets."
       case "needs-sign-in":
         return "Its sign-in expired, so agent-proxy skips it until you sign in again."
       case "disabled":
         return "You turned it off. It keeps its place in the priority order."
+      case "unknown":
+        return "The daemon reports a status this dashboard does not know. Update agent-proxy."
     }
   })()
 
@@ -391,10 +405,19 @@ function StatusCard(props: { account: Account; list: AccountList; controls: Acco
         <div className="statuscard-text">
           <div className="statuscard-label">
             {statusLabels[account.status]}
+            {end !== null && (
+              <span className="statuscard-until">{`until ${clockText(end, props.now)}`}</span>
+            )}
             {serving && <span className="serving">New sessions</span>}
           </div>
           <p>{text}</p>
         </div>
+        {end !== null && (
+          <span className="statuscard-side">
+            <IconClock size={13} />
+            {countdown(end, props.now)}
+          </span>
+        )}
         {account.status === "disabled" && (
           <button
             type="button"

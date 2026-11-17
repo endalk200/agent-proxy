@@ -1,8 +1,9 @@
 import { Effect } from "effect"
 import { type HttpRouter, HttpServerResponse } from "effect/http"
 
+import type { Cooldown } from "../accounts/router.ts"
 import { ClaudeApi } from "../providers/claude-api.ts"
-import { type ErrorKind, forward } from "./forward.ts"
+import { type ErrorKind, forward, untilText } from "./forward.ts"
 
 /**
  * The proxy's Claude routes: what Claude Code (and opencode's Claude Agent,
@@ -27,7 +28,51 @@ const anthropicError = (status: number, kind: ErrorKind, message: string) =>
     { status },
   )
 
-const toClaude = forward({ provider: "claude", upstream: ClaudeApi, error: anthropicError })
+/** The `anthropic-ratelimit-unified-*` prefix of each usage window Claude Code names. */
+const windowPrefixes: Readonly<Record<string, string>> = { five_hour: "5h", seven_day: "7d" }
+
+/**
+ * Anthropic's own limit answer: a 429 whose `anthropic-ratelimit-unified-*`
+ * headers say the limit was reached and when it resets, so Claude Code shows
+ * "limit reached" with the reset time (spike #6).
+ */
+const anthropicCoolingDown = (cooldown: Cooldown, now: number) => {
+  const reset = String(Math.ceil(cooldown.until / 1000))
+  const prefix = cooldown.window === undefined ? undefined : windowPrefixes[cooldown.window]
+  return HttpServerResponse.jsonUnsafe(
+    {
+      type: "error",
+      error: {
+        type: "rate_limit_error",
+        message: `agent-proxy: every Claude account is cooling down. The first is available again at ${untilText(cooldown.until)}.`,
+      },
+    },
+    {
+      status: 429,
+      headers: {
+        "retry-after": String(Math.max(1, Math.ceil((cooldown.until - now) / 1000))),
+        "anthropic-ratelimit-unified-status": "rejected",
+        "anthropic-ratelimit-unified-reset": reset,
+        ...(cooldown.window === undefined
+          ? {}
+          : { "anthropic-ratelimit-unified-representative-claim": cooldown.window }),
+        ...(prefix === undefined
+          ? {}
+          : {
+              [`anthropic-ratelimit-unified-${prefix}-status`]: "rejected",
+              [`anthropic-ratelimit-unified-${prefix}-reset`]: reset,
+            }),
+      },
+    },
+  )
+}
+
+const toClaude = forward({
+  provider: "claude",
+  upstream: ClaudeApi,
+  error: anthropicError,
+  coolingDown: anthropicCoolingDown,
+})
 
 /** Adds the routes to `router`. */
 export const claudeRoutes = (router: HttpRouter.HttpRouter) =>

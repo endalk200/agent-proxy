@@ -8,6 +8,9 @@ import {
   accountsOf,
   clients,
   clientsOf,
+  clockText,
+  cooldownEnd,
+  countdown,
   lastUsedText,
   planWeight,
   type PoolState,
@@ -19,6 +22,7 @@ import type { SignInRequest } from "./SignIn.tsx"
 import {
   IconAlert,
   IconChevronDown,
+  IconClock,
   IconChevronRight,
   IconChevronUp,
   IconGrip,
@@ -95,7 +99,8 @@ export function AccountsPage(props: {
   )
 }
 
-function PoolLine({ state, provider }: { state: PoolState; provider: Provider }) {
+function PoolLine(props: { state: PoolState; provider: Provider; now: number }) {
+  const { state } = props
   switch (state.kind) {
     case "serving":
       return (
@@ -109,13 +114,42 @@ function PoolLine({ state, provider }: { state: PoolState; provider: Provider })
         <p className="pool-line is-warn">
           <IconAlert size={13} />
           No account can take new sessions
+          {state.nextReset !== null && (
+            <span className="pool-line-sub">
+              {`· next reset ${clockText(state.nextReset, props.now)} (${countdown(state.nextReset, props.now)})`}
+            </span>
+          )}
         </p>
       )
     case "off":
       return (
-        <p className="pool-line is-muted">Every {providerNames[provider]} account is disabled</p>
+        <p className="pool-line is-muted">
+          Every {providerNames[props.provider]} account is disabled
+        </p>
       )
   }
+}
+
+/** Why a blocked pool takes no new sessions, and what ends that. */
+function BlockedCallout(props: {
+  state: Extract<PoolState, { kind: "blocked" }>
+  provider: Provider
+  now: number
+}) {
+  const name = providerNames[props.provider]
+  const { nextReset } = props.state
+  const text =
+    nextReset === null
+      ? `Every enabled ${name} account needs sign-in, so ${clientsOf(props.provider)} get an error until you sign one in again.`
+      : props.state.allCooling
+        ? `Every account in the ${name} pool hit its plan's limit. ${clientsOf(props.provider)} get ${name} sessions again when the first cooldown ends, at ${clockText(nextReset, props.now)}.`
+        : `Every enabled ${name} account is cooling down or needs sign-in. Sign one in again, or wait for the first cooldown to end at ${clockText(nextReset, props.now)}.`
+  return (
+    <div className="callout is-warn" role="note">
+      {nextReset === null ? <IconAlert size={15} /> : <IconClock size={15} />}
+      <span>{text}</span>
+    </div>
+  )
 }
 
 function PoolSection(props: {
@@ -168,17 +202,11 @@ function PoolSection(props: {
             <span className="sr-only"> {accounts.length === 1 ? "account" : "accounts"}</span>
           </span>
         </div>
-        <PoolLine state={state} provider={provider} />
+        <PoolLine state={state} provider={provider} now={props.now} />
       </header>
 
       {state.kind === "blocked" && (
-        <div className="callout is-warn">
-          <IconAlert size={15} />
-          <span>
-            Every enabled {name} account needs sign-in, so {clientsOf(provider)} get an error until
-            you sign one in again.
-          </span>
-        </div>
+        <BlockedCallout state={state} provider={provider} now={props.now} />
       )}
 
       <div className="table-wrap">
@@ -226,6 +254,17 @@ function PoolSection(props: {
         </table>
       </div>
     </section>
+  )
+}
+
+/** When a cooling-down account is back: "until 3:47 PM · in 47m". */
+function CooldownEnd(props: { account: Account; now: number }) {
+  const end = cooldownEnd(props.account)
+  if (end === null) return null
+  return (
+    <span className="status-sub">
+      {`until ${clockText(end, props.now)} · ${countdown(end, props.now)}`}
+    </span>
   )
 }
 
@@ -329,6 +368,7 @@ function AccountRow(props: {
           <span className="sdot" aria-hidden="true" />
           {statusLabels[account.status]}
         </span>
+        <CooldownEnd account={account} now={props.now} />
         {account.status === "needs-sign-in" && (
           <button
             type="button"
