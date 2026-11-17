@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts; Codex and opencode come later.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code at the daemon (`agent-proxy connect claude-code`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts; Codex and opencode come later.
 
 ## Requirements
 
@@ -112,7 +112,14 @@ agent-proxy key            # print the key
 agent-proxy key --rotate   # replace it; the old key stops working at once
 ```
 
-Point Claude Code at the daemon in `~/.claude/settings.json`, with the address `agent-proxy daemon status` shows:
+Point Claude Code at the daemon:
+
+```sh
+agent-proxy connect claude-code          # show the change, ask, back up, write
+agent-proxy connect claude-code --print  # print the settings only; change nothing
+```
+
+`connect claude-code` adds two settings to `~/.claude/settings.json` and leaves every other setting as it was:
 
 ```json
 {
@@ -120,6 +127,10 @@ Point Claude Code at the daemon in `~/.claude/settings.json`, with the address `
   "apiKeyHelper": "agent-proxy key"
 }
 ```
+
+It shows the change as a diff and writes only when you answer `y`. The old file goes to `settings.json.bak` beside it. A missing file is created; a file that is not valid JSON is refused and left alone. A `settings.json` linked from a dotfiles repo stays a link, and the file it points to is the one changed; a link whose target is missing is refused. The file holds no secret: Claude Code fetches the key by running `agent-proxy key`. Running `connect` again when nothing would change says so and writes nothing.
+
+The address is the running daemon's. When the daemon is not running, `connect` uses the `listen` address in the config file, and fails if that is port 0, any free port, which is known only once the daemon runs.
 
 Each request then goes to Claude as your highest-priority Active Claude account. When Claude rejects that account's token, the daemon refreshes it once and retries the request on the same account. Claude Code runs `agent-proxy key` again after a rejected key, so a rotated key takes effect without a restart. It shows "API Usage Billing", because it sees an API key; the requests still spend your subscription.
 

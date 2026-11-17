@@ -16,7 +16,7 @@ The daemon serves Claude Code on its listen address: with `ANTHROPIC_BASE_URL` p
 
 ## How to get to it (user POV)
 
-- Point Claude Code at the daemon in `~/.claude/settings.json` (by hand until `agent-proxy connect claude-code` exists): `"env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:8318" }` and `"apiKeyHelper": "agent-proxy key"`, with the daemon's address from `agent-proxy daemon status`.
+- Point Claude Code at the daemon with `agent-proxy connect claude-code` (see [Connect](./connect.md)), which writes `"env": { "ANTHROPIC_BASE_URL": "<daemon address>" }` and `"apiKeyHelper": "agent-proxy key"` into `~/.claude/settings.json`; or add them by hand.
 - Send any Anthropic API client's requests to the daemon's address with the key from `agent-proxy key`.
 
 ## Driving it with verify
