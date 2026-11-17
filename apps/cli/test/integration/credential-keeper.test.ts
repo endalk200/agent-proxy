@@ -4,10 +4,11 @@ import { ConfigProvider, Effect, Fiber, FileSystem, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { TestClock } from "effect/testing"
 
+import type { Credentials } from "../../src/accounts/account.ts"
 import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
-import { alice, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
+import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
 
 // The credential keeper, in-process: a real daemon on loopback in a throwaway
 // home, a fake Claude (OAuth and API), and Effect's test clock, which starts
@@ -33,7 +34,8 @@ const makeHome = (
   options: {
     readonly dataHome?: string
     readonly tokenUrl?: string
-    readonly seedDueAccount?: boolean
+    /** Tokens of an account for alice the daemon held before it started. */
+    readonly seed?: Credentials
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -47,9 +49,7 @@ const makeHome = (
       XDG_STATE_HOME: `${root}/state`,
       XDG_DATA_HOME: options.dataHome ?? `${root}/data`,
     }
-    // An account the daemon held before it started, with tokens that expire
-    // 30 minutes after the test clock's start, so they are due a refresh at once.
-    if (options.seedDueAccount === true) {
+    if (options.seed !== undefined) {
       const dir = `${env.XDG_DATA_HOME}/agent-proxy/accounts`
       yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 })
       yield* fs.writeFileString(
@@ -66,11 +66,7 @@ const makeHome = (
           needsSignIn: false,
           addedAt: "1970-01-01T00:00:00.000Z",
           lastUsedAt: null,
-          credentials: {
-            accessToken: "sk-ant-oat01-seeded",
-            refreshToken: "sk-ant-ort01-seeded",
-            expiresAt: "1970-01-01T00:30:00.000Z",
-          },
+          credentials: options.seed,
         }),
         { mode: 0o600 },
       )
@@ -85,9 +81,10 @@ const makeHome = (
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
     )
 
+    /** Calls the daemon; interrupting the call hangs up on it. */
     const fetchJson = (path: string, init: RequestInit = {}) =>
-      Effect.promise(async () => {
-        const response = await fetch(`${daemon.address}${path}`, init)
+      Effect.promise(async (signal) => {
+        const response = await fetch(`${daemon.address}${path}`, { ...init, signal })
         return { status: response.status, text: await response.text() }
       })
 
@@ -125,9 +122,13 @@ const makeHome = (
     /** The accounts as `GET /api/accounts` reports them. */
     const accounts = Effect.map(
       fetchJson("/api/accounts"),
-      (response): ReadonlyArray<{ email: string; status: string }> =>
+      (response): ReadonlyArray<{ id: string; label: string; email: string; status: string }> =>
         JSON.parse(response.text).accounts,
     )
+
+    /** The id of `user`'s account. */
+    const idOf = (user: ClaudeUser) =>
+      Effect.map(accounts, (all) => all.find((account) => account.email === user.email)?.id ?? "")
 
     /** Resolves once the only account's status is `status`, asking the daemon API every 20ms. */
     const statusBecomes = (status: string): Promise<void> =>
@@ -139,10 +140,12 @@ const makeHome = (
             : Bun.sleep(20).then(() => statusBecomes(status)),
         )
 
-    /** The JSON in each account file, as the daemon wrote it. */
+    /** The JSON in each account file, as the daemon wrote it; temp files mid-write are skipped. */
     const accountFiles = Effect.gen(function* () {
       const dir = `${env.XDG_DATA_HOME}/agent-proxy/accounts`
-      const names = (yield* fs.readDirectory(dir)).toSorted()
+      const names = (yield* fs.readDirectory(dir))
+        .filter((name) => !name.startsWith("."))
+        .toSorted()
       return yield* Effect.forEach(names, (name) =>
         Effect.map(fs.readFileString(`${dir}/${name}`), (text) => ({ name, text })),
       )
@@ -150,6 +153,8 @@ const makeHome = (
 
     return {
       dataHome: env.XDG_DATA_HOME,
+      fetchJson,
+      idOf,
       signIn,
       sendMessage,
       accounts,
@@ -158,11 +163,14 @@ const makeHome = (
     }
   })
 
-/** Moves the clock to when the fake's first tokens are due a refresh, and one keeper check past it. */
-const untilRefreshDue = Effect.gen(function* () {
-  yield* TestClock.adjust(`${TOKEN_LIFETIME_HOURS - 1} hours`)
-  yield* TestClock.adjust("1 minute")
-})
+/**
+ * Moves the clock to when the fake's first tokens are due a refresh, an hour
+ * before they expire, and no further. The keeper refreshes then, whether its
+ * check wakes at that minute or was still reading the store and reads the
+ * clock after. Moving the clock again while that refresh is in flight would
+ * fire its timeout, so tests move it only once nothing is refreshing.
+ */
+const untilRefreshDue = TestClock.adjust(`${TOKEN_LIFETIME_HOURS - 1} hours`)
 
 const noAccountAvailable = {
   type: "error",
@@ -223,12 +231,12 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
     it.effect("many requests while a token is expired cause exactly one refresh", () =>
       Effect.gen(function* () {
         const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        yield* home.signIn(alice)
         const held = claude.holdNextRefresh()
+        // The daemon starts holding an account whose token expired as it stopped.
+        const home = yield* makeHome(claude, {
+          seed: { ...claude.grant(alice), expiresAt: "1970-01-01T00:00:00.000Z" },
+        })
 
-        yield* TestClock.adjust(`${TOKEN_LIFETIME_HOURS} hours`)
-        yield* TestClock.adjust("1 minute")
         const responses = yield* Effect.all(
           Array.from({ length: 10 }, () => home.sendMessage),
           { concurrency: "unbounded" },
@@ -236,13 +244,16 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
         yield* within3s("the refresh", held.arrived)
         // Give the requests time to reach the daemon while the refresh is held.
         yield* Effect.promise(() => Bun.sleep(200))
+        expect(claude.apiRequests()).toEqual([])
         held.release()
 
         expect((yield* Fiber.join(responses)).map((response) => response.status)).toEqual(
           Array.from({ length: 10 }, () => 200),
         )
         expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
-        expect(new Set(upstreamTokens(claude))).toEqual(new Set(["Bearer sk-ant-oat01-fake-2"]))
+        expect(upstreamTokens(claude)).toEqual(
+          Array.from({ length: 10 }, () => "Bearer sk-ant-oat01-fake-2"),
+        )
       }),
     )
 
@@ -405,24 +416,29 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
               const home = yield* makeHome(claude, { dataHome })
               yield* home.signIn(alice)
               const files = yield* home.accountFiles
+              // Claude rejects the token hours before it is due a refresh, so
+              // the request asks for one, which is held until the daemon stops.
+              claude.answerApiWith(rejectToken("Bearer sk-ant-oat01-fake-1"))
               const held = claude.holdNextRefresh()
-              yield* untilRefreshDue
+              yield* Effect.forkScoped(Effect.ignore(home.sendMessage))
               yield* within3s("the refresh", held.arrived)
               return { home, files }
             }),
           )
           const [stopped] = yield* before.home.accountFiles
           const [signedIn] = before.files
-          expect(JSON.parse(stopped?.text ?? "{}").credentials).toEqual(
-            JSON.parse(signedIn?.text ?? "{}").credentials,
-          )
+          const left = JSON.parse(stopped?.text ?? "{}")
+          expect(left.credentials).toEqual(JSON.parse(signedIn?.text ?? "{}").credentials)
+          // The stop left no outcome recorded: it is the restart that flags the account.
+          expect(left.needsSignIn).toBe(false)
 
+          // The account shows Needs sign-in as soon as the daemon is back,
+          // though its token is hours from due, and is never refreshed again.
           const restarted = yield* makeHome(claude, { dataHome })
-          yield* TestClock.adjust("1 day")
-
           expect((yield* restarted.accounts).map((account) => account.status)).toEqual([
             "needs-sign-in",
           ])
+          yield* TestClock.adjust("1 day")
           expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
           expect((yield* restarted.accountFiles).map((file) => file.name)).toEqual([signedIn?.name])
         }),
@@ -443,7 +459,6 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
           expect((yield* home.sendMessage).status).toBe(200)
 
           yield* TestClock.adjust("5 minutes")
-          yield* TestClock.adjust("1 minute")
           yield* within3s("the second refresh", claude.refreshesArrived(2))
 
           expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1", "sk-ant-ort01-fake-1"])
@@ -462,7 +477,12 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
           const claude = yield* fakeClaude
           // Nothing listens on port 1.
           const home = yield* makeHome(claude, {
-            seedDueAccount: true,
+            // Due a refresh as the daemon starts: the token expires in 30 minutes.
+            seed: {
+              accessToken: "sk-ant-oat01-seeded",
+              refreshToken: "sk-ant-ort01-seeded",
+              expiresAt: "1970-01-01T00:30:00.000Z",
+            },
             tokenUrl: "http://127.0.0.1:1/v1/oauth/token",
           })
 
@@ -472,6 +492,64 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
           expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-seeded"])
           expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
         }),
+    )
+
+    it.effect("an account removed while its tokens refresh stays removed", () =>
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        yield* home.signIn(bob)
+        const held = claude.holdNextRefresh()
+        yield* untilRefreshDue
+        yield* within3s("alice's refresh", held.arrived)
+
+        const removed = yield* home.fetchJson(`/api/accounts/${yield* home.idOf(alice)}`, {
+          method: "DELETE",
+        })
+        expect(removed.status).toBe(200)
+        held.release()
+        // The keeper refreshes due accounts one after another, so bob's
+        // refresh starts only once alice's has ended.
+        yield* within3s("bob's refresh", claude.refreshesArrived(2))
+
+        expect((yield* home.accounts).map((account) => account.email)).toEqual([bob.email])
+        expect((yield* home.accountFiles).map((file) => JSON.parse(file.text).email)).toEqual([
+          bob.email,
+        ])
+      }),
+    )
+
+    it.effect("a label set while the tokens refresh is kept along with the new tokens", () =>
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const held = claude.holdNextRefresh()
+        yield* untilRefreshDue
+        yield* within3s("the refresh", held.arrived)
+
+        const renamed = yield* home.fetchJson(`/api/accounts/${yield* home.idOf(alice)}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ label: "Work" }),
+        })
+        expect(renamed.status).toBe(200)
+        held.release()
+        // The request waits for the refresh in flight, then uses its tokens.
+        expect((yield* home.sendMessage).status).toBe(200)
+
+        expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-fake-2"])
+        const [file] = yield* home.accountFiles
+        expect(JSON.parse(file?.text ?? "{}")).toMatchObject({
+          label: "Work",
+          credentials: {
+            accessToken: "sk-ant-oat01-fake-2",
+            refreshToken: "sk-ant-ort01-fake-2",
+          },
+        })
+        expect((yield* home.accounts).map((account) => account.label)).toEqual(["Work"])
+      }),
     )
   },
 )

@@ -128,6 +128,14 @@ export interface FakeClaude {
   readonly apiRequests: () => ReadonlyArray<ApiRequest>
   /** Answers every later API request with `handler`. */
   readonly answerApiWith: (handler: ApiHandler) => void
+  /**
+   * Issues a token pair to `user` as an earlier sign-in would have, for
+   * seeding an account file the daemon holds before it starts.
+   */
+  readonly grant: (user: ClaudeUser) => {
+    readonly accessToken: string
+    readonly refreshToken: string
+  }
   /** The refresh tokens presented to the token endpoint so far, oldest first. */
   readonly refreshRequests: () => ReadonlyArray<string>
   /** Resolves once `count` refresh requests have arrived in all. */
@@ -155,13 +163,19 @@ export const fakeClaude = Effect.gen(function* () {
   const refreshWaiters: Array<{ readonly count: number; readonly resolve: () => void }> = []
   let refreshTrouble: RefreshTrouble | undefined
 
-  /** Issues a new token pair to `user`, as both the exchange and a refresh do. */
-  const issueTokens = (owner: ClaudeUser) => {
+  /** Issues a new token pair to `owner`. */
+  const grant = (owner: ClaudeUser) => {
     const n = accessTokens.size + 1
     const accessToken = `sk-ant-oat01-fake-${n}`
     const refreshToken = `sk-ant-ort01-fake-${n}`
     accessTokens.set(accessToken, owner)
     refreshTokens.set(refreshToken, owner)
+    return { accessToken, refreshToken }
+  }
+
+  /** Answers with a new token pair for `owner`, as both the exchange and a refresh do. */
+  const issueTokens = (owner: ClaudeUser) => {
+    const { accessToken, refreshToken } = grant(owner)
     return json({
       token_type: "Bearer",
       access_token: accessToken,
@@ -348,6 +362,7 @@ export const fakeClaude = Effect.gen(function* () {
     answerApiWith: (handler) => {
       answerApi = handler
     },
+    grant,
     refreshRequests: () => [...refreshRequests],
     refreshesArrived: (count) =>
       refreshRequests.length >= count
