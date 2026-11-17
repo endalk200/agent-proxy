@@ -35,8 +35,9 @@ Name only user paths, stable handles, commands, and observable results; leave im
 
 ## Features
 
-- [Accounts](./accounts.md): `accounts` and `accounts --json` with each pool's next account, `accounts add claude` through the browser or a pasted callback URL, cancelling a login, `accounts set`, `enable`, `disable` and `remove`, and the account files.
+- [Accounts](./accounts.md): `accounts` and `accounts --json` with each pool's next account, `accounts add claude` and `accounts add codex` through the browser or a pasted callback URL, cancelling a login, `accounts set`, `enable`, `disable` and `remove`, and the account files.
 - [Claude proxy](./claude-proxy.md): Claude Code's requests served as the highest-priority Active Claude account, the proxy key check, `HEAD /api/hello`, the "no account" errors, and passthrough of headers, limit headers and streams.
+- [Codex proxy](./codex-proxy.md): Codex's and opencode's requests to `/backend-api/codex/` (`responses`, `models`, `alpha/search`) served as the highest-priority Active Codex account with `chatgpt-account-id`, the WebSocket 426, the key check and "no account" errors in OpenAI's shape, the 401 refresh and retry, and passthrough of `x-codex-*` headers and streams.
 - [Connect](./connect.md): `connect claude-code` with its diff, confirmation, `.bak` and `--print`, the already-connected no-op, a missing or invalid `settings.json`, a linked one, and where the address comes from.
 - [Proxy key](./key.md): `key` and `key --rotate`, the key file, and the old key's refusal after rotation.
 - [Daemon](./daemon.md): `daemon run`, `start`, `stop`, and `status`, `/healthz`, the state file, the single-instance lock, JSON logs, and loading `config.toml`.
