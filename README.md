@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`) and reports its setup (`info`); the daemon serves nothing beyond its health check yet.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds and lists Claude accounts (`agent-proxy accounts`), and reports its setup (`info`); the daemon does not serve clients yet.
 
 ## Requirements
 
@@ -78,6 +78,20 @@ agent-proxy daemon run       # or run it in the foreground
 ```
 
 The daemon keeps its lock, state file (`daemon.json`, with its pid and the port it bound), and logs (`daemon.log`, one JSON object per line) in `$XDG_STATE_HOME/agent-proxy/`, by default `~/.local/state/agent-proxy/`. One daemon runs per state directory. `--log-level debug` sets how much it logs.
+
+## Accounts
+
+```sh
+agent-proxy accounts add claude               # sign in through the browser
+agent-proxy accounts add claude --no-browser  # print the URL; paste the callback URL
+agent-proxy accounts                          # provider, label, email, plan, priority, status (--json for scripts)
+```
+
+The daemon runs each login itself (ADR-0007), so it must be running. The sign-in redirects to `http://localhost:54545/callback`, where the daemon listens while the login waits. When the browser cannot reach the daemon, such as over SSH, the redirected page fails to load: copy its address and paste it into `accounts add claude --no-browser`. A login nobody finishes expires after 10 minutes.
+
+A new account joins the bottom of its pool, labelled after its email unless `--label` names it. Signing in again to an account the daemon already holds updates its credentials in place and keeps its label, priority, and enabled setting.
+
+Accounts live in `$XDG_DATA_HOME/agent-proxy/accounts/`, by default `~/.local/share/agent-proxy/accounts/`: one file per account, readable only by you. Only the daemon writes them.
 
 ## Configuration
 

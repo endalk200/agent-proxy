@@ -35,6 +35,7 @@ Name only user paths, stable handles, commands, and observable results; leave im
 
 ## Features
 
+- [Accounts](./accounts.md): `accounts` and `accounts --json`, `accounts add claude` through the browser or a pasted callback URL, cancelling a login, and the account files.
 - [Daemon](./daemon.md): `daemon run`, `start`, `stop`, and `status`, `/healthz`, the state file, the single-instance lock, JSON logs, and loading `config.toml`.
 - [CLI info](./cli-info.md): version, runtime, and resolved config path, as text or JSON, including the error when no config location exists.
 - [CLI help and version](./cli-help-and-version.md): help, version, shell completions, and rejection of unknown subcommands.

@@ -3,8 +3,10 @@ import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Cause, Effect, Exit, Layer, Runtime } from "effect"
 import { FetchHttpClient } from "effect/http"
 
+import { Browser } from "./browser.ts"
 import { main } from "./cli.ts"
 import { Processes } from "./processes.ts"
+import { ProviderEndpoints } from "./providers/endpoints.ts"
 import { RuntimeInfo } from "./runtime-info.ts"
 
 // The process entry point: it provides the real platform services, so tests
@@ -30,6 +32,8 @@ main.pipe(
       RuntimeInfo.layerProcess,
       Processes.layerProcess,
       FetchHttpClient.layer,
+      ProviderEndpoints.layer,
+      Browser.layerSystem.pipe(Layer.provide(BunServices.layer)),
     ),
   ),
   BunRuntime.runMain({ teardown }),

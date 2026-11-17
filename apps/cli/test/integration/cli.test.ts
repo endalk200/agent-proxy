@@ -3,8 +3,10 @@ import { expect, layer } from "@effect/vitest"
 import { ConfigProvider, Console, Effect, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
 
+import { Browser } from "../../src/browser.ts"
 import { runCli } from "../../src/cli.ts"
 import { Processes } from "../../src/processes.ts"
+import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 
 // Drives the real command tree in-process with the real Bun platform services.
@@ -32,6 +34,8 @@ layer(
     RuntimeInfo.layerProcess,
     Processes.layerProcess,
     FetchHttpClient.layer,
+    ProviderEndpoints.layer,
+    Layer.succeed(Browser, Browser.of({ open: () => Effect.die("no browser in this test") })),
   ),
 )("agent-proxy info", (it) => {
   it.effect("prints runtime and config details as JSON", () =>
