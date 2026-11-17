@@ -8,16 +8,20 @@ import { type ListenAddress, loadConfigFile } from "../config.ts"
 import { Logins } from "../logins/logins.ts"
 import { resolveDataDir, resolveStateDir } from "../paths.ts"
 import { Processes } from "../processes.ts"
+import { ClaudeApi } from "../providers/claude-api.ts"
 import { ClaudeLogin } from "../providers/claude.ts"
+import { claudeRoutes } from "../proxy/claude-routes.ts"
+import { ProxyKey } from "../proxy/proxy-key.ts"
 import { accountRoutes } from "./accounts-routes.ts"
 import { localOnly } from "./http.ts"
+import { keyRoutes } from "./key-routes.ts"
 import { acquireLock, removeStateFile, stateFiles, writeStateFile } from "./state.ts"
 
 /**
  * The daemon: one HTTP listener that serves agent-proxy, meeting ADR-0002.
  *
- * It only reports its own health and identity so far; the proxy routes, the
- * account API, and the dashboard join this listener as they are built.
+ * It serves its health and identity, the daemon API under `/api/`, and the
+ * proxy's Claude routes; the dashboard joins this listener when it is built.
  */
 
 export interface RunningDaemon {
@@ -50,6 +54,8 @@ const routes = (info: {
   HttpRouter.use((router) =>
     Effect.all([
       accountRoutes(router, localOnly(info.listenHost)),
+      keyRoutes(router, localOnly(info.listenHost)),
+      claudeRoutes(router),
       router.add("GET", "/healthz", HttpServerResponse.jsonUnsafe({ status: "ok" })),
       router.add(
         "GET",
@@ -82,6 +88,8 @@ const bind = (listen: ListenAddress) => {
     hostname: listen.host,
     port: listen.port,
     gracefulShutdownTimeout: GRACEFUL_SHUTDOWN,
+    // No `idleTimeout`: Effect leaves Bun's 10-second one off, and a proxied
+    // stream can go quiet for longer than that while Claude thinks.
   }).pipe(
     Effect.mapError((error) => cannotListen(error.cause)),
     Effect.catchDefect((defect) => Effect.fail(cannotListen(defect))),
@@ -139,9 +147,13 @@ export const startDaemon = Effect.gen(function* () {
         disableListenLog: true,
       }).pipe(
         Layer.provide(
-          Logins.layer.pipe(
-            Layer.provideMerge(AccountStore.layer),
-            Layer.provide(ClaudeLogin.layer),
+          Layer.mergeAll(
+            Logins.layer.pipe(
+              Layer.provideMerge(AccountStore.layer),
+              Layer.provide(ClaudeLogin.layer),
+            ),
+            ProxyKey.layer,
+            ClaudeApi.layer,
           ),
         ),
         Layer.provide(Layer.succeed(HttpServer.HttpServer, server)),

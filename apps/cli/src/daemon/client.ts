@@ -2,7 +2,7 @@ import { Data, type Duration, Effect, Option, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 
 import { resolveStateDir } from "../paths.ts"
-import { AccountList, ApiError, LoginView, type StartLogin } from "./api.ts"
+import { AccountList, ApiError, LoginView, ProxyKeyView, type StartLogin } from "./api.ts"
 import { readStateFile } from "./state.ts"
 
 /**
@@ -151,3 +151,9 @@ export const submitCallback = (id: string, url: string) =>
 
 export const cancelLogin = (id: string) =>
   callApi(HttpClientRequest.delete(`/api/logins/${encodeURIComponent(id)}`), LoginView)
+
+/** The proxy key clients present. */
+export const getProxyKey = callApi(HttpClientRequest.get("/api/key"), ProxyKeyView)
+
+/** Replaces the proxy key, and returns the new one. */
+export const rotateProxyKey = callApi(HttpClientRequest.post("/api/key/rotate"), ProxyKeyView)

@@ -1,7 +1,12 @@
 import { Config, Context, Data, Effect, Layer, Option, Schema } from "effect"
 
-/** Where Claude's OAuth login lives, and the loopback port its redirect returns to. */
-export interface ClaudeOAuthEndpoints {
+/**
+ * Where Claude's API and OAuth login live, and the loopback port the login's
+ * redirect returns to.
+ */
+export interface ClaudeEndpoints {
+  /** The origin of Claude's API, which proxied requests go to with their path and query. */
+  readonly apiBaseUrl: string
   readonly authorizeUrl: string
   readonly tokenUrl: string
   readonly profileUrl: string
@@ -10,12 +15,13 @@ export interface ClaudeOAuthEndpoints {
 }
 
 export interface Endpoints {
-  readonly claude: ClaudeOAuthEndpoints
+  readonly claude: ClaudeEndpoints
 }
 
 /** The real providers, as confirmed by the spike against Claude Code 2.1.326. */
 export const realEndpoints: Endpoints = {
   claude: {
+    apiBaseUrl: "https://api.anthropic.com",
     authorizeUrl: "https://claude.com/cai/oauth/authorize",
     tokenUrl: "https://platform.claude.com/v1/oauth/token",
     profileUrl: "https://api.anthropic.com/api/oauth/profile",
@@ -27,7 +33,8 @@ export const realEndpoints: Endpoints = {
  * Names the environment variable that points the daemon at other provider
  * endpoints: a JSON object shaped like `Endpoints`, any field optional, laid
  * over the real ones. It exists so verification runs and e2e tests can sign in
- * against fake providers through the built binary. It is not a setting for owners.
+ * and proxy against fake providers through the built binary. It is not a
+ * setting for owners.
  */
 export const ENDPOINTS_OVERRIDE = "AGENT_PROXY_PROVIDER_ENDPOINTS"
 
@@ -35,6 +42,7 @@ const Override = Schema.fromJsonString(
   Schema.Struct({
     claude: Schema.optionalKey(
       Schema.Struct({
+        apiBaseUrl: Schema.optionalKey(Schema.String),
         authorizeUrl: Schema.optionalKey(Schema.String),
         tokenUrl: Schema.optionalKey(Schema.String),
         profileUrl: Schema.optionalKey(Schema.String),
