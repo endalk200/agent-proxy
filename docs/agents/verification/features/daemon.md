@@ -12,6 +12,7 @@
 - `daemon-single-instance` refuses a second daemon on the same state directory.
 - `daemon-free-port` binds any free port for `listen = "…:0"` and records the actual port.
 - `daemon-healthz` answers `GET /healthz` with 200.
+- `daemon-api-local` serves `/api/` and the dashboard only to this machine, and only to requests whose `Host` names the daemon (a loopback address, `localhost`, or the listen host) and whose `Origin`, when sent, is the daemon's own. Anything else gets 403 `The daemon API is not served to other sites' pages.`
 - `daemon-logs` writes one JSON object per line to `daemon.log`; `--log-level` sets the minimum level.
 - `config-errors` fails on a malformed config or an unknown key, naming the problem and its line, and on an `AGENT_PROXY_CONFIG` that names a missing file.
 
@@ -34,6 +35,7 @@ Preconditions:
 - **Start.** Run `verify cli -- daemon start`. Exit `0`; stdout is `agent-proxy daemon started (pid <pid>) at http://127.0.0.1:<port>` with a non-zero port.
 - **State file.** Run `verify shell -- -c 'cat "$XDG_STATE_HOME/agent-proxy/daemon.json"'`. JSON with `pid` and `port` matching the start line, and `address` `http://127.0.0.1:<port>`.
 - **Health.** Run `verify shell -- -c 'curl -s -w " %{http_code}" "$(sed -n "s/.*\"address\": \"\(.*\)\".*/\1/p" "$XDG_STATE_HOME/agent-proxy/daemon.json")/healthz"'`. Output ends in `200`.
+- **Other sites.** Run `verify shell -- -c 'a=$(jq -r .address "$XDG_STATE_HOME/agent-proxy/daemon.json"); curl -s -w " %{http_code}\n" -H "Host: evil.example" "$a/api/key"; curl -s -w " %{http_code}\n" -X POST -H "Origin: https://evil.example" "$a/api/key/rotate"; curl -s -o /dev/null -w "%{http_code}\n" -H "Origin: $a" "$a/api/key"'`. The first two print the 403 error and `403`; the last prints `200`.
 - **Status.** Run `verify cli -- daemon status`. Exit `0`; lines start `agent-proxy daemon is running`, `pid`, `address`, `uptime`, `version`. Run `verify cli -- daemon status --json`. Exit `0`; JSON with `pid`, `address`, `version`, `startedAt`, `uptimeSeconds`.
 - **Second daemon.** With the daemon running, run `verify cli -- daemon start`. Exit `1`; stderr contains `The agent-proxy daemon is already running (pid <pid>)`. Run `verify cli -- daemon run`. Exit `1`; stderr contains `Another agent-proxy daemon (pid <pid>) is already running for`.
 - **Logs.** Run `verify shell -- -c 'cat "$XDG_STATE_HOME/agent-proxy/daemon.log"'`. Every line parses as JSON; one has `"message":"daemon started"` and `"level":"INFO"`.

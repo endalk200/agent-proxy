@@ -1,3 +1,5 @@
+import { request } from "node:http"
+
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
 import { ConfigProvider, Effect, FileSystem, Layer } from "effect"
@@ -47,6 +49,26 @@ const get = (url: string) =>
       cacheControl: response.headers["cache-control"] ?? "",
       body: yield* response.text,
     }
+  })
+
+/**
+ * Sends a request with headers a browser sets and fetch cannot (Host), as a
+ * page in the owner's browser would after DNS rebinding or a cross-site post.
+ */
+const raw = (address: string, method: string, path: string, headers: Record<string, string>) =>
+  Effect.callback<{ status: number; body: string }>((resume) => {
+    const url = new URL(address)
+    const sent = request(
+      { hostname: url.hostname, port: url.port, method, path, headers },
+      (answer) => {
+        let body = ""
+        answer.setEncoding("utf8")
+        answer.on("data", (chunk: string) => (body += chunk))
+        answer.on("end", () => resume(Effect.succeed({ status: answer.statusCode ?? 0, body })))
+      },
+    )
+    sent.on("error", (error) => resume(Effect.die(error)))
+    sent.end()
   })
 
 layer(
@@ -122,6 +144,46 @@ layer(
       expect(page.status).toBe(404)
       expect(page.body).toContain("The agent-proxy dashboard is not built.")
       expect(page.body).toContain("bun run build")
+    }),
+  )
+
+  it.effect("refuses the daemon API to a page from another site, by its Host or Origin", () =>
+    Effect.gen(function* () {
+      const daemon = yield* makeDaemon((built) => [built])
+      const host = new URL(daemon.address).host
+      // A rebound name that resolves to loopback still names another site.
+      const rebound = yield* raw(daemon.address, "GET", "/api/key", {
+        host: `evil.example:${new URL(daemon.address).port}`,
+      })
+      expect(rebound.status).toBe(403)
+      expect(rebound.body).not.toContain("ap-")
+      // A cross-site form post carries its page's Origin.
+      for (const origin of ["https://evil.example", "null", "http://localhost:5173"]) {
+        const posted = yield* raw(daemon.address, "POST", "/api/key/rotate", { host, origin })
+        expect({ origin, status: posted.status }).toEqual({ origin, status: 403 })
+      }
+      const page = yield* raw(daemon.address, "GET", "/", { host: "evil.example" })
+      expect(page.status).toBe(403)
+    }),
+  )
+
+  it.effect("serves the daemon API to the CLI, its own dashboard, and loopback names", () =>
+    Effect.gen(function* () {
+      const daemon = yield* makeDaemon((built) => [built])
+      const { host, port, origin } = new URL(daemon.address)
+      expect((yield* raw(daemon.address, "GET", "/api/key", { host })).status).toBe(200)
+      expect(
+        (yield* raw(daemon.address, "GET", "/api/key", { host: `localhost:${port}` })).status,
+      ).toBe(200)
+      expect((yield* raw(daemon.address, "POST", "/api/key/rotate", { host, origin })).status).toBe(
+        200,
+      )
+      expect(
+        (yield* raw(daemon.address, "POST", "/api/key/rotate", {
+          host: `localhost:${port}`,
+          origin: `http://localhost:${port}`,
+        })).status,
+      ).toBe(200)
     }),
   )
 })

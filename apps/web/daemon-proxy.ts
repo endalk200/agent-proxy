@@ -46,7 +46,12 @@ const forward: Connect.NextHandleFunction = (req, res, next) => {
       port: target.port,
       method: req.method,
       path: req.url,
-      headers: { ...req.headers, host: target.host },
+      // The daemon serves its API only to its own origin; this page stands in for it.
+      headers: {
+        ...req.headers,
+        host: target.host,
+        ...(req.headers.origin === undefined ? {} : { origin: target.origin }),
+      },
     },
     (answer) => {
       res.writeHead(answer.statusCode ?? 502, answer.headers)
