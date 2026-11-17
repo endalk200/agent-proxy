@@ -98,11 +98,11 @@ export class DaemonCallError extends Error {
 /**
  * A change to one account, from `GET /api/events`, with every pool as it is
  * after it. `status-changed` and `settings-changed` carry the account as it
- * was before in `previous`.
+ * was before in `previous`; `used` says only when it last served a request.
  */
 export type AccountEvent =
   | {
-      readonly type: "added" | "removed"
+      readonly type: "added" | "removed" | "used"
       readonly account: Account
       readonly pools: ReadonlyArray<Pool>
     }
@@ -242,6 +242,7 @@ const decodeStreamMessage = (value: unknown): StreamMessage => {
       return { type: "snapshot", list: decodeAccountList(json) }
     case "added":
     case "removed":
+    case "used":
       return { type: json["type"], account: decodeAccount(json["account"]), pools: pools() }
     case "status-changed":
     case "settings-changed":

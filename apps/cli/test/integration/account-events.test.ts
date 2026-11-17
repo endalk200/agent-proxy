@@ -412,6 +412,8 @@ layer(
         previous: { status: "active", cooldownEndsAt: null },
         pools: [{ provider: "claude", newSessionsAccountId: "home" }],
       })
+      // The request moved on to Home, which served it.
+      expect(yield* events.nextEvent).toMatchObject({ type: "used", account: { id: "home" } })
 
       // Nothing writes when a cooldown ends: the daemon notices the time.
       yield* TestClock.adjust("30 minutes")
@@ -419,6 +421,25 @@ layer(
         type: "status-changed",
         account: { id: "work", status: "active", cooldownEndsAt: null },
         previous: { status: "cooling-down" },
+        pools: [{ provider: "claude", newSessionsAccountId: "work" }],
+      })
+    }),
+  )
+
+  it.effect("an account serving a request arrives as used, with when", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome()
+      yield* home.seed("claude", "work", 1)
+      home.claude.answerApiWith(() =>
+        Response.json({ type: "message", content: [] }, { headers: limitHeaders }),
+      )
+      const events = yield* openEvents(home.address)
+      yield* events.nextEvent
+
+      expect(yield* home.claudeMessage).toBe(200)
+      expect(yield* events.nextEvent).toMatchObject({
+        type: "used",
+        account: { id: "work", status: "active", lastUsedAt: "1970-01-01T00:00:00.000Z" },
         pools: [{ provider: "claude", newSessionsAccountId: "work" }],
       })
     }),

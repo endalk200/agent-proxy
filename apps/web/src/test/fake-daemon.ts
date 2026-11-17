@@ -224,6 +224,8 @@ const eventsBetween = (
       )
     ) {
       events.push({ type: "settings-changed", account: held, previous, pools })
+    } else if (previous.lastUsedAt !== held.lastUsedAt) {
+      events.push({ type: "used", account: held, pools })
     }
   }
   return events

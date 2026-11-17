@@ -387,18 +387,20 @@ export class AccountStore extends Context.Service<
           yield* write({ ...stored.value, lastUsedAt: at })
         },
         (effect) =>
-          writes.withPermit(
-            effect.pipe(
-              Effect.catchTag("PlatformError", (cause) =>
-                Effect.fail(
-                  new AccountStoreError({
-                    message: `Could not read the accounts in ${dir}`,
-                    cause,
-                  }),
+          writes
+            .withPermit(
+              effect.pipe(
+                Effect.catchTag("PlatformError", (cause) =>
+                  Effect.fail(
+                    new AccountStoreError({
+                      message: `Could not read the accounts in ${dir}`,
+                      cause,
+                    }),
+                  ),
                 ),
               ),
-            ),
-          ),
+            )
+            .pipe(Effect.ensuring(changes.signal)),
       )
 
       return AccountStore.of({ list, upsert, updateSettings, remove, updateCredentials, markUsed })

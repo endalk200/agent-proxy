@@ -31,6 +31,7 @@ const isSignIn = (event: AccountEvent) => {
     case "added":
       return true
     case "removed":
+    case "used":
       return false
     case "status-changed":
       return event.previous.status === "needs-sign-in" && event.account.status !== "needs-sign-in"
@@ -60,6 +61,8 @@ export const noticeFor = (event: AccountEvent, now: number): Notice | undefined 
         title: `${label} was removed`,
         description: "agent-proxy no longer holds it or its sign-in.",
       }
+    case "used":
+      return undefined
     case "settings-changed": {
       const { previous } = event
       if (previous.label !== label) {

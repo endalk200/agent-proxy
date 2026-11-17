@@ -95,12 +95,12 @@ export type AccountSnapshot = typeof AccountSnapshot.Type
  *   enabled. `previous` is the account before.
  * - `settings-changed`: its label or priority changed, or its email or plan
  *   after a fresh sign-in, and its status did not. `previous` is the account before.
- *
- * Last used alone never makes an event.
+ * - `used`: it served a request, and nothing else changed: only `lastUsedAt`
+ *   moved, which the daemon records at most once a minute.
  */
 export const AccountEvent = Schema.Union([
   Schema.Struct({
-    type: Schema.Literals(["added", "removed"]),
+    type: Schema.Literals(["added", "removed", "used"]),
     account: AccountView,
     pools: Schema.Array(PoolView),
   }),
@@ -142,6 +142,8 @@ export const accountEvents = (before: AccountList, after: AccountList): Array<Ac
       events.push({ type: "status-changed", account, previous, pools })
     } else if (settingsChanged(previous, account)) {
       events.push({ type: "settings-changed", account, previous, pools })
+    } else if (previous.lastUsedAt !== account.lastUsedAt) {
+      events.push({ type: "used", account, pools })
     }
   }
   return events

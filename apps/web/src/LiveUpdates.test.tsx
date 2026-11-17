@@ -179,6 +179,23 @@ describe("a change made outside this page", () => {
   })
 })
 
+describe("an account serving a request", () => {
+  it("shows when it was last used, quietly", async () => {
+    const daemon = twoAccounts()
+    const table = await show(daemon)
+
+    daemon.update("a2", { lastUsedAt: new Date(NOW - 4 * 60_000).toISOString() })
+
+    await waitFor(() =>
+      expect(rowsOf(table).find((row) => row["Account"]?.startsWith("Home"))?.["Last used"]).toBe(
+        "4 min ago",
+      ),
+    )
+    expect(notices()).toEqual([])
+    expect(rowOf(table, "Home").dataset["flash"]).toBeUndefined()
+  })
+})
+
 describe("a change made on this page", () => {
   it("shows no notice or flash for it, as the page already shows it", async () => {
     const daemon = twoAccounts()
