@@ -61,7 +61,9 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
         const fs = yield* FileSystem.FileSystem
         const home = yield* makeHome(freePortConfig)
         const daemon = yield* home.start
-        const state = yield* Schema.decodeEffect(StateFile)(yield* fs.readFileString(home.stateFile))
+        const state = yield* Schema.decodeEffect(StateFile)(
+          yield* fs.readFileString(home.stateFile),
+        )
         expect(state.port).toBeGreaterThan(0)
         expect(state.pid).toBe(process.pid)
         expect(state.address).toBe(`http://127.0.0.1:${state.port}`)
@@ -148,6 +150,26 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
         const error = yield* Effect.flip(Effect.scoped(second.start))
         expect(error.message).toMatch(
           new RegExp(`^Could not listen on 127\\.0\\.0\\.1:${running.port}: `),
+        )
+      }),
+    )
+
+    it.effect("logs why it could not start", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const first = yield* makeHome(freePortConfig)
+        const running = yield* first.start
+        const second = yield* makeHome(`listen = "127.0.0.1:${running.port}"\n`)
+        yield* Effect.flip(Effect.scoped(second.start))
+        const lines = (yield* fs.readFileString(`${second.stateDir}/daemon.log`)).trim().split("\n")
+        expect(lines.map((line): unknown => JSON.parse(line))).toContainEqual(
+          expect.objectContaining({
+            level: "ERROR",
+            message: "daemon failed to start",
+            annotations: {
+              error: expect.stringMatching(/^Could not listen on 127\.0\.0\.1:/),
+            },
+          }),
         )
       }),
     )

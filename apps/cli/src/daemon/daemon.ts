@@ -117,38 +117,49 @@ export const startDaemon = Effect.gen(function* () {
 
   const config = yield* loadConfig(configPath)
   yield* fs.makeDirectory(stateDir, { recursive: true, mode: 0o700 })
-  yield* acquireLock(stateDir, pid)
-
   const fileLogger = yield* Logger.toFile(Logger.formatJson, files.log)
   const logToFile = Effect.provideService(Logger.CurrentLoggers, new Set([fileLogger]))
 
-  // Registered before the listener so it runs after the listener has drained.
-  yield* Effect.addFinalizer(() =>
-    removeStateFile(stateDir).pipe(
-      Effect.ignore,
-      Effect.andThen(Effect.logInfo("daemon stopped")),
+  return yield* Effect.gen(function* () {
+    yield* acquireLock(stateDir, pid)
+
+    // Registered after the lock, so a refused daemon never removes another's
+    // state file, and before the listener, so it runs once the listener has drained.
+    yield* Effect.addFinalizer(() =>
+      removeStateFile(stateDir).pipe(
+        Effect.ignore,
+        Effect.andThen(Effect.logInfo("daemon stopped")),
+        logToFile,
+      ),
+    )
+
+    const server = yield* bind(config.listen)
+    const port = "port" in server.address ? server.address.port : config.listen.port
+    const address = clientAddress(config.listen.host, port)
+    const startedAt = yield* DateTime.now
+
+    yield* Layer.build(
+      HttpRouter.serve(routes({ pid, address, startedAt }), {
+        disableLogger: true,
+        disableListenLog: true,
+      }).pipe(Layer.provide(Layer.succeed(HttpServer.HttpServer, server))),
+    ).pipe(logToFile)
+
+    yield* writeStateFile(stateDir, { pid, port, address })
+    yield* Effect.logInfo("daemon started").pipe(
+      Effect.annotateLogs({ pid, address, version: packageJson.version, config: configPath }),
       logToFile,
+    )
+
+    const daemon: RunningDaemon = { pid, port, address }
+    return daemon
+  }).pipe(
+    // `daemon start` reads this line to tell the owner why its daemon exited.
+    Effect.tapError((error) =>
+      Effect.logError("daemon failed to start").pipe(
+        Effect.annotateLogs({ error: error.message }),
+        logToFile,
+      ),
     ),
   )
-
-  const server = yield* bind(config.listen)
-  const port = "port" in server.address ? server.address.port : config.listen.port
-  const address = clientAddress(config.listen.host, port)
-  const startedAt = yield* DateTime.now
-
-  yield* Layer.build(
-    HttpRouter.serve(routes({ pid, address, startedAt }), {
-      disableLogger: true,
-      disableListenLog: true,
-    }).pipe(Layer.provide(Layer.succeed(HttpServer.HttpServer, server))),
-  ).pipe(logToFile)
-
-  yield* writeStateFile(stateDir, { pid, port, address })
-  yield* Effect.logInfo("daemon started").pipe(
-    Effect.annotateLogs({ pid, address, version: packageJson.version, config: configPath }),
-    logToFile,
-  )
-
-  const daemon: RunningDaemon = { pid, port, address }
-  return daemon
 })
