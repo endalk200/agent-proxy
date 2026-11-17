@@ -79,10 +79,15 @@ const SESSION_IDLE_MS = Duration.toMillis(Duration.hours(1))
  */
 const MIN_COOLDOWN_MS = 1000
 
+/**
+ * A session's account. Its identity is what `SeenBinding` compares, so it is
+ * replaced only when the session moves to another account; a request that
+ * keeps the session on its account only moves `at`.
+ */
 interface Binding {
   readonly accountId: string
   /** When the session last sent a request, in epoch milliseconds. */
-  readonly at: number
+  at: number
 }
 
 const bindingKey = (provider: Provider, session: string) => `${provider}\u0000${session}`
@@ -222,7 +227,11 @@ export class Router extends Context.Service<
               const current = bindings.get(key)
               // Rebind only from the binding this request was routed by: a late
               // answer from an account the session has since left is ignored.
-              if (current === undefined || current === seen || current.accountId === account.id) {
+              // Staying on the same account keeps the binding, so a failover
+              // routed by it while this answer was in flight can still rebind.
+              if (current !== undefined && current.accountId === account.id) {
+                current.at = now
+              } else if (current === undefined || current === seen) {
                 bindings.set(key, { accountId: account.id, at: now })
               }
             }

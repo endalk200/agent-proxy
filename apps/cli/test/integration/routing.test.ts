@@ -362,6 +362,55 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
       }),
     )
 
+    it.effect(
+      "an old account's success landing while the failover is in flight keeps the failover",
+      () =>
+        Effect.gen(function* () {
+          const home = yield* makeHome
+          yield* home.seed("claude", "first", 1)
+          yield* home.seed("claude", "second", 2)
+          const heldOnFirst = Promise.withResolvers<void>()
+          const releaseFirst = Promise.withResolvers<void>()
+          const heldOnSecond = Promise.withResolvers<void>()
+          const releaseSecond = Promise.withResolvers<void>()
+          let firstCalls = 0
+          let secondCalls = 0
+          home.claude.answerApiWith(async (request) => {
+            if (accountOf(request) === "second") {
+              secondCalls++
+              if (secondCalls === 1) {
+                heldOnSecond.resolve()
+                await releaseSecond.promise
+              }
+              return claudeAnswer(200)
+            }
+            firstCalls++
+            if (firstCalls === 2) {
+              heldOnFirst.resolve()
+              await releaseFirst.promise
+              return claudeAnswer(200)
+            }
+            return firstCalls === 1 ? claudeAnswer(200) : claudeAnswer(429, { "retry-after": "30" })
+          })
+
+          // The session is bound to "first"; two of its requests go there together.
+          expect((yield* home.claudeMessage("session-a")).status).toBe(200)
+          const held = yield* Effect.forkChild(home.claudeMessage("session-a"))
+          yield* Effect.promise(() => heldOnFirst.promise)
+          // The second hits a limit and moves on to "second", which answers last.
+          const failover = yield* Effect.forkChild(home.claudeMessage("session-a"))
+          yield* Effect.promise(() => heldOnSecond.promise)
+          releaseFirst.resolve()
+          yield* Fiber.join(held)
+          releaseSecond.resolve()
+          expect((yield* Fiber.join(failover)).status).toBe(200)
+
+          yield* TestClock.adjust("31 seconds")
+          yield* home.claudeMessage("session-a")
+          expect(home.servedBy("claude")).toEqual(["first", "first", "first", "second", "second"])
+        }),
+    )
+
     it.effect("a short limit arriving after a window limit never shortens the cooldown", () =>
       Effect.gen(function* () {
         const home = yield* makeHome
