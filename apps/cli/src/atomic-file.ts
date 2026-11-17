@@ -3,13 +3,17 @@ import { randomBytes } from "node:crypto"
 import { Effect, FileSystem, Path } from "effect"
 
 /**
- * Replaces `file` atomically with `content`, readable only by the owner: the
- * content goes to a temp file beside it (mode 0600), is flushed to disk, and
- * is renamed over the old file. A crash leaves the old file or the new one,
- * never part of either, plus at most a leftover temp file named
- * `.<name>.<random>.tmp`.
+ * Replaces `file` atomically with `content`, readable only by the owner
+ * unless `mode` says otherwise: the content goes to a temp file beside it
+ * (mode 0600, then `mode`), is flushed to disk, and is renamed over the old
+ * file. A crash leaves the old file or the new one, never part of either, plus
+ * at most a leftover temp file named `.<name>.<random>.tmp`.
  */
-export const writeFileAtomic = (file: string, content: string) =>
+export const writeFileAtomic = (
+  file: string,
+  content: string,
+  options?: { readonly mode?: number },
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
@@ -24,6 +28,9 @@ export const writeFileAtomic = (file: string, content: string) =>
         yield* handle.sync
       }),
     )
+    if (options?.mode !== undefined) {
+      yield* fs.chmod(temp, options.mode)
+    }
     yield* fs.rename(temp, file)
   })
 
