@@ -5,7 +5,7 @@ The maintained source for what a user can do with agent-proxy and how to prove e
 ## Baseline
 
 - A run from `verify up` whose `verify doctor` is all `ok`.
-- The sandbox config file holds the fixture `{}`. Nothing reads it yet.
+- The sandbox config file holds the fixture `listen = "127.0.0.1:0"`, so a daemon binds any free port. No daemon is running.
 - Web features also need `verify web` (or `verify web --dev`) for the current run.
 
 ## Driving conventions
@@ -35,6 +35,7 @@ Name only user paths, stable handles, commands, and observable results; leave im
 
 ## Features
 
+- [Daemon](./daemon.md): `daemon run`, `start`, `stop`, and `status`, `/healthz`, the state file, the single-instance lock, JSON logs, and loading `config.toml`.
 - [CLI info](./cli-info.md): version, runtime, and resolved config path, as text or JSON, including the error when no config location exists.
 - [CLI help and version](./cli-help-and-version.md): help, version, shell completions, and rejection of unknown subcommands.
 - [Web dashboard](./web-dashboard.md): the browser client's landing page.

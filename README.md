@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The repository is scaffolded but the application is not built yet. The CLI has one command, `info`.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`) and reports its setup (`info`); the daemon serves nothing beyond its health check yet.
 
 ## Requirements
 
@@ -68,6 +68,24 @@ To work inside the sandbox yourself, `bun run verify shell` opens your shell wit
 
 Agents follow the same flow through the runbook in `docs/agents/verification/README.md`. `docs/adr/0001-*` explains the design.
 
+## Running the daemon
+
+```sh
+agent-proxy daemon start     # run it in the background; returns once it is ready
+agent-proxy daemon status    # pid, address, and uptime (--json for scripts)
+agent-proxy daemon stop      # SIGTERM, then wait for it to exit
+agent-proxy daemon run       # or run it in the foreground
+```
+
+The daemon keeps its lock, state file (`daemon.json`, with its pid and the port it bound), and logs (`daemon.log`, one JSON object per line) in `$XDG_STATE_HOME/agent-proxy/`, by default `~/.local/state/agent-proxy/`. One daemon runs per state directory. `--log-level debug` sets how much it logs.
+
 ## Configuration
 
-`agent-proxy info` shows which configuration file the CLI would load. It checks, in order: `AGENT_PROXY_CONFIG`, then `$XDG_CONFIG_HOME/agent-proxy/config.json`, then `~/.config/agent-proxy/config.json`. Nothing reads the file yet.
+The config file is TOML, edited by hand; agent-proxy never writes it. `agent-proxy info` shows which file the CLI loads. It checks, in order: `AGENT_PROXY_CONFIG`, then `$XDG_CONFIG_HOME/agent-proxy/config.toml`, then `~/.config/agent-proxy/config.toml`. A missing file means every default applies; a file named by `AGENT_PROXY_CONFIG` must exist.
+
+```toml
+# Where the daemon listens. Port 0 binds any free port.
+listen = "127.0.0.1:8318"
+```
+
+`listen` is the only key. A syntax error or an unknown key fails with a message naming its line.
