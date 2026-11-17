@@ -154,6 +154,17 @@ export const connect = (connector: ClientConnector, options: { readonly print: b
     }
 
     const current = yield* readIfExists(file)
+    if (Option.isNone(current)) {
+      // A link whose target is missing (a dotfiles repo not checked out) is
+      // refused: writing here would replace the link with a plain file.
+      const entry = yield* fs.lstat(file).pipe(Effect.option)
+      if (Option.isSome(entry) && entry.value.type === "SymbolicLink") {
+        const linkTarget = yield* fs.readLink(file).pipe(Effect.orElseSucceed(() => "its target"))
+        return yield* userError(
+          `${shown} is a link to ${linkTarget}, which does not exist. Create that file, or remove the link, then run this again.`,
+        )
+      }
+    }
     const change = yield* Effect.fromResult(connector.change(current, target, shown)).pipe(
       Effect.mapError((error) => userError(error.message)),
     )
@@ -172,17 +183,23 @@ export const connect = (connector: ClientConnector, options: { readonly print: b
       return yield* userError(`Nothing written; ${shown} is unchanged.`)
     }
     // The client may have rewritten its file while the owner read the diff.
-    if (!Equal.equals(yield* readIfExists(file), current)) {
-      return yield* userError(
-        `${shown} changed while you were deciding, so nothing was written. Run this again to see the change against it.`,
-      )
-    }
+    // Checked again after the backup, right before the replace, so the
+    // window for a lost edit is as small as it can be.
+    const unchanged = Effect.gen(function* () {
+      if (!Equal.equals(yield* readIfExists(file), current)) {
+        return yield* userError(
+          `${shown} changed while you were deciding, so nothing was written. Run this again to see the change against it.`,
+        )
+      }
+    })
+    yield* unchanged
     if (Option.isSome(current)) {
       // A link into a dotfiles repo stays a link: the file it names is
       // replaced, keeping its mode, and the backup sits beside the link.
       const real = yield* fs.realPath(file)
       const mode = (yield* fs.stat(real)).mode & 0o777
       yield* writeFileAtomic(`${file}.bak`, current.value, { mode })
+      yield* unchanged
       yield* writeFileAtomic(real, next, { mode })
     } else {
       yield* fs.makeDirectory(path.dirname(file), { recursive: true })

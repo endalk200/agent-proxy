@@ -395,6 +395,25 @@ layer(
     ),
   )
 
+  it.effect("refuses a settings link whose target does not exist, and keeps the link", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        const target = `${home.home}/dotfiles/claude/settings.json`
+        yield* fs.makeDirectory(`${home.home}/.claude`, { recursive: true })
+        yield* fs.symlink(target, home.settings)
+
+        const message = yield* home.fails(["connect", "claude-code"])
+
+        expect(message).toContain("does not exist")
+        expect((yield* fs.lstat(home.settings)).type).toBe("SymbolicLink")
+        expect(yield* fs.exists(target)).toBe(false)
+      }),
+    ),
+  )
+
   it.effect("writes nothing when the settings file changes while the owner decides", () =>
     TestClock.withLive(
       Effect.gen(function* () {
