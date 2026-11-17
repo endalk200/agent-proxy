@@ -1,7 +1,12 @@
 import { createHash, randomBytes } from "node:crypto"
 
 import { Data, type Duration, Effect } from "effect"
-import type { HttpClientError, HttpClientResponse } from "effect/http"
+import {
+  FetchHttpClient,
+  HttpClient,
+  type HttpClientError,
+  type HttpClientResponse,
+} from "effect/http"
 
 import type { Credentials, Identity, Provider } from "../accounts/account.ts"
 
@@ -150,3 +155,15 @@ export const refreshFailed = Effect.fnUntraced(function* (
   }
   return yield* new RefreshRejected({ reason: yield* describe(response) })
 })
+
+/**
+ * An HTTP client for a provider's OAuth endpoints that never follows a
+ * redirect: following one would resend a single-use code or refresh token,
+ * possibly to another origin. A redirect comes back as the answer, which no
+ * caller treats as success.
+ */
+export const oauthClient = Effect.map(HttpClient.HttpClient, (client) =>
+  HttpClient.transform(client, (effect) =>
+    Effect.provideService(effect, FetchHttpClient.RequestInit, { redirect: "manual" }),
+  ),
+)

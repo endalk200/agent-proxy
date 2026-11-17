@@ -1,5 +1,5 @@
 import { Clock, Context, Data, DateTime, Duration, Effect, Layer, Option, Schema } from "effect"
-import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
+import { HttpClientRequest, type HttpClientResponse } from "effect/http"
 
 import type { Credentials } from "../accounts/account.ts"
 import { ProviderEndpoints } from "./endpoints.ts"
@@ -12,6 +12,7 @@ import {
   refreshFailed,
   refreshUnanswered,
   type TokenAdapter,
+  oauthClient,
 } from "./provider.ts"
 
 /**
@@ -30,6 +31,10 @@ const ORIGINATOR = "codex_cli_rs"
 const Claims = Schema.Struct({
   email: Schema.optionalKey(Schema.String),
   exp: Schema.optionalKey(Schema.Finite),
+  // Where OpenAI puts the email when the top-level claim is absent; Codex reads it too.
+  "https://api.openai.com/profile": Schema.optionalKey(
+    Schema.Struct({ email: Schema.optionalKey(Schema.String) }),
+  ),
   "https://api.openai.com/auth": Schema.optionalKey(
     Schema.Struct({
       chatgpt_account_id: Schema.optionalKey(Schema.String),
@@ -163,7 +168,8 @@ const identityOf = (claims: Claims) =>
   Effect.gen(function* () {
     const auth = claims["https://api.openai.com/auth"]
     const accountId = auth?.chatgpt_account_id
-    if (accountId === undefined || accountId === "" || claims.email === undefined) {
+    const email = claims.email ?? claims["https://api.openai.com/profile"]?.email
+    if (accountId === undefined || accountId === "" || email === undefined || email === "") {
       return yield* new ProviderLoginError({
         message: "OpenAI's sign-in did not say which ChatGPT account signed in.",
       })
@@ -172,7 +178,7 @@ const identityOf = (claims: Claims) =>
       provider: "codex" as const,
       // The ChatGPT workspace: a person in several has one subscription in each.
       providerAccountId: accountId,
-      email: claims.email,
+      email,
       plan: codexPlan(auth?.chatgpt_plan_type),
     }
   })
@@ -184,7 +190,7 @@ export class CodexLogin extends Context.Service<CodexLogin, LoginAdapter>()(
     CodexLogin,
     Effect.gen(function* () {
       const { codex: endpoints } = yield* ProviderEndpoints
-      const http = yield* HttpClient.HttpClient
+      const http = yield* oauthClient
 
       const exchange = Effect.fn("CodexLogin.exchange")(
         function* (params: ExchangeParams) {
@@ -270,7 +276,7 @@ export class CodexTokens extends Context.Service<CodexTokens, TokenAdapter>()(
     CodexTokens,
     Effect.gen(function* () {
       const { codex: endpoints } = yield* ProviderEndpoints
-      const http = yield* HttpClient.HttpClient
+      const http = yield* oauthClient
 
       const refresh = Effect.fn("CodexTokens.refresh")(
         function* (refreshToken: string) {
