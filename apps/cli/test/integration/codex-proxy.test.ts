@@ -527,7 +527,7 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
     )
 
     it.effect(
-      "a Codex request without the key, or with a wrong one, gets a 401 in OpenAI's shape",
+      "a Codex request without the key, with an empty one, or with a wrong one, gets a 401 in OpenAI's shape",
       () =>
         TestClock.withLive(
           Effect.gen(function* () {
@@ -556,6 +556,19 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
                 code: "invalid_api_key",
               },
             })
+            // An empty key, as opencode sends for a key file it cannot read, is no key.
+            for (const empty of ["Bearer ", "Bearer"]) {
+              const response = yield* responses(empty)
+              expect(response.status).toBe(401)
+              expect(JSON.parse(response.text)).toEqual(JSON.parse(none.text))
+            }
+            const emptyApiKey = yield* home.send("/backend-api/codex/responses", {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-api-key": "" },
+              body: responsesBody,
+            })
+            expect(emptyApiKey.status).toBe(401)
+            expect(JSON.parse(emptyApiKey.text)).toEqual(JSON.parse(none.text))
             const wrong = yield* responses(`Bearer ${wrongKey}`)
             expect(wrong.status).toBe(401)
             expect(wrong.text).not.toContain(wrongKey)
