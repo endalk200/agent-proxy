@@ -10,7 +10,8 @@ import { accountsOf, hostOf } from "./model.ts"
 import { NoticeProvider } from "./Notices.tsx"
 import { RemoveAccountDialog } from "./RemoveAccount.tsx"
 import { Sidebar } from "./Sidebar.tsx"
-import { IconPower } from "./ui.tsx"
+import { type SignInRequest, SignInDialog } from "./SignIn.tsx"
+import { IconPlus, IconPower } from "./ui.tsx"
 import { useAccountActions } from "./useAccountActions.ts"
 import { useDaemon, useNow } from "./useDaemon.ts"
 
@@ -19,13 +20,14 @@ const browserFetch: typeof fetch = (input, init) => window.fetch(input, init)
 
 /**
  * The dashboard: a sidebar app shell around the Accounts page, reading the
- * daemon API of the daemon that serves it. `fetch`, `pollInterval` and `requestTimeout` exist
- * for tests.
+ * daemon API of the daemon that serves it. `fetch`, `pollInterval`, `requestTimeout` and
+ * `loginPollInterval` exist for tests.
  */
 export function App(props: {
   fetch?: typeof fetch
   pollInterval?: number
   requestTimeout?: number
+  loginPollInterval?: number
 }) {
   return (
     <NoticeProvider>
@@ -38,6 +40,7 @@ function Dashboard(props: {
   fetch?: typeof fetch
   pollInterval?: number
   requestTimeout?: number
+  loginPollInterval?: number
 }) {
   const fetchImpl = props.fetch ?? browserFetch
   const client = useMemo(() => createDaemonClient(fetchImpl), [fetchImpl])
@@ -49,6 +52,7 @@ function Dashboard(props: {
   const [connecting, setConnecting] = useState(false)
   const [openId, setOpenId] = useState<string | undefined>()
   const [removing, setRemoving] = useState<Account | undefined>()
+  const [signingIn, setSigningIn] = useState<SignInRequest | undefined>()
   const [announcement, setAnnouncement] = useState("")
 
   const address = view.info?.address ?? window.location.origin
@@ -69,6 +73,7 @@ function Dashboard(props: {
       setAnnouncement(`${account.label} moved to priority ${priority} of ${poolSize}.`)
     },
     askRemove: setRemoving,
+    signIn: setSigningIn,
   }
 
   return (
@@ -106,13 +111,26 @@ function Dashboard(props: {
             )}
 
             <header className="pagehead">
-              <h1 id="page-title" tabIndex={-1}>
-                Accounts
-              </h1>
-              <p>
-                Each client spends only its own provider's accounts. Within a pool, the
-                highest-priority account that is Active gets new sessions.
-              </p>
+              <div className="pagehead-text">
+                <h1 id="page-title" tabIndex={-1}>
+                  Accounts
+                </h1>
+                <p>
+                  Each client spends only its own provider's accounts. Within a pool, the
+                  highest-priority account that is Active gets new sessions.
+                </p>
+              </div>
+              {list !== undefined && list.accounts.length > 0 && (
+                <button
+                  type="button"
+                  className="btn is-primary"
+                  disabled={!reachable}
+                  onClick={() => setSigningIn({ kind: "add" })}
+                >
+                  <IconPlus size={14} />
+                  Add account
+                </button>
+              )}
             </header>
 
             {view.accounts !== undefined && (
@@ -137,7 +155,7 @@ function Dashboard(props: {
           list={list}
           now={now}
           controls={controls}
-          covered={removing !== undefined || connecting}
+          covered={removing !== undefined || connecting || signingIn !== undefined}
           onClose={() => setOpenId(undefined)}
         />
 
@@ -146,6 +164,15 @@ function Dashboard(props: {
           list={list}
           remove={actions.remove}
           onClose={() => setRemoving(undefined)}
+        />
+
+        <SignInDialog
+          request={signingIn}
+          client={client}
+          pollInterval={props.loginPollInterval ?? 1000}
+          onSignedIn={view.refresh}
+          rename={actions.rename}
+          onClose={() => setSigningIn(undefined)}
         />
 
         <ConnectClientsDialog

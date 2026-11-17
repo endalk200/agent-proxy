@@ -18,6 +18,7 @@ import {
   providerNames,
   statusLabels,
 } from "./model.ts"
+import type { SignInRequest } from "./SignIn.tsx"
 import {
   IconAlert,
   IconChevronDown,
@@ -47,6 +48,8 @@ export interface AccountControls {
   readonly move: (account: Account, priority: number) => void
   /** Asks the owner to confirm removing `account`. */
   readonly askRemove: (account: Account) => void
+  /** Opens the sign-in dialog, to add an account or sign in again to one. */
+  readonly signIn: (request: SignInRequest) => void
 }
 
 /** A row's own controls, where a click does not open the sheet. */
@@ -76,7 +79,7 @@ export function AccountsPage(props: {
 }) {
   const { list } = props
   if (list.accounts.length === 0) {
-    return <FirstRun address={props.address} client={props.client} />
+    return <FirstRun address={props.address} client={props.client} controls={props.controls} />
   }
   return (
     <div className="sections">
@@ -366,6 +369,17 @@ function AccountRow(props: {
           {statusLabels[account.status]}
         </span>
         <CooldownEnd account={account} now={props.now} />
+        {account.status === "needs-sign-in" && (
+          <button
+            type="button"
+            className="status-action"
+            aria-label={`Sign in again to ${account.label}`}
+            disabled={readOnly}
+            onClick={() => controls.signIn({ kind: "again", account })}
+          >
+            Sign in again
+          </button>
+        )}
       </td>
       <td className="col-used">
         <span className="used">{lastUsedText(account.lastUsedAt, props.now)}</span>
@@ -522,7 +536,8 @@ function RowMenu(props: {
 }
 
 /** The guided empty state, shown while the daemon holds no accounts. */
-function FirstRun({ address, client }: { address: string; client: DaemonClient }) {
+function FirstRun(props: { address: string; client: DaemonClient; controls: AccountControls }) {
+  const { address, client, controls } = props
   return (
     <ol className="steps" aria-label="Get started">
       <li className="is-current">
@@ -532,11 +547,22 @@ function FirstRun({ address, client }: { address: string; client: DaemonClient }
         <div className="step-body">
           <h2>Add an account</h2>
           <p>
-            The daemon at <code>{address}</code> has no accounts yet. Run this, and sign in to
-            Claude in the browser tab it opens.
+            The daemon at <code>{address}</code> has no accounts yet. Sign in to a Claude or Codex
+            account in your browser, and it joins that provider's pool.
           </p>
-          <div className="step-cmds">
-            <CommandLine command="agent-proxy accounts add claude" />
+          <div className="step-actions">
+            {(["claude", "codex"] as const).map((provider) => (
+              <button
+                key={provider}
+                type="button"
+                className="btn"
+                disabled={controls.readOnly}
+                onClick={() => controls.signIn({ kind: "add", provider })}
+              >
+                <ProviderMark provider={provider} size={14} />
+                Add a {providerNames[provider]} account
+              </button>
+            ))}
           </div>
         </div>
       </li>

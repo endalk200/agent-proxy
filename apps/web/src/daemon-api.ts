@@ -4,7 +4,7 @@
  * path is relative to the page's own origin.
  *
  * Answers are checked by hand rather than with Effect Schema, which would
- * double the size of the page for three small shapes.
+ * double the size of the page for a few small shapes.
  */
 
 export type Provider = "claude" | "codex"
@@ -58,6 +58,27 @@ export interface DaemonInfo {
   readonly startedAt: string
 }
 
+/**
+ * Where a login stands: waiting for the owner to sign in (`pending`), or
+ * finished, whether it added or updated an account (`succeeded`) or not.
+ */
+export type LoginStatus = "pending" | "succeeded" | "failed" | "cancelled" | "expired"
+
+/** A login the daemon runs to add an account or sign in to one again (ADR-0007). */
+export interface Login {
+  readonly id: string
+  readonly provider: Provider
+  /** The provider's sign-in page, to open in a browser. */
+  readonly authorizeUrl: string
+  readonly status: LoginStatus
+  /** Why a `failed` login failed. */
+  readonly error?: string
+  /** The account a `succeeded` login added or updated. */
+  readonly account?: Account
+  /** True when a `succeeded` login added a new account, false when it updated one. */
+  readonly created?: boolean
+}
+
 /** Why a call to the daemon failed. */
 export type DaemonFailure =
   /** Nothing answered: the daemon is stopped, or the network is down. */
@@ -82,6 +103,14 @@ export interface DaemonClient {
   readonly updateAccount: (id: string, settings: AccountSettings) => Promise<Account>
   /** `DELETE /api/accounts/:id`. */
   readonly removeAccount: (id: string) => Promise<Account>
+  /** `POST /api/logins`: starts a login, listening for the provider's redirect. */
+  readonly startLogin: (provider: Provider) => Promise<Login>
+  /** `GET /api/logins/:id`. */
+  readonly login: (id: string, signal?: AbortSignal) => Promise<Login>
+  /** `POST /api/logins/:id/callback`: finishes a login with a pasted callback URL. */
+  readonly submitCallback: (id: string, url: string) => Promise<Login>
+  /** `DELETE /api/logins/:id`: cancels a waiting login. */
+  readonly cancelLogin: (id: string) => Promise<Login>
 }
 
 // ------------------------------------------------------------------ decoding
@@ -114,6 +143,13 @@ const STATUSES: ReadonlyArray<AccountStatus> = [
   "cooling-down",
   "needs-sign-in",
   "disabled",
+]
+const LOGIN_STATUSES: ReadonlyArray<LoginStatus> = [
+  "pending",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "expired",
 ]
 
 const decodeAccount = (value: unknown): Account => {
@@ -164,6 +200,21 @@ const decodeDaemonInfo = (value: unknown): DaemonInfo => {
 
 const decodeKey = (value: unknown): string => string(object(value)["key"])
 
+const decodeLogin = (value: unknown): Login => {
+  const json = object(value)
+  const created = json["created"]
+  if (created !== undefined && typeof created !== "boolean") throw new Unreadable()
+  return {
+    id: string(json["id"]),
+    provider: oneOf(PROVIDERS, json["provider"]),
+    authorizeUrl: string(json["authorizeUrl"]),
+    status: oneOf(LOGIN_STATUSES, json["status"]),
+    ...(json["error"] === undefined ? {} : { error: string(json["error"]) }),
+    ...(json["account"] === undefined ? {} : { account: decodeAccount(json["account"]) }),
+    ...(created === undefined ? {} : { created }),
+  }
+}
+
 const errorMessage = (value: unknown): string | undefined => {
   try {
     return string(object(value)["error"])
@@ -175,6 +226,7 @@ const errorMessage = (value: unknown): string | undefined => {
 // -------------------------------------------------------------------- client
 
 const accountPath = (id: string) => `/api/accounts/${encodeURIComponent(id)}`
+const loginPath = (id: string) => `/api/logins/${encodeURIComponent(id)}`
 
 export const createDaemonClient = (fetchImpl: typeof fetch): DaemonClient => {
   const call = async <A>(
@@ -222,5 +274,11 @@ export const createDaemonClient = (fetchImpl: typeof fetch): DaemonClient => {
     updateAccount: (id, settings) =>
       call(accountPath(id), decodeAccount, { method: "PATCH", body: settings }),
     removeAccount: (id) => call(accountPath(id), decodeAccount, { method: "DELETE" }),
+    startLogin: (provider) =>
+      call("/api/logins", decodeLogin, { method: "POST", body: { provider } }),
+    login: (id, signal) => call(loginPath(id), decodeLogin, { signal }),
+    submitCallback: (id, url) =>
+      call(`${loginPath(id)}/callback`, decodeLogin, { method: "POST", body: { url } }),
+    cancelLogin: (id) => call(loginPath(id), decodeLogin, { method: "DELETE" }),
   }
 }

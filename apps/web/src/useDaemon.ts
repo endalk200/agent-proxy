@@ -19,6 +19,8 @@ export interface DaemonView {
 }
 
 export interface Daemon extends DaemonView {
+  /** Asks the daemon for its accounts again now, as after something changed them elsewhere. */
+  readonly refresh: () => void
   /**
    * Shows `preview` of the account list at once, runs `call`, then asks the
    * daemon for its accounts again, whether `call` succeeded or not, so the
@@ -133,7 +135,9 @@ export const useDaemon = (
     [],
   )
 
-  return { ...view, change }
+  const refresh = useCallback(() => refreshNow.current(), [])
+
+  return { ...view, change, refresh }
 }
 
 /** The current time, updated every `interval` milliseconds. */
