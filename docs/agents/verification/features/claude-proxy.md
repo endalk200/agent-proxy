@@ -46,3 +46,4 @@ m() { curl -s -w " HTTP %{http_code}\n" -X POST "$a/v1/messages?beta=true" -H "c
 - Without `-D -`, curl shows only the body; Claude's limit headers appear only on answers from a real account.
 - The daemon's address changes on each start with the `listen = "127.0.0.1:0"` fixture; read it from the state file every time.
 - The live drive needs the owner's real Claude account and a terminal; it cannot run unattended.
+- `AGENT_PROXY_PROVIDER_ENDPOINTS` with an `apiBaseUrl` (see [accounts](./accounts.md)) points proxied requests at another Claude API, such as a fake, for drives that must not reach Anthropic.

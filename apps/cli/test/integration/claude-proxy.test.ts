@@ -27,7 +27,12 @@ import {
  */
 const makeHome = (
   claude: FakeClaude,
-  options: { readonly dataHome?: string; readonly apiBaseUrl?: string } = {},
+  options: {
+    readonly dataHome?: string
+    readonly apiBaseUrl?: string
+    /** Leaves the real `ProviderEndpoints.layer` in place, pointed at the fake through `AGENT_PROXY_PROVIDER_ENDPOINTS`. */
+    readonly endpointsFromEnv?: boolean
+  } = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -40,16 +45,23 @@ const makeHome = (
       XDG_STATE_HOME: `${root}/state`,
       XDG_DATA_HOME: options.dataHome ?? `${root}/data`,
     }
+    const endpoints = ProviderEndpoints.of({
+      claude: {
+        ...claude.endpoints,
+        apiBaseUrl: options.apiBaseUrl ?? claude.endpoints.apiBaseUrl,
+      },
+    })
     const daemon = yield* startDaemon.pipe(
-      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
+      options.endpointsFromEnv === true
+        ? Effect.provide(ProviderEndpoints.layer)
+        : Effect.provideService(ProviderEndpoints, endpoints),
       Effect.provideService(
-        ProviderEndpoints,
-        ProviderEndpoints.of({
-          claude: {
-            ...claude.endpoints,
-            apiBaseUrl: options.apiBaseUrl ?? claude.endpoints.apiBaseUrl,
-          },
-        }),
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromEnvRecord(
+          options.endpointsFromEnv === true
+            ? { ...env, AGENT_PROXY_PROVIDER_ENDPOINTS: JSON.stringify(endpoints) }
+            : env,
+        ),
       ),
     )
 
@@ -650,6 +662,20 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
                 "agent-proxy: could not reach Claude. Check this machine's network connection.",
             },
           })
+        }),
+      ),
+    )
+
+    it.effect("AGENT_PROXY_PROVIDER_ENDPOINTS points proxied requests at another Claude API", () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const claude = yield* fakeClaude
+          const home = yield* makeHome(claude, { endpointsFromEnv: true })
+          const token = yield* home.signIn(alice)
+          expect((yield* home.sendMessage).status).toBe(200)
+          expect(claude.apiRequests().map((request) => request.headers["authorization"])).toEqual([
+            `Bearer ${token}`,
+          ])
         }),
       ),
     )
