@@ -135,6 +135,8 @@ export class AccountStore extends Context.Service<
       id: string,
       change: (account: Account) => CredentialState | undefined,
     ) => Effect.Effect<Option.Option<Account>, AccountStoreError>
+    /** Records that the account served a request at `at` (ISO time); a removed account stays removed. */
+    readonly markUsed: (id: string, at: string) => Effect.Effect<void, AccountStoreError>
   }
 >()("agent-proxy/AccountStore") {
   /** The store in the data directory resolved from the environment. */
@@ -372,7 +374,31 @@ export class AccountStore extends Context.Service<
           ),
       )
 
-      return AccountStore.of({ list, upsert, updateSettings, remove, updateCredentials })
+      const markUsed = Effect.fn("AccountStore.markUsed")(
+        function* (id: string, at: string) {
+          const file = `${id}.json`
+          // A file removed meanwhile stays removed: never written back.
+          if (!isAccountFile(file) || !(yield* fs.exists(path.join(dir, file)))) return
+          const stored = yield* read(file)
+          if (Option.isNone(stored)) return
+          yield* write({ ...stored.value, lastUsedAt: at })
+        },
+        (effect) =>
+          writes.withPermit(
+            effect.pipe(
+              Effect.catchTag("PlatformError", (cause) =>
+                Effect.fail(
+                  new AccountStoreError({
+                    message: `Could not read the accounts in ${dir}`,
+                    cause,
+                  }),
+                ),
+              ),
+            ),
+          ),
+      )
+
+      return AccountStore.of({ list, upsert, updateSettings, remove, updateCredentials, markUsed })
     }),
   )
 }

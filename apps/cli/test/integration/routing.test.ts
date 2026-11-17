@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
-import { ConfigProvider, Effect, FileSystem, Layer } from "effect"
+import { ConfigProvider, Effect, Fiber, FileSystem, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { TestClock } from "effect/testing"
 
@@ -295,6 +295,158 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
 
           expect(home.servedBy("claude")).toEqual(["first", "second", "second", "first", "second"])
         }),
+    )
+
+    it.effect("a gzip-compressed usage_limit_reached still cools the account until resets_at", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome
+        yield* home.seed("codex", "first", 1)
+        yield* home.seed("codex", "second", 2)
+        home.codex.answerApiWith((request) =>
+          accountOf(request) === "first"
+            ? new Response(
+                Bun.gzipSync(
+                  JSON.stringify({ error: { type: "usage_limit_reached", resets_at: 7200 } }),
+                ),
+                {
+                  status: 429,
+                  headers: {
+                    ...codexHeaders,
+                    "content-type": "application/json",
+                    "content-encoding": "gzip",
+                    "retry-after": "30",
+                  },
+                },
+              )
+            : codexAnswer(),
+        )
+
+        expect((yield* home.codexResponse()).status).toBe(200)
+        expect(statusOf(yield* home.accounts, "first")).toEqual({
+          status: "cooling-down",
+          cooldownEndsAt: "1970-01-01T02:00:00.000Z",
+        })
+      }),
+    )
+
+    it.effect("a late answer from a session's old account never undoes its failover", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome
+        yield* home.seed("claude", "first", 1)
+        yield* home.seed("claude", "second", 2)
+        const arrived = Promise.withResolvers<void>()
+        const release = Promise.withResolvers<void>()
+        let firstCalls = 0
+        home.claude.answerApiWith(async (request) => {
+          if (accountOf(request) !== "first") return claudeAnswer(200)
+          firstCalls++
+          if (firstCalls === 1) {
+            arrived.resolve()
+            await release.promise
+            return claudeAnswer(200)
+          }
+          return claudeAnswer(429, { "retry-after": "30" })
+        })
+
+        // Two requests of one session in flight on "first": the second hits a limit and moves on.
+        const held = yield* Effect.forkChild(home.claudeMessage("session-a"))
+        yield* Effect.promise(() => arrived.promise)
+        expect((yield* home.claudeMessage("session-a")).status).toBe(200)
+        release.resolve()
+        yield* Fiber.join(held)
+
+        yield* TestClock.adjust("31 seconds")
+        home.claude.answerApiWith(() => claudeAnswer(200))
+        yield* home.claudeMessage("session-a")
+        expect(home.servedBy("claude")).toEqual(["first", "first", "second", "second"])
+      }),
+    )
+
+    it.effect("a short limit arriving after a window limit never shortens the cooldown", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome
+        yield* home.seed("codex", "first", 1)
+        yield* home.seed("codex", "second", 2)
+        const arrived = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+        const release = [Promise.withResolvers<void>(), Promise.withResolvers<void>()]
+        let firstCalls = 0
+        home.codex.answerApiWith(async (request) => {
+          if (accountOf(request) !== "first") return codexAnswer()
+          const call = firstCalls++
+          arrived[call]?.resolve()
+          await release[call]?.promise
+          return call === 0
+            ? Response.json(
+                { error: { type: "usage_limit_reached", resets_at: 7200 } },
+                { status: 429, headers: codexHeaders },
+              )
+            : Response.json(
+                { error: { type: "rate_limit_exceeded" } },
+                { status: 429, headers: { ...codexHeaders, "retry-after": "30" } },
+              )
+        })
+
+        const window = yield* Effect.forkChild(home.codexResponse())
+        yield* Effect.promise(() => arrived[0]?.promise ?? Promise.resolve())
+        const minute = yield* Effect.forkChild(home.codexResponse())
+        yield* Effect.promise(() => arrived[1]?.promise ?? Promise.resolve())
+        release[0]?.resolve()
+        yield* Fiber.join(window)
+        release[1]?.resolve()
+        yield* Fiber.join(minute)
+
+        expect(statusOf(yield* home.accounts, "first")).toEqual({
+          status: "cooling-down",
+          cooldownEndsAt: "1970-01-01T02:00:00.000Z",
+        })
+      }),
+    )
+
+    it.effect("an account that serves a request records when, at most once a minute", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome
+        yield* home.seed("claude", "first", 1)
+        home.claude.answerApiWith(() => claudeAnswer(200))
+        const lastUsed = Effect.map(home.accounts, (list) =>
+          typeof list === "object" &&
+          list !== null &&
+          "accounts" in list &&
+          Array.isArray(list.accounts)
+            ? list.accounts[0]?.lastUsedAt
+            : undefined,
+        )
+
+        expect(yield* lastUsed).toBeNull()
+        yield* TestClock.adjust("10 seconds")
+        yield* home.claudeMessage()
+        expect(yield* lastUsed).toBe("1970-01-01T00:00:10.000Z")
+        yield* TestClock.adjust("30 seconds")
+        yield* home.claudeMessage()
+        expect(yield* lastUsed).toBe("1970-01-01T00:00:10.000Z")
+        yield* TestClock.adjust("40 seconds")
+        yield* home.claudeMessage()
+        expect(yield* lastUsed).toBe("1970-01-01T00:01:20.000Z")
+      }),
+    )
+
+    it.effect("a cooling account that is disabled reports no cooldown end", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome
+        yield* home.seed("claude", "first", 1)
+        yield* home.seed("claude", "second", 2)
+        home.claude.answerApiWith((request) =>
+          accountOf(request) === "first"
+            ? claudeAnswer(429, { "retry-after": "30" })
+            : claudeAnswer(200),
+        )
+        yield* home.claudeMessage()
+        yield* home.api("PATCH", "/api/accounts/first", { enabled: false })
+
+        expect(statusOf(yield* home.accounts, "first")).toEqual({
+          status: "disabled",
+          cooldownEndsAt: null,
+        })
+      }),
     )
 
     it.effect("a per-minute 429 cools the account for Retry-After only, never a window", () =>

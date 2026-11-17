@@ -324,22 +324,50 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
       }),
     )
 
-    it.effect("a request Claude rejects again after the refresh gets Claude's 401", () =>
+    it.effect("a request Claude rejects again after the refresh moves on to the next account", () =>
       Effect.gen(function* () {
         const claude = yield* fakeClaude
         const home = yield* makeHome(claude)
         yield* home.signIn(alice)
-        claude.answerApiWith(() => unauthorized())
+        yield* home.signIn(bob)
+        // Alice's tokens are refused, old and refreshed alike; Bob's work.
+        claude.answerApiWith((request) =>
+          ["Bearer sk-ant-oat01-fake-1", "Bearer sk-ant-oat01-fake-3"].includes(
+            request.headers.get("authorization") ?? "",
+          )
+            ? unauthorized()
+            : Response.json({ type: "message", content: [{ type: "text", text: "ok" }] }),
+        )
 
         const response = yield* home.sendMessage
 
-        expect(response.status).toBe(401)
-        expect(JSON.parse(response.text)).toEqual(unauthorizedBody)
+        expect(response.status).toBe(200)
         expect(upstreamTokens(claude)).toEqual([
           "Bearer sk-ant-oat01-fake-1",
+          "Bearer sk-ant-oat01-fake-3",
           "Bearer sk-ant-oat01-fake-2",
         ])
       }),
+    )
+
+    it.effect(
+      "a request Claude rejects again after the refresh, with no other account, gets Claude's 401",
+      () =>
+        Effect.gen(function* () {
+          const claude = yield* fakeClaude
+          const home = yield* makeHome(claude)
+          yield* home.signIn(alice)
+          claude.answerApiWith(() => unauthorized())
+
+          const response = yield* home.sendMessage
+
+          expect(response.status).toBe(401)
+          expect(JSON.parse(response.text)).toEqual(unauthorizedBody)
+          expect(upstreamTokens(claude)).toEqual([
+            "Bearer sk-ant-oat01-fake-1",
+            "Bearer sk-ant-oat01-fake-2",
+          ])
+        }),
     )
 
     for (const [status, refusal] of [

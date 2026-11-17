@@ -1,3 +1,5 @@
+import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib"
+
 import { Clock, type Context, Effect, Option } from "effect"
 import {
   Headers,
@@ -10,6 +12,7 @@ import {
 import { type Account, type Provider, providerNames } from "../accounts/account.ts"
 import { CredentialKeeper } from "../accounts/keeper.ts"
 import { type Cooldown, Router } from "../accounts/router.ts"
+import { AccountStore } from "../accounts/store.ts"
 import type { UpstreamApi } from "../providers/upstream.ts"
 import { ProxyKey } from "./proxy-key.ts"
 
@@ -99,6 +102,36 @@ interface BufferedAnswer {
 
 const decoder = new TextDecoder()
 
+/**
+ * A buffered body as text, undone from its `content-encoding` first: the
+ * proxy asks providers not to decompress, so the client gets their bytes as
+ * sent, but a limit has to be read to be classified. A body that cannot be
+ * decoded counts as unreadable.
+ */
+const bodyText = (body: Uint8Array, encoding: string | undefined): string | undefined => {
+  try {
+    switch (encoding?.trim().toLowerCase()) {
+      case undefined:
+      case "":
+      case "identity":
+        return decoder.decode(body)
+      case "gzip":
+      case "x-gzip":
+        return decoder.decode(gunzipSync(body))
+      case "deflate":
+        return decoder.decode(inflateSync(body))
+      case "br":
+        return decoder.decode(brotliDecompressSync(body))
+      case "zstd":
+        return decoder.decode(zstdDecompressSync(body))
+      default:
+        return undefined
+    }
+  } catch {
+    return undefined
+  }
+}
+
 /** How long a 429's body may take to arrive before it is judged by its headers alone. */
 const LIMIT_BODY_TIMEOUT = "5 seconds"
 
@@ -117,6 +150,28 @@ const replay = (answer: BufferedAnswer) =>
     status: answer.status,
     headers: Headers.removeMany(answer.headers, NOT_RELAYED),
   })
+
+/** How stale an account's "last used" may get before a request it serves writes it again. */
+const LAST_USED_GRANULARITY_MS = 60_000
+
+/**
+ * Records that `account` served a request, at most once a minute so a busy
+ * account's file is not rewritten on every request. A failure to write it
+ * never fails the request.
+ */
+const markUsed = (account: Account) =>
+  Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis
+    const last = account.lastUsedAt === null ? undefined : Date.parse(account.lastUsedAt)
+    if (last !== undefined && now - last < LAST_USED_GRANULARITY_MS) return
+    yield* (yield* AccountStore).markUsed(account.id, new Date(now).toISOString())
+  }).pipe(
+    Effect.catchTag("AccountStoreError", (cause) =>
+      Effect.logWarning("could not record when an account was last used").pipe(
+        Effect.annotateLogs({ account: account.id, cause: cause.message }),
+      ),
+    ),
+  )
 
 /** The handler that proxies a request to `provider`. */
 export const forward = <I>({ provider, upstream, error, coolingDown }: ProxiedProvider<I>) => {
@@ -178,6 +233,8 @@ export const forward = <I>({ provider, upstream, error, coolingDown }: ProxiedPr
       if (answer.status !== 401) return Option.some(answer)
 
       // The provider rejected the token: refresh once and retry on the same account.
+      // A 401 that comes back after this is the account's to own: the caller
+      // moves on to the next account (spec #5: refresh once, then fail over).
       const retry = yield* keeper.credentialsAfterRejection(account, credentials.value.accessToken)
       if (Option.isSome(retry) && retry.value.accessToken === credentials.value.accessToken) {
         return Option.some(answer)
@@ -192,6 +249,9 @@ export const forward = <I>({ provider, upstream, error, coolingDown }: ProxiedPr
     // The last limit answer, read in full: when its account is the first to
     // be free again, the client gets the provider's own answer.
     let limited: { readonly accountId: string; readonly answer: BufferedAnswer } | undefined
+    // The last account's rejection of its token even after a refresh: the
+    // client gets it only when no other account can take the request.
+    let rejected: BufferedAnswer | undefined
     for (;;) {
       const choice = yield* router.choose(provider, session, tried)
       if (choice._tag === "CoolingDown") {
@@ -199,13 +259,19 @@ export const forward = <I>({ provider, upstream, error, coolingDown }: ProxiedPr
           ? replay(limited.answer)
           : coolingDown(choice.cooldown, yield* Clock.currentTimeMillis)
       }
-      if (choice._tag === "Unavailable") return noAccount(choice.accounts)
+      if (choice._tag === "Unavailable") {
+        return rejected?.body !== undefined ? replay(rejected) : noAccount(choice.accounts)
+      }
       const account = choice.account
       tried.add(account.id)
 
       const answer = yield* attempt(account)
       if (Option.isNone(answer)) continue
       const response = answer.value
+      if (response.status === 401) {
+        rejected = { status: 401, headers: response.headers, body: yield* readLimitBody(response) }
+        continue
+      }
       // Only a 429 is read before the client gets it: it may say the account hit a limit.
       const buffered: BufferedAnswer =
         response.status === 429
@@ -214,12 +280,16 @@ export const forward = <I>({ provider, upstream, error, coolingDown }: ProxiedPr
       const signal = api.limitsOf(
         {
           ...buffered,
-          body: buffered.body === undefined ? undefined : decoder.decode(buffered.body),
+          body:
+            buffered.body === undefined
+              ? undefined
+              : bodyText(buffered.body, buffered.headers["content-encoding"]),
         },
         yield* Clock.currentTimeMillis,
       )
-      yield* router.record(account, session, signal)
+      yield* router.record(account, session, signal, choice.seen)
       if (signal._tag === "Within") {
+        yield* markUsed(account)
         return buffered.body === undefined ? relay(response) : replay(buffered)
       }
       if (buffered.body === undefined) yield* discard(response)
