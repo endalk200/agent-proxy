@@ -5,6 +5,7 @@ import { FetchHttpClient } from "effect/http"
 
 import { runCli } from "../../src/cli.ts"
 import { Processes } from "../../src/processes.ts"
+import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 
 // Drives the real command tree in-process with the real Bun platform services.
@@ -32,6 +33,7 @@ layer(
     RuntimeInfo.layerProcess,
     Processes.layerProcess,
     FetchHttpClient.layer,
+    ProviderEndpoints.layer,
   ),
 )("agent-proxy info", (it) => {
   it.effect("prints runtime and config details as JSON", () =>

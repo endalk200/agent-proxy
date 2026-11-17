@@ -5,6 +5,7 @@ import { FetchHttpClient } from "effect/http"
 
 import { main } from "./cli.ts"
 import { Processes } from "./processes.ts"
+import { ProviderEndpoints } from "./providers/endpoints.ts"
 import { RuntimeInfo } from "./runtime-info.ts"
 
 // The process entry point: it provides the real platform services, so tests
@@ -30,6 +31,7 @@ main.pipe(
       RuntimeInfo.layerProcess,
       Processes.layerProcess,
       FetchHttpClient.layer,
+      ProviderEndpoints.layer,
     ),
   ),
   BunRuntime.runMain({ teardown }),

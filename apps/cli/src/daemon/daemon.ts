@@ -1,11 +1,16 @@
 import { BunHttpServer } from "@effect/platform-bun"
-import { Clock, Data, DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect"
-import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { Clock, Data, DateTime, Effect, FileSystem, Layer, Logger } from "effect"
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http"
 
 import packageJson from "../../package.json" with { type: "json" }
+import { AccountStore } from "../accounts/store.ts"
 import { type ListenAddress, loadConfigFile } from "../config.ts"
+import { Logins } from "../logins/logins.ts"
 import { resolveStateDir } from "../paths.ts"
 import { Processes } from "../processes.ts"
+import { ClaudeLogin } from "../providers/claude.ts"
+import { accountRoutes } from "./accounts-routes.ts"
+import { loopbackOnly } from "./http.ts"
 import { acquireLock, removeStateFile, stateFiles, writeStateFile } from "./state.ts"
 
 /**
@@ -30,28 +35,11 @@ export class DaemonStartError extends Data.TaggedError("DaemonStartError")<{
 /** In-flight requests get this long to finish once shutdown starts. */
 const GRACEFUL_SHUTDOWN = "5 seconds"
 
-const isLoopback = (ip: string) =>
-  ip === "::1" || ip.startsWith("127.") || ip.startsWith("::ffff:127.")
-
 /** The URL a client on this machine uses to reach `host:port`. */
 const clientAddress = (host: string, port: number) => {
   const reachable = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host
   return `http://${reachable.includes(":") ? `[${reachable}]` : reachable}:${port}`
 }
-
-const notLoopback = HttpServerResponse.jsonUnsafe(
-  { error: "The daemon API is served to clients on this machine only." },
-  { status: 403 },
-)
-
-/**
- * Serves `handler` only to loopback clients: until remote access is designed,
- * the daemon API is local.
- */
-const loopbackOnly = <E, R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
-  Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-    Option.exists(request.peerAddress, isLoopback) ? handler : Effect.succeed(notLoopback),
-  )
 
 const routes = (info: {
   readonly pid: number
@@ -60,6 +48,7 @@ const routes = (info: {
 }) =>
   HttpRouter.use((router) =>
     Effect.all([
+      accountRoutes(router),
       router.add("GET", "/healthz", HttpServerResponse.jsonUnsafe({ status: "ok" })),
       router.add(
         "GET",
@@ -141,7 +130,15 @@ export const startDaemon = Effect.gen(function* () {
       HttpRouter.serve(routes({ pid, address, startedAt }), {
         disableLogger: true,
         disableListenLog: true,
-      }).pipe(Layer.provide(Layer.succeed(HttpServer.HttpServer, server))),
+      }).pipe(
+        Layer.provide(
+          Logins.layer.pipe(
+            Layer.provideMerge(AccountStore.layer),
+            Layer.provide(ClaudeLogin.layer),
+          ),
+        ),
+        Layer.provide(Layer.succeed(HttpServer.HttpServer, server)),
+      ),
     ).pipe(logToFile)
 
     yield* writeStateFile(stateDir, { pid, port, address })

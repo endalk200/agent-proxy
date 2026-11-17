@@ -38,3 +38,16 @@ export const resolveStateDir = Effect.gen(function* () {
     : path.join(yield* Config.NonEmptyString("HOME"), ".local", "state")
   return path.join(stateHome, "agent-proxy")
 })
+
+/**
+ * Where the daemon keeps what it writes itself, such as accounts (ADR-0004):
+ * `$XDG_DATA_HOME/agent-proxy`, else `$HOME/.local/share/agent-proxy`.
+ */
+export const resolveDataDir = Effect.gen(function* () {
+  const path = yield* Path.Path
+  const xdgDataHome = yield* Config.option(Config.NonEmptyString("XDG_DATA_HOME"))
+  const dataHome = Option.isSome(xdgDataHome)
+    ? xdgDataHome.value
+    : path.join(yield* Config.NonEmptyString("HOME"), ".local", "share")
+  return path.join(dataHome, "agent-proxy")
+})

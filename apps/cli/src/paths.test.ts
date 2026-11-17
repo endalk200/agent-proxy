@@ -1,7 +1,7 @@
 import { expect, layer } from "@effect/vitest"
 import { ConfigProvider, Effect, Path } from "effect"
 
-import { resolveConfigPath, resolveStateDir } from "./paths.ts"
+import { resolveConfigPath, resolveDataDir, resolveStateDir } from "./paths.ts"
 
 const resolveWith = (env: Record<string, string>) =>
   resolveConfigPath.pipe(
@@ -62,6 +62,30 @@ layer(Path.layer)("resolveConfigPath", (it) => {
         ),
       )
       expect(dir).toBe("/home/me/.local/state/agent-proxy")
+    }),
+  )
+
+  it.effect("keeps accounts under XDG_DATA_HOME", () =>
+    Effect.gen(function* () {
+      const dir = yield* resolveDataDir.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromEnvRecord({ XDG_DATA_HOME: "/data", HOME: "/home/me" }),
+        ),
+      )
+      expect(dir).toBe("/data/agent-proxy")
+    }),
+  )
+
+  it.effect("keeps accounts under HOME/.local/share without XDG_DATA_HOME", () =>
+    Effect.gen(function* () {
+      const dir = yield* resolveDataDir.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromEnvRecord({ HOME: "/home/me" }),
+        ),
+      )
+      expect(dir).toBe("/home/me/.local/share/agent-proxy")
     }),
   )
 })

@@ -6,6 +6,7 @@ import { TestClock } from "effect/testing"
 
 import { runCli } from "../../src/cli.ts"
 import { Processes } from "../../src/processes.ts"
+import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 
 // The `daemon` commands, driven in-process through the real command tree with
@@ -79,6 +80,7 @@ layer(
     RuntimeInfo.layerProcess,
     Processes.layerProcess,
     FetchHttpClient.layer,
+    ProviderEndpoints.layer,
   ),
 )("agent-proxy daemon", (it) => {
   it.effect("status fails with a one-line hint when no daemon runs, and starts none", () =>
