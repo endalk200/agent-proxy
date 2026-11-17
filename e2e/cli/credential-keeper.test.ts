@@ -1,7 +1,7 @@
 import { defaultRepo, runCli, Sandbox } from "@agent-proxy/sandbox"
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
-import { Effect, FileSystem, Schema } from "effect"
+import { Effect, FileSystem, Schedule, Schema } from "effect"
 import { TestClock } from "effect/testing"
 
 // The credential keeper across a crash, black-box: the built daemon in a
@@ -28,11 +28,10 @@ const isAlive = (pid: number) => {
 
 /** Waits for `condition`, checking every 20ms, failing after 5 seconds. */
 const eventually = (what: string, condition: () => boolean) =>
-  Effect.promise(async () => {
-    for (const deadline = Date.now() + 5000; !condition(); await Bun.sleep(20)) {
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-    }
-  })
+  Effect.sync(condition).pipe(
+    Effect.repeat({ schedule: Schedule.spaced("20 millis"), until: (met) => met, times: 250 }),
+    Effect.flatMap((met) => (met ? Effect.void : Effect.die(`timed out waiting for ${what}`))),
+  )
 
 /** A Claude token endpoint that takes in refresh requests and never answers them. */
 const silentTokenEndpoint = Effect.gen(function* () {
@@ -123,7 +122,9 @@ layer(BunServices.layer)("agent-proxy credential keeper (built binary)", (it) =>
           expect(accounts).toEqual([{ label: "Work", status: "needs-sign-in" }])
           expect(yield* agentProxy(["accounts"])).toMatchObject({
             exitCode: 0,
-            stdout: expect.stringContaining("Work   me@work.example  Max 20x  1         Needs sign-in"),
+            stdout: expect.stringContaining(
+              "Work   me@work.example  Max 20x  1         Needs sign-in",
+            ),
           })
           expect(claude.refreshes).toEqual(["sk-ant-ort01-before-crash"])
           expect((yield* fs.readDirectory(accountsDir)).toSorted()).toEqual(["aa01.json"])
