@@ -614,6 +614,7 @@ name = "OpenAI"
 base_url = "${address}/backend-api/codex"
 wire_api = "responses"
 auth = { command = "agent-proxy", args = ["key"] }
+# an old note
 
 # Local models
 [model_providers.lmstudio-local]
@@ -621,6 +622,68 @@ name = "LM Studio"
 `)
         }),
       ),
+  )
+
+  it.effect("keeps a comment the replaced table is followed by, even across a blank line", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+        yield* home.writeCodexConfig(`model_provider = "agent-proxy"
+
+[model_providers.agent-proxy]
+name = "Old"
+
+# Local model settings; keep these separate.
+
+[model_providers.local]
+name = "Local"
+`)
+
+        yield* home.connectCodex("y")
+
+        expect(Option.getOrNull(yield* home.read(home.codexConfig)))
+          .toBe(`model_provider = "agent-proxy"
+
+[model_providers.agent-proxy]
+name = "OpenAI"
+base_url = "${address}/backend-api/codex"
+wire_api = "responses"
+auth = { command = "agent-proxy", args = ["key"] }
+
+# Local model settings; keep these separate.
+
+[model_providers.local]
+name = "Local"
+`)
+      }),
+    ),
+  )
+
+  it.effect("connects a config.toml written with CRLF line endings, and keeps them", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+        yield* home.writeCodexConfig('model = "gpt-5.5"\r\nmodel_provider = "openai" # default\r\n')
+
+        yield* home.connectCodex("y")
+
+        expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(
+          [
+            'model = "gpt-5.5"',
+            'model_provider = "agent-proxy" # default',
+            "",
+            "[model_providers.agent-proxy]",
+            'name = "OpenAI"',
+            `base_url = "${address}/backend-api/codex"`,
+            'wire_api = "responses"',
+            'auth = { command = "agent-proxy", args = ["key"] }',
+            "",
+          ].join("\r\n"),
+        )
+      }),
+    ),
   )
 
   it.effect(

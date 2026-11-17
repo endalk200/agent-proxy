@@ -1,8 +1,9 @@
 import { Effect } from "effect"
 import { type HttpRouter, HttpServerResponse } from "effect/http"
 
+import type { Cooldown } from "../accounts/router.ts"
 import { CodexApi } from "../providers/codex-api.ts"
-import { type ErrorKind, forward } from "./forward.ts"
+import { type ErrorKind, forward, untilText } from "./forward.ts"
 
 /**
  * The proxy's Codex routes: what Codex (as a custom provider named "OpenAI"
@@ -38,7 +39,32 @@ const openAiError = (status: number, kind: ErrorKind, message: string) =>
     { status },
   )
 
-const toCodex = forward({ provider: "codex", upstream: CodexApi, error: openAiError })
+/**
+ * The Codex backend's own limit answer: a 429 whose error is
+ * `usage_limit_reached` with `resets_at` (epoch seconds), which Codex shows
+ * as the usage limit and when to try again.
+ */
+const codexCoolingDown = (cooldown: Cooldown, now: number) => {
+  const resetsIn = Math.max(1, Math.ceil((cooldown.until - now) / 1000))
+  return HttpServerResponse.jsonUnsafe(
+    {
+      error: {
+        type: "usage_limit_reached",
+        message: `agent-proxy: every Codex account is cooling down. The first is available again at ${untilText(cooldown.until)}.`,
+        resets_at: Math.ceil(cooldown.until / 1000),
+        resets_in_seconds: resetsIn,
+      },
+    },
+    { status: 429, headers: { "retry-after": String(resetsIn) } },
+  )
+}
+
+const toCodex = forward({
+  provider: "codex",
+  upstream: CodexApi,
+  error: openAiError,
+  coolingDown: codexCoolingDown,
+})
 
 /** No WebSocket: the proxy serves the Responses API over HTTP only. */
 const noWebSocket = openAiError(

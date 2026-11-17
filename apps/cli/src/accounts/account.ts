@@ -61,20 +61,20 @@ export interface CredentialState {
 }
 
 /** Where an account stands with its pool (see GLOSSARY.md). */
-export const AccountStatus = Schema.Literals(["active", "needs-sign-in", "disabled"])
+export const AccountStatus = Schema.Literals([
+  "active",
+  "cooling-down",
+  "needs-sign-in",
+  "disabled",
+])
 export type AccountStatus = typeof AccountStatus.Type
 
-export const accountStatus = (account: Account): AccountStatus =>
-  !account.enabled ? "disabled" : account.needsSignIn ? "needs-sign-in" : "active"
-
-/**
- * The account that serves `provider`'s next request: the Active account
- * highest in its pool's priority, if there is one.
- */
-export const chooseAccount = (
-  accounts: ReadonlyArray<Account>,
-  provider: Provider,
-): Account | undefined =>
-  accounts
-    .filter((account) => account.provider === provider && accountStatus(account) === "active")
-    .toSorted((a, b) => a.priority - b.priority)[0]
+/** `account`'s status, given whether a cooldown is running for it. */
+export const accountStatus = (account: Account, coolingDown: boolean): AccountStatus =>
+  !account.enabled
+    ? "disabled"
+    : account.needsSignIn
+      ? "needs-sign-in"
+      : coolingDown
+        ? "cooling-down"
+        : "active"

@@ -1,12 +1,7 @@
 import { Schema } from "effect"
 
-import {
-  type Account,
-  AccountStatus,
-  accountStatus,
-  chooseAccount,
-  Provider,
-} from "../accounts/account.ts"
+import { type Account, AccountStatus, Provider } from "../accounts/account.ts"
+import type { RoutingView } from "../accounts/router.ts"
 
 /**
  * The daemon API's JSON shapes, shared by the daemon that serves them and the
@@ -24,12 +19,18 @@ export const AccountView = Schema.Struct({
   priority: Schema.Int,
   enabled: Schema.Boolean,
   status: AccountStatus,
+  /** When a `cooling-down` account's cooldown ends, as an ISO 8601 timestamp; null for any other status. */
+  cooldownEndsAt: Schema.NullOr(Schema.String),
   addedAt: Schema.String,
   lastUsedAt: Schema.NullOr(Schema.String),
 })
 export type AccountView = typeof AccountView.Type
 
-export const toAccountView = (account: Account): AccountView => ({
+const isoOrNull = (millis: number | undefined) =>
+  millis === undefined ? null : new Date(millis).toISOString()
+
+/** `account` as the daemon API reports it, with its status as `routing` sees it. */
+export const toAccountView = (account: Account, routing: RoutingView): AccountView => ({
   id: account.id,
   provider: account.provider,
   providerAccountId: account.providerAccountId,
@@ -38,7 +39,8 @@ export const toAccountView = (account: Account): AccountView => ({
   plan: account.plan,
   priority: account.priority,
   enabled: account.enabled,
-  status: accountStatus(account),
+  status: routing.status(account),
+  cooldownEndsAt: isoOrNull(routing.cooldownEndsAt(account)),
   addedAt: account.addedAt,
   lastUsedAt: account.lastUsedAt,
 })
@@ -58,11 +60,14 @@ export const AccountList = Schema.Struct({
 })
 export type AccountList = typeof AccountList.Type
 
-export const toAccountList = (accounts: ReadonlyArray<Account>): AccountList => ({
-  accounts: accounts.map(toAccountView),
+export const toAccountList = (
+  accounts: ReadonlyArray<Account>,
+  routing: RoutingView,
+): AccountList => ({
+  accounts: accounts.map((account) => toAccountView(account, routing)),
   pools: [...new Set(accounts.map((account) => account.provider))].map((provider) => ({
     provider,
-    newSessionsAccountId: chooseAccount(accounts, provider)?.id ?? null,
+    newSessionsAccountId: routing.newSessions(accounts, provider)?.id ?? null,
   })),
 })
 

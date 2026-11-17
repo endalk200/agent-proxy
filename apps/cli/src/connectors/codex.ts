@@ -95,12 +95,12 @@ const withProviderTable = (lines: ReadonlyArray<string>, table: string): Array<s
     return [...kept, ...gap, ...tableLines, ""]
   }
   const next = lines.findIndex((line, index) => index > start && isHeader(line))
-  // The comments attached to the next table belong to it, and the blank
-  // lines above them stay as the gap between the two tables.
+  // Only the table's own settings go: the comments and blank lines after its
+  // last setting stay, so no comment is ever lost.
   const end = skipBack(
     lines,
-    skipBack(lines, next === -1 ? lines.length : next, isComment),
-    isBlank,
+    next === -1 ? lines.length : next,
+    (line) => isComment(line) || isBlank(line),
   )
   return [...lines.slice(0, start), ...tableLines, ...lines.slice(Math.max(end, start + 1))]
 }
@@ -159,8 +159,10 @@ export const codex: ClientConnector = {
       return Result.succeed(Option.none())
     }
 
-    const next = withModelProvider(withProviderTable(text.split("\n"), providerTable(target))).join(
-      "\n",
+    // A file written with CRLF keeps CRLF; the splice works on bare lines.
+    const eol = text.includes("\r\n") ? "\r\n" : "\n"
+    const next = withModelProvider(withProviderTable(text.split(eol), providerTable(target))).join(
+      eol,
     )
     const written = parse(next)
     if (

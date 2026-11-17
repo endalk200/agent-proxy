@@ -54,6 +54,12 @@ export const IconAlert = ({ size }: IconProps) => (
     <path d="M12 9v4M12 17h.01" />
   </Svg>
 )
+export const IconClock = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v5l3 2" />
+  </Svg>
+)
 export const IconPower = ({ size }: IconProps) => (
   <Svg size={size}>
     <path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.77.04" />

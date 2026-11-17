@@ -43,7 +43,9 @@ function Dashboard(props: {
   const client = useMemo(() => createDaemonClient(fetchImpl), [fetchImpl])
   const view = useDaemon(client, props.pollInterval ?? 3000, props.requestTimeout ?? 5000)
   const actions = useAccountActions(view, client)
-  const now = useNow(15_000)
+  // A cooldown's countdown ticks each second; otherwise times move by the minute.
+  const cooling = view.accounts?.accounts.some((account) => account.status === "cooling-down")
+  const now = useNow(cooling === true ? 1000 : 15_000)
   const [connecting, setConnecting] = useState(false)
   const [openId, setOpenId] = useState<string | undefined>()
   const [removing, setRemoving] = useState<Account | undefined>()
