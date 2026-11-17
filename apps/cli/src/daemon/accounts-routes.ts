@@ -3,22 +3,27 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
 import { AccountStore } from "../accounts/store.ts"
 import { Logins } from "../logins/logins.ts"
-import { StartLogin, SubmitCallback, toAccountView } from "./api.ts"
+import { StartLogin, SubmitCallback, toAccountList, toAccountView, UpdateAccount } from "./api.ts"
 import { apiError, type LocalOnly } from "./http.ts"
 
 /**
  * The daemon API's account and login operations:
  *
- * - `GET /api/accounts` lists accounts with their status.
+ * - `GET /api/accounts` lists accounts with their status, and which account
+ *   gets each pool's new sessions.
+ * - `PATCH /api/accounts/:id` changes an account's label, priority or enabled.
+ * - `DELETE /api/accounts/:id` removes an account.
  * - `POST /api/logins` starts a login; `GET /api/logins/:id` polls it.
  * - `POST /api/logins/:id/callback` finishes it with a pasted callback URL.
  * - `DELETE /api/logins/:id` cancels it.
  */
 
-const loginId = Effect.map(HttpRouter.params, (params) => params["id"] ?? "")
+const pathId = Effect.map(HttpRouter.params, (params) => params["id"] ?? "")
 
 const badRequest = (expected: string) => () =>
   Effect.succeed(apiError(400, `Expected a JSON body ${expected}.`))
+
+const updateAccountShape = '{ "label"?: string, "priority"?: integer, "enabled"?: boolean }'
 
 /** Adds the routes to `router`, each served only to clients `localOnly` lets through. */
 export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnly) =>
@@ -29,11 +34,45 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
       localOnly(
         Effect.gen(function* () {
           const accounts = yield* (yield* AccountStore).list
-          return HttpServerResponse.jsonUnsafe({ accounts: accounts.map(toAccountView) })
+          return HttpServerResponse.jsonUnsafe(toAccountList(accounts))
         }).pipe(
           Effect.catchTag("AccountStoreError", (error) =>
             Effect.succeed(apiError(500, error.message)),
           ),
+        ),
+      ),
+    ),
+    router.add(
+      "PATCH",
+      "/api/accounts/:id",
+      localOnly(
+        Effect.gen(function* () {
+          const settings = yield* HttpServerRequest.schemaBodyJson(UpdateAccount)
+          const account = yield* (yield* AccountStore).updateSettings(yield* pathId, settings)
+          return HttpServerResponse.jsonUnsafe(toAccountView(account))
+        }).pipe(
+          Effect.catchTags({
+            SchemaError: badRequest(updateAccountShape),
+            HttpServerError: badRequest(updateAccountShape),
+            AccountNotFound: (error) => Effect.succeed(apiError(404, error.message)),
+            PriorityOutOfRange: (error) => Effect.succeed(apiError(400, error.message)),
+            AccountStoreError: (error) => Effect.succeed(apiError(500, error.message)),
+          }),
+        ),
+      ),
+    ),
+    router.add(
+      "DELETE",
+      "/api/accounts/:id",
+      localOnly(
+        Effect.gen(function* () {
+          const account = yield* (yield* AccountStore).remove(yield* pathId)
+          return HttpServerResponse.jsonUnsafe(toAccountView(account))
+        }).pipe(
+          Effect.catchTags({
+            AccountNotFound: (error) => Effect.succeed(apiError(404, error.message)),
+            AccountStoreError: (error) => Effect.succeed(apiError(500, error.message)),
+          }),
         ),
       ),
     ),
@@ -59,7 +98,7 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
       "/api/logins/:id",
       localOnly(
         Effect.gen(function* () {
-          const login = yield* (yield* Logins).get(yield* loginId)
+          const login = yield* (yield* Logins).get(yield* pathId)
           return HttpServerResponse.jsonUnsafe(login)
         }).pipe(
           Effect.catchTag("LoginNotFound", (error) => Effect.succeed(apiError(404, error.message))),
@@ -72,7 +111,7 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
       localOnly(
         Effect.gen(function* () {
           const { url } = yield* HttpServerRequest.schemaBodyJson(SubmitCallback)
-          const login = yield* (yield* Logins).submitCallback(yield* loginId, url)
+          const login = yield* (yield* Logins).submitCallback(yield* pathId, url)
           return HttpServerResponse.jsonUnsafe(login)
         }).pipe(
           Effect.catchTags({
@@ -89,7 +128,7 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
       "/api/logins/:id",
       localOnly(
         Effect.gen(function* () {
-          const login = yield* (yield* Logins).cancel(yield* loginId)
+          const login = yield* (yield* Logins).cancel(yield* pathId)
           return HttpServerResponse.jsonUnsafe(login)
         }).pipe(
           Effect.catchTag("LoginNotFound", (error) => Effect.succeed(apiError(404, error.message))),

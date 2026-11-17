@@ -44,9 +44,13 @@ const wrongKey = anthropicError(
   "agent-proxy: wrong proxy key. Run `agent-proxy key` to see the current key.",
 )
 
-/** The proxy key a request presents, if any; an empty one counts as none. */
+/**
+ * The proxy key a request presents, if any; an empty one counts as none, so an
+ * empty `Authorization: Bearer` (trimmed to `Bearer` in transit) never shadows
+ * a valid `x-api-key`.
+ */
 const presentedKey = (headers: Headers.Headers) => {
-  const bearer = headers["authorization"]?.replace(/^Bearer\s+/i, "").trim()
+  const bearer = /^Bearer(?:\s+(.*))?$/i.exec(headers["authorization"]?.trim() ?? "")?.[1]?.trim()
   const apiKey = headers["x-api-key"]?.trim()
   return bearer || apiKey || undefined
 }

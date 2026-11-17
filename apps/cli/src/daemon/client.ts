@@ -2,7 +2,15 @@ import { Data, type Duration, Effect, Option, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 
 import { resolveStateDir } from "../paths.ts"
-import { AccountList, ApiError, LoginView, ProxyKeyView, type StartLogin } from "./api.ts"
+import {
+  AccountList,
+  AccountView,
+  ApiError,
+  LoginView,
+  ProxyKeyView,
+  type StartLogin,
+  type UpdateAccount,
+} from "./api.ts"
 import { readStateFile } from "./state.ts"
 
 /**
@@ -127,6 +135,20 @@ const callApi = <A>(
 
 /** Every account the daemon holds, with its status. */
 export const listAccounts = callApi(HttpClientRequest.get("/api/accounts"), AccountList)
+
+/** Changes an account's label, priority or enabled, and returns it as stored. */
+export const updateAccount = (id: string, settings: UpdateAccount) =>
+  callApi(
+    HttpClientRequest.bodyJsonUnsafe(
+      HttpClientRequest.patch(`/api/accounts/${encodeURIComponent(id)}`),
+      settings,
+    ),
+    AccountView,
+  )
+
+/** Removes an account, credentials and all, and returns it as it was. */
+export const removeAccount = (id: string) =>
+  callApi(HttpClientRequest.delete(`/api/accounts/${encodeURIComponent(id)}`), AccountView)
 
 /** Starts a login in the daemon. */
 export const startLogin = (body: StartLogin) =>

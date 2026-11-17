@@ -39,7 +39,7 @@ const makeHome = (claude: FakeClaude, options: { readonly dataHome?: string } = 
     )
 
     /** Calls the daemon API the way the CLI and dashboard do: JSON in, JSON out. */
-    const request = (method: "GET" | "POST" | "DELETE", path: string, body?: unknown) =>
+    const request = (method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown) =>
       Effect.gen(function* () {
         const client = yield* HttpClient.HttpClient
         const base = HttpClientRequest.make(method)(`${daemon.address}${path}`)
@@ -188,7 +188,7 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
       Effect.gen(function* () {
         const home = yield* makeHome(yield* fakeClaude)
         const response = yield* home.request("GET", "/api/accounts")
-        expect(response).toEqual({ status: 200, json: { accounts: [] } })
+        expect(response).toEqual({ status: 200, json: { accounts: [], pools: [] } })
       }),
     )
 
@@ -499,6 +499,121 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
         const second = yield* makeHome(claude, { dataHome })
         expect(yield* second.accounts).toHaveLength(1)
         expect(yield* fs.exists(leftover)).toBe(false)
+      }),
+    )
+
+    it.effect("renaming an account changes its label and nothing else", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        const login = yield* home.signIn(alice)
+        const id = login.account?.id ?? ""
+        const response = yield* home.request("PATCH", `/api/accounts/${id}`, { label: "Work" })
+        expect(response.status).toBe(200)
+        expect(response.json).toMatchObject({ id, label: "Work", priority: 1, status: "active" })
+        expect(yield* home.accounts).toEqual([
+          expect.objectContaining({ id, label: "Work", priority: 1, enabled: true }),
+        ])
+      }),
+    )
+
+    it.effect("moving an account to a priority shifts the others in its pool", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.signIn(alice)
+        yield* home.signIn(bob)
+        const work = yield* home.signIn(aliceAtWork, { provider: "claude", label: "Work" })
+        const order = Effect.map(home.accounts, (accounts) =>
+          accounts.map(({ label, priority }) => `${priority} ${label}`),
+        )
+
+        const up = yield* home.request("PATCH", `/api/accounts/${work.account?.id}`, {
+          priority: 1,
+        })
+        expect(up).toMatchObject({ status: 200, json: { label: "Work", priority: 1 } })
+        expect(yield* order).toEqual(["1 Work", "2 alice", "3 bob"])
+
+        const alices = (yield* home.accounts).find((account) => account.label === "alice")
+        yield* home.request("PATCH", `/api/accounts/${alices?.id}`, { priority: 3 })
+        expect(yield* order).toEqual(["1 Work", "2 bob", "3 alice"])
+      }),
+    )
+
+    it.effect("refuses a priority outside its pool", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.signIn(alice)
+        const login = yield* home.signIn(bob)
+        for (const priority of [0, 3, 1.5]) {
+          const response = yield* home.request("PATCH", `/api/accounts/${login.account?.id}`, {
+            priority,
+          })
+          expect(response.status).toBe(400)
+        }
+        const outside = yield* home.request("PATCH", `/api/accounts/${login.account?.id}`, {
+          priority: 3,
+        })
+        expect(outside.json).toEqual({
+          error: "The Claude pool has 2 accounts, so a priority is 1 or 2.",
+        })
+        expect((yield* home.accounts).map(({ label, priority }) => `${priority} ${label}`)).toEqual(
+          ["1 alice", "2 bob"],
+        )
+      }),
+    )
+
+    it.effect("removing an account deletes its file, and the accounts below move up", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.signIn(alice)
+        const removed = yield* home.signIn(bob)
+        yield* home.signIn(aliceAtWork)
+        const id = removed.account?.id ?? ""
+
+        const response = yield* home.request("DELETE", `/api/accounts/${id}`)
+        expect(response).toMatchObject({ status: 200, json: { id, email: "bob@example.com" } })
+        expect((yield* home.accountFiles).map((file) => file.name)).not.toContain(`${id}.json`)
+        expect(yield* home.accountFiles).toHaveLength(2)
+        expect((yield* home.accounts).map(({ label, priority }) => `${priority} ${label}`)).toEqual(
+          ["1 alice", "2 alice 2"],
+        )
+      }),
+    )
+
+    it.effect("answers 404 for an account it does not hold", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        for (const method of ["PATCH", "DELETE"] as const) {
+          const response = yield* home.request(method, "/api/accounts/nope", { label: "x" })
+          expect(response).toEqual({ status: 404, json: { error: "No account nope." } })
+        }
+      }),
+    )
+
+    it.effect("says which account gets each pool's new sessions", () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.seedAccount(alice, {
+          label: "Off",
+          priority: 1,
+          enabled: false,
+          needsSignIn: false,
+        })
+        yield* home.seedAccount(bob, {
+          label: "Signed out",
+          priority: 2,
+          enabled: true,
+          needsSignIn: true,
+        })
+        const pools = Effect.map(
+          home.request("GET", "/api/accounts"),
+          ({ json }) => Schema.decodeUnknownSync(AccountList)(json).pools,
+        )
+        expect(yield* pools).toEqual([{ provider: "claude", newSessionsAccountId: null }])
+
+        const work = yield* home.signIn(aliceAtWork)
+        expect(yield* pools).toEqual([
+          { provider: "claude", newSessionsAccountId: work.account?.id },
+        ])
       }),
     )
 

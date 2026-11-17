@@ -4,6 +4,9 @@ import { Schema } from "effect"
 export const Provider = Schema.Literals(["claude"])
 export type Provider = typeof Provider.Type
 
+/** Each provider's name as the owner reads it. */
+export const providerNames: Readonly<Record<Provider, string>> = { claude: "Claude" }
+
 /** A provider's OAuth tokens for one account. */
 export const Credentials = Schema.Struct({
   accessToken: Schema.String,

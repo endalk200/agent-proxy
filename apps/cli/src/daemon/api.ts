@@ -1,6 +1,12 @@
 import { Schema } from "effect"
 
-import { type Account, AccountStatus, accountStatus, Provider } from "../accounts/account.ts"
+import {
+  type Account,
+  AccountStatus,
+  accountStatus,
+  chooseAccount,
+  Provider,
+} from "../accounts/account.ts"
 
 /**
  * The daemon API's JSON shapes, shared by the daemon that serves them and the
@@ -37,8 +43,38 @@ export const toAccountView = (account: Account): AccountView => ({
   lastUsedAt: account.lastUsedAt,
 })
 
-export const AccountList = Schema.Struct({ accounts: Schema.Array(AccountView) })
+/** A provider's pool, as the daemon API reports it. */
+export const PoolView = Schema.Struct({
+  provider: Provider,
+  /** The account a new session goes to now, or null when no account in the pool is Active. */
+  newSessionsAccountId: Schema.NullOr(Schema.String),
+})
+export type PoolView = typeof PoolView.Type
+
+/** `GET /api/accounts`: every account, and a pool for each provider that has one. */
+export const AccountList = Schema.Struct({
+  accounts: Schema.Array(AccountView),
+  pools: Schema.Array(PoolView),
+})
 export type AccountList = typeof AccountList.Type
+
+export const toAccountList = (accounts: ReadonlyArray<Account>): AccountList => ({
+  accounts: accounts.map(toAccountView),
+  pools: [...new Set(accounts.map((account) => account.provider))].map((provider) => ({
+    provider,
+    newSessionsAccountId: chooseAccount(accounts, provider)?.id ?? null,
+  })),
+})
+
+/** `PATCH /api/accounts/:id`: change an account's settings; each one left out stays as it is. */
+export const UpdateAccount = Schema.Struct({
+  label: Schema.optionalKey(Schema.NonEmptyString),
+  /** A position in the account's pool, 1 first; the others shift to make room. */
+  priority: Schema.optionalKey(Schema.Int),
+  /** A disabled account sits out of its pool and keeps its priority. */
+  enabled: Schema.optionalKey(Schema.Boolean),
+})
+export type UpdateAccount = typeof UpdateAccount.Type
 
 /** The body of every error the daemon API returns. */
 export const ApiError = Schema.Struct({ error: Schema.String })

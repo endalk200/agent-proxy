@@ -75,13 +75,17 @@ export class ProxyKey extends Context.Service<
           Effect.map(Ref.get(key), (current) =>
             timingSafeEqual(digest(presented), digest(current)),
           ),
+        // Waiting for the permit can be interrupted; the commit cannot, so the
+        // key file and the key the proxy accepts never disagree.
         rotate: rotations.withPermit(
-          Effect.gen(function* () {
-            const next = generate()
-            yield* save(next)
-            yield* Ref.set(key, next)
-            return next
-          }),
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              const next = generate()
+              yield* save(next)
+              yield* Ref.set(key, next)
+              return next
+            }),
+          ),
         ),
       })
     }),

@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds and lists Claude accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts; Codex and opencode come later.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts; Codex and opencode come later.
 
 ## Requirements
 
@@ -85,11 +85,19 @@ The daemon keeps its lock, state file (`daemon.json`, with its pid and the port 
 agent-proxy accounts add claude               # sign in through the browser
 agent-proxy accounts add claude --no-browser  # print the URL; paste the callback URL
 agent-proxy accounts                          # provider, label, email, plan, priority, status (--json for scripts)
+agent-proxy accounts set Work --label Personal --priority 1  # rename, or move within its pool
+agent-proxy accounts disable Work              # keep it out of its pool, at its priority
+agent-proxy accounts enable Work               # put it back where it was
+agent-proxy accounts remove Work               # forget it and its credentials
 ```
 
 The daemon runs each login itself (ADR-0007), so it must be running. The sign-in redirects to `http://localhost:54545/callback`, where the daemon listens while the login waits. When the browser cannot reach the daemon, such as over SSH, the redirected page fails to load: copy its address and paste it into `accounts add claude --no-browser`. A login nobody finishes expires after 10 minutes.
 
 A new account joins the bottom of its pool, labelled after its email unless `--label` names it. Signing in again to an account the daemon already holds updates its credentials in place and keeps its priority and enabled setting, and its label unless `--label` gives a new one.
+
+`accounts` ends with which account gets each pool's new sessions: the highest-priority Active one. Priority is a place in the pool: moving an account to priority 1 moves the others down one place, and removing one moves those below it up. A disabled account keeps its place, so enabling it returns it there. Removing an account deletes its file at once; a request it is already serving still finishes, and the next one goes to the next account.
+
+The account a command acts on is named by its label, its email (either ignoring case), or the start of its id from `accounts --json`. A name that fits several accounts fails and lists them with their ids.
 
 Accounts live in `$XDG_DATA_HOME/agent-proxy/accounts/`, by default `~/.local/share/agent-proxy/accounts/`: one file per account, readable only by you. Only the daemon writes them.
 
