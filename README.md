@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts; Codex and opencode come later.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts, and a dashboard of your accounts at its own address (`http://127.0.0.1:8318/` by default); Codex and opencode come later.
 
 ## Requirements
 
@@ -24,12 +24,12 @@ Run from the repository root:
 | Command             | What it does                                                    |
 | ------------------- | --------------------------------------------------------------- |
 | `bun run dev`       | Start every app in watch mode                                   |
-| `bun run build`     | Build the CLI bundle and the web client                         |
+| `bun run build`     | Build the web client, then the CLI bundle with it in `dist/web` |
 | `bun run format`    | Format with Oxfmt (`format:check` to verify only)               |
 | `bun run lint`      | Type-aware Oxlint with Effect rules (`lint:fix` to apply fixes) |
 | `bun run typecheck` | Type-check every workspace with TypeScript 7                    |
 | `bun run test`      | Unit and integration tests                                      |
-| `bun run test:e2e`  | Build, then run CLI and browser end-to-end tests                |
+| `bun run test:e2e`  | Build, then run CLI and dashboard end-to-end tests              |
 | `bun run check`     | Everything CI runs except end-to-end tests                      |
 
 The first end-to-end run needs a browser: `cd e2e && bun x playwright install chromium`.

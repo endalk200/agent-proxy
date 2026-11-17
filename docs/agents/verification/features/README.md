@@ -41,4 +41,4 @@ Name only user paths, stable handles, commands, and observable results; leave im
 - [Daemon](./daemon.md): `daemon run`, `start`, `stop`, and `status`, `/healthz`, the state file, the single-instance lock, JSON logs, and loading `config.toml`.
 - [CLI info](./cli-info.md): version, runtime, and resolved config path, as text or JSON, including the error when no config location exists.
 - [CLI help and version](./cli-help-and-version.md): help, version, shell completions, and rejection of unknown subcommands.
-- [Web dashboard](./web-dashboard.md): the browser client's landing page.
+- [Web dashboard](./web-dashboard.md): the dashboard the daemon serves at `/`: the sidebar with the daemon switcher, sign-in badge and pool strip, each pool's accounts table, first run, the unreachable state, and Connect clients with the masked proxy key.
