@@ -27,7 +27,7 @@ const DaemonInfo = Schema.fromJsonString(
 )
 
 /** A throwaway home whose config.toml holds `config`. */
-const makeHome = (config: string) =>
+const makeHome = (config: string, extraEnv: Record<string, string> = {}) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-daemon-" })
@@ -37,9 +37,12 @@ const makeHome = (config: string) =>
       HOME: `${root}/home`,
       XDG_CONFIG_HOME: `${root}/config`,
       XDG_STATE_HOME: `${root}/state`,
+      XDG_DATA_HOME: `${root}/data`,
+      ...extraEnv,
     }
     return {
       stateDir: `${root}/state/agent-proxy`,
+      dataHome: env.XDG_DATA_HOME,
       stateFile: `${root}/state/agent-proxy/daemon.json`,
       start: startDaemon.pipe(
         Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
@@ -109,6 +112,20 @@ layer(
         `Another agent-proxy daemon (pid ${process.pid}) is already running for ${home.stateDir}.`,
       )
     }),
+  )
+
+  it.effect(
+    "refuses a second daemon on the same data directory, even with its own state directory",
+    () =>
+      Effect.gen(function* () {
+        const first = yield* makeHome(freePortConfig)
+        yield* first.start
+        const second = yield* makeHome(freePortConfig, { XDG_DATA_HOME: first.dataHome })
+        const error = yield* Effect.flip(Effect.scoped(second.start))
+        expect(error.message).toBe(
+          `Another agent-proxy daemon (pid ${process.pid}) is already running for ${first.dataHome}/agent-proxy.`,
+        )
+      }),
   )
 
   it.effect(

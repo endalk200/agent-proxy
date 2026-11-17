@@ -314,9 +314,11 @@ export class Logins extends Context.Service<
                 redirectUri,
                 codeVerifier: pkce.codeVerifier,
               })
-              return yield* store.upsert(signedIn.identity, signedIn.credentials, {
-                label: options.label,
-              })
+              // Once saving starts it finishes: a cancel arriving mid-write
+              // must not report "cancelled" for an account that was saved.
+              return yield* Effect.uninterruptible(
+                store.upsert(signedIn.identity, signedIn.credentials, { label: options.label }),
+              )
             })
 
             yield* FiberMap.run(

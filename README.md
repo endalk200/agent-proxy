@@ -89,7 +89,7 @@ agent-proxy accounts                          # provider, label, email, plan, pr
 
 The daemon runs each login itself (ADR-0007), so it must be running. The sign-in redirects to `http://localhost:54545/callback`, where the daemon listens while the login waits. When the browser cannot reach the daemon, such as over SSH, the redirected page fails to load: copy its address and paste it into `accounts add claude --no-browser`. A login nobody finishes expires after 10 minutes.
 
-A new account joins the bottom of its pool, labelled after its email unless `--label` names it. Signing in again to an account the daemon already holds updates its credentials in place and keeps its label, priority, and enabled setting.
+A new account joins the bottom of its pool, labelled after its email unless `--label` names it. Signing in again to an account the daemon already holds updates its credentials in place and keeps its priority and enabled setting, and its label unless `--label` gives a new one.
 
 Accounts live in `$XDG_DATA_HOME/agent-proxy/accounts/`, by default `~/.local/share/agent-proxy/accounts/`: one file per account, readable only by you. Only the daemon writes them.
 

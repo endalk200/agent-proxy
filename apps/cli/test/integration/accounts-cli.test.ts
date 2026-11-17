@@ -41,6 +41,11 @@ const browserThatSignsIn = Browser.of({
     }),
 })
 
+/** A browser opener that signs in but never exits, as `xdg-open` can stay attached to a terminal browser. */
+const browserThatSignsInAndLingers = Browser.of({
+  open: (url) => Effect.promise(() => fetch(url)).pipe(Effect.andThen(Effect.never)),
+})
+
 /** A browser that is never seen: opening it does nothing. */
 const browserThatIdles = Browser.of({ open: () => Effect.void })
 
@@ -191,6 +196,19 @@ layer(
         expect(output).toMatch(
           /Added Claude account "alice" \(alice@example\.com, Max 20x\) at priority 1\.$/,
         )
+      }),
+    ),
+  )
+
+  it.effect("accounts add claude finishes even when the browser opener never exits", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.runDaemon
+        claude.signInAs(alice)
+        const output = yield* home.cli(["accounts", "add", "claude"], browserThatSignsInAndLingers)
+        expect(output).toMatch(/Added Claude account "alice" \(alice@example\.com, Max 20x\)/)
       }),
     ),
   )
