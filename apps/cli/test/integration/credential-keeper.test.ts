@@ -277,6 +277,33 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
         }),
     )
 
+    it.effect("a 401 whose body never finishes still leads to the refreshed retry", () =>
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        claude.answerApiWith((request) =>
+          request.headers.get("authorization") === "Bearer sk-ant-oat01-fake-1"
+            ? new Response(
+                new ReadableStream<Uint8Array>({
+                  start: (controller) =>
+                    controller.enqueue(new TextEncoder().encode('{"type":"error",')),
+                }),
+                { status: 401, headers: { "content-type": "application/json" } },
+              )
+            : Response.json({ type: "message", content: [{ type: "text", text: "ok" }] }),
+        )
+
+        const response = yield* home.sendMessage.pipe(Effect.timeout("4 seconds"))
+
+        expect(response.status).toBe(200)
+        expect(upstreamTokens(claude)).toEqual([
+          "Bearer sk-ant-oat01-fake-1",
+          "Bearer sk-ant-oat01-fake-2",
+        ])
+      }),
+    )
+
     it.effect("requests whose token Claude rejects all at once share one refresh", () =>
       Effect.gen(function* () {
         const claude = yield* fakeClaude
@@ -443,6 +470,26 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
           expect((yield* restarted.accountFiles).map((file) => file.name)).toEqual([signedIn?.name])
         }),
     )
+
+    for (const status of [502, 504]) {
+      it.effect(
+        `a refresh answered by a gateway ${status} is never sent again: the account needs sign-in`,
+        () =>
+          Effect.gen(function* () {
+            const claude = yield* fakeClaude
+            const home = yield* makeHome(claude)
+            yield* home.signIn(alice)
+            // A gateway error says nothing about whether Claude spent the refresh token.
+            claude.refuseNextRefresh(status, { error: "bad_gateway" })
+
+            yield* untilRefreshDue
+            yield* within3s("the refresh", claude.refreshesArrived(1))
+            yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+            yield* TestClock.adjust("1 day")
+            expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
+          }),
+      )
+    }
 
     it.effect(
       "a refresh Claude cannot take now leaves the account active and is tried again later",

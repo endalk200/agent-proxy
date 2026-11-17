@@ -270,9 +270,17 @@ export class ClaudeTokens extends Context.Service<ClaudeTokens, TokenAdapter>()(
             http.execute,
             Effect.mapError(unanswered),
           )
-          if (response.status === 429 || response.status >= 500) {
+          // Only 429 and 503 say the refresh was not taken. Any other server
+          // error, a gateway's 502 or 504 above all, may come after Claude
+          // spent the single-use refresh token, so it must never be sent again.
+          if (response.status === 429 || response.status === 503) {
             return yield* new RefreshUnavailable({
               reason: `Claude could not refresh the tokens now (HTTP ${response.status}).`,
+            })
+          }
+          if (response.status >= 500) {
+            return yield* new RefreshOutcomeUnknown({
+              reason: `Claude answered the refresh with HTTP ${response.status}, so whether it took the refresh token is unknown.`,
             })
           }
           if (response.status !== 200) {

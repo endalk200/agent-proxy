@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto"
+import { closeSync, fsyncSync, openSync } from "node:fs"
 
 import { Effect, FileSystem, Path } from "effect"
 
@@ -6,8 +7,9 @@ import { Effect, FileSystem, Path } from "effect"
  * Replaces `file` atomically with `content`, readable only by the owner
  * unless `mode` says otherwise: the content goes to a temp file beside it
  * (mode 0600, then `mode`), is flushed to disk, and is renamed over the old
- * file. A crash leaves the old file or the new one, never part of either, plus
- * at most a leftover temp file named `.<name>.<random>.tmp`.
+ * file, and the directory is flushed. A crash or power loss leaves the old
+ * file or the new one, never part of either, plus at most a leftover temp
+ * file named `.<name>.<random>.tmp`.
  */
 export const writeFileAtomic = (
   file: string,
@@ -33,6 +35,24 @@ export const writeFileAtomic = (
       // A failed write never leaves its content, credentials and all, behind.
       Effect.onError(() => fs.remove(temp, { force: true }).pipe(Effect.ignore)),
     )
+    // The rename is durable only once the directory is flushed too: without
+    // this, a power loss could bring back the old file, and with it a refresh
+    // token the provider has already spent.
+    yield* syncDirectory(path.dirname(file))
+  })
+
+/** Flushes a directory's entries to disk; a filesystem that cannot do so is left as it is. */
+const syncDirectory = (directory: string) =>
+  Effect.sync(() => {
+    let fd: number | undefined
+    try {
+      fd = openSync(directory, "r")
+      fsyncSync(fd)
+    } catch {
+      // Some filesystems refuse fsync on a directory; the rename still happened.
+    } finally {
+      if (fd !== undefined) closeSync(fd)
+    }
   })
 
 /** Creates `directory` and its parents, and makes it readable by the owner only, even if it existed. */

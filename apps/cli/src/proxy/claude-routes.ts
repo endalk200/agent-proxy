@@ -1,7 +1,7 @@
 import { Effect, Option } from "effect"
 import {
   Headers,
-  type HttpClientResponse,
+  HttpClientResponse,
   HttpRouter,
   HttpServerRequest,
   HttpServerResponse,
@@ -78,9 +78,17 @@ const relay = (upstream: HttpClientResponse.HttpClientResponse) =>
     headers: Headers.removeMany(upstream.headers, NOT_RELAYED),
   })
 
-/** Reads and drops a response the client will not get, freeing its connection. */
+/**
+ * Drops a response the client will not get, freeing its connection. The body
+ * is cancelled, not read: a rejected answer whose body never finishes must
+ * not hold up the retry.
+ */
 const discard = (upstream: HttpClientResponse.HttpClientResponse) =>
-  Effect.ignore(upstream.arrayBuffer)
+  Option.match(HttpClientResponse.toWeb(upstream), {
+    onNone: () => Effect.void,
+    onSome: (response) =>
+      Effect.promise(() => (response.body?.cancel() ?? Promise.resolve()).catch(() => undefined)),
+  })
 
 const forward = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest
