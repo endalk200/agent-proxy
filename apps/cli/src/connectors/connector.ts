@@ -17,6 +17,7 @@ import { asUserError, userError } from "../commands/errors.ts"
 import { loadConfigFile } from "../config.ts"
 import { fetchDaemonInfo } from "../daemon/client.ts"
 import { clientAddress } from "../daemon/daemon.ts"
+import { resolveProxyKeyFile } from "../paths.ts"
 
 /**
  * Pointing a client at the proxy by changing the client's own config file.
@@ -31,6 +32,12 @@ import { clientAddress } from "../daemon/daemon.ts"
 export interface ProxyTarget {
   /** The base URL the client sends its requests to, such as `http://127.0.0.1:8318`. */
   readonly address: string
+  /**
+   * The proxy key file, for a client that reads the key from a file rather
+   * than running `agent-proxy key`: `~/…` when it lies under the home
+   * directory, else its absolute path.
+   */
+  readonly keyFile: string
 }
 
 /** A client config file the connector cannot change safely, with the reason to show the owner. */
@@ -42,9 +49,11 @@ export interface ClientConnector {
   /** The client's name as the owner knows it, such as "Claude Code". */
   readonly name: string
   /** The client's config file. */
-  readonly file: Effect.Effect<string, Config.ConfigError, Path.Path>
+  readonly file: Effect.Effect<string, Config.ConfigError, Path.Path | FileSystem.FileSystem>
   /** The settings to add by hand, as `--print` shows them. */
   readonly snippet: (target: ProxyTarget) => string
+  /** What the owner may still have to do in the client itself, shown after connecting and with `--print`. */
+  readonly note?: string
   /**
    * The file's new content, given its current content (`None` when it does
    * not exist yet), or `None` when it already points at `target`. `name` is
@@ -57,32 +66,6 @@ export interface ClientConnector {
   ) => Result.Result<Option.Option<string>, ClientConfigError>
 }
 
-/**
- * Where the proxy listens: the running daemon's address, which it reports
- * through its API. When no daemon runs, the address `config.toml` makes it
- * listen on, unless that is any free port. `running` says which it was.
- */
-const proxyTarget = fetchDaemonInfo.pipe(
-  Effect.map((info) => ({ target: { address: info.address }, running: true })),
-  Effect.catchTag("DaemonNotRunning", () =>
-    Effect.gen(function* () {
-      const { config } = yield* loadConfigFile.pipe(Effect.mapError(asUserError))
-      if (config.listen.port === 0) {
-        return yield* userError(
-          "The agent-proxy daemon is not running, and config.toml lets it listen on any free port, so its address is not known yet. Start it with `agent-proxy daemon start`, then run this again.",
-        )
-      }
-      return {
-        target: { address: clientAddress(config.listen.host, config.listen.port) },
-        running: false,
-      }
-    }),
-  ),
-)
-
-const notRunningNote = (name: string) =>
-  `The daemon is not running, so ${name} will fail until you start it with \`agent-proxy daemon start\`.`
-
 /** `file` as the owner would type it: `~/…` when it lies under their home directory. */
 const displayPath = (file: string) =>
   Effect.gen(function* () {
@@ -91,6 +74,39 @@ const displayPath = (file: string) =>
     const relative = path.relative(home, file)
     return relative.startsWith("..") || path.isAbsolute(relative) ? file : `~/${relative}`
   })
+
+/**
+ * Where the proxy listens: the running daemon's address, which it reports
+ * through its API. When no daemon runs, the address `config.toml` makes it
+ * listen on, unless that is any free port. `running` says which it was.
+ */
+const proxyAddress = fetchDaemonInfo.pipe(
+  Effect.map((info) => ({ address: info.address, running: true })),
+  Effect.catchTag("DaemonNotRunning", () =>
+    Effect.gen(function* () {
+      const { config } = yield* loadConfigFile.pipe(Effect.mapError(asUserError))
+      if (config.listen.port === 0) {
+        return yield* userError(
+          "The agent-proxy daemon is not running, and config.toml lets it listen on any free port, so its address is not known yet. Start it with `agent-proxy daemon start`, then run this again.",
+        )
+      }
+      return { address: clientAddress(config.listen.host, config.listen.port), running: false }
+    }),
+  ),
+)
+
+/**
+ * What the client is pointed at. The key file is the one the daemon keeps,
+ * found the way the daemon finds it, from the same environment.
+ */
+const proxyTarget = Effect.gen(function* () {
+  const { address, running } = yield* proxyAddress
+  const keyFile = yield* displayPath(yield* resolveProxyKeyFile)
+  return { target: { address, keyFile }, running }
+})
+
+const notRunningNote = (name: string) =>
+  `The daemon is not running, so ${name} will fail until you start it with \`agent-proxy daemon start\`.`
 
 /** A file's content, or `None` when it does not exist. */
 const readIfExists = (file: string) =>
@@ -147,6 +163,9 @@ export const connect = (connector: ClientConnector, options: { readonly print: b
     if (options.print) {
       yield* Console.error(`Add these settings to ${shown}:`)
       yield* Console.log(connector.snippet(target).trimEnd())
+      if (connector.note !== undefined) {
+        yield* Console.error(connector.note)
+      }
       if (!running) {
         yield* Console.error(notRunningNote(connector.name))
       }
@@ -208,6 +227,9 @@ export const connect = (connector: ClientConnector, options: { readonly print: b
     yield* Console.log(
       `Connected ${connector.name} to the proxy at ${target.address}.${Option.isSome(current) ? ` The old settings are in ${shown}.bak.` : ""}`,
     )
+    if (connector.note !== undefined) {
+      yield* Console.log(connector.note)
+    }
     if (!running) {
       yield* Console.log(notRunningNote(connector.name))
     }
