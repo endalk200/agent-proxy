@@ -4,6 +4,7 @@ import { useEffect, useState } from "react"
 
 import { CommandLine, ProxyKeyRow } from "./ConnectClients.tsx"
 import type { Account, AccountList, DaemonClient, Pool, Provider } from "./daemon-api.ts"
+import type { Flash } from "./LiveUpdates.ts"
 import {
   accountsOf,
   clients,
@@ -47,6 +48,8 @@ export interface AccountControls {
   readonly move: (account: Account, priority: number) => void
   /** Asks the owner to confirm removing `account`. */
   readonly askRemove: (account: Account) => void
+  /** Rows flashing because their account just changed, by account id. */
+  readonly flashes: ReadonlyMap<string, Flash>
 }
 
 /** A row's own controls, where a click does not open the sheet. */
@@ -281,12 +284,15 @@ function AccountRow(props: {
   const { readOnly } = controls
   const [renaming, setRenaming] = useState(false)
   const open = controls.openId === account.id
+  const flash = controls.flashes.get(account.id)
   return (
     // A click anywhere on the row that is not one of its controls opens the
     // account's sheet, as the label's button does from the keyboard.
     <tr
       className={`row is-${account.status} ${props.serving ? "is-serving" : ""} ${props.lifted ? "is-lifted" : ""} ${open ? "is-open" : ""}`}
       data-account-row=""
+      data-flash={flash?.status}
+      data-flash-turn={flash?.turn}
       onPointerOver={props.onDragOver}
       onClick={(event) => {
         if (event.target instanceof Element && event.target.closest(ROW_CONTROLS) !== null) return

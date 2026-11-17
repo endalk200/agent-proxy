@@ -5,7 +5,8 @@ import "./styles.css"
 import { AccountSheet } from "./AccountSheet.tsx"
 import { type AccountControls, AccountsPage } from "./AccountsPage.tsx"
 import { ConnectClientsDialog } from "./ConnectClients.tsx"
-import { type Account, createDaemonClient } from "./daemon-api.ts"
+import { type Account, createDaemonClient, type OpenEventStream } from "./daemon-api.ts"
+import { useLiveUpdates } from "./LiveUpdates.ts"
 import { accountsOf, hostOf } from "./model.ts"
 import { NoticeProvider } from "./Notices.tsx"
 import { RemoveAccountDialog } from "./RemoveAccount.tsx"
@@ -17,16 +18,19 @@ import { useDaemon, useNow } from "./useDaemon.ts"
 /** The browser's own fetch, called through so it keeps `window` as `this`. */
 const browserFetch: typeof fetch = (input, init) => window.fetch(input, init)
 
-/**
- * The dashboard: a sidebar app shell around the Accounts page, reading the
- * daemon API of the daemon that serves it. `fetch`, `pollInterval` and `requestTimeout` exist
- * for tests.
- */
-export function App(props: {
+interface DashboardProps {
   fetch?: typeof fetch
-  pollInterval?: number
+  openEvents?: OpenEventStream
+  checkInterval?: number
   requestTimeout?: number
-}) {
+  reopenDelay?: number
+}
+
+/**
+ * The dashboard: a sidebar app shell around the Accounts page, following the
+ * daemon API of the daemon that serves it. Every prop exists for tests.
+ */
+export function App(props: DashboardProps) {
   return (
     <NoticeProvider>
       <Dashboard {...props} />
@@ -34,14 +38,21 @@ export function App(props: {
   )
 }
 
-function Dashboard(props: {
-  fetch?: typeof fetch
-  pollInterval?: number
-  requestTimeout?: number
-}) {
+function Dashboard(props: DashboardProps) {
   const fetchImpl = props.fetch ?? browserFetch
-  const client = useMemo(() => createDaemonClient(fetchImpl), [fetchImpl])
-  const view = useDaemon(client, props.pollInterval ?? 3000, props.requestTimeout ?? 5000)
+  const { openEvents } = props
+  const client = useMemo(() => createDaemonClient(fetchImpl, openEvents), [fetchImpl, openEvents])
+  const live = useLiveUpdates()
+  const view = useDaemon(
+    client,
+    {
+      // The stream brings every change; the check only notices a daemon gone silent.
+      checkInterval: props.checkInterval ?? 15_000,
+      requestTimeout: props.requestTimeout ?? 5000,
+      reopenDelay: props.reopenDelay ?? 3000,
+    },
+    live.onEvent,
+  )
   const actions = useAccountActions(view, client)
   // A cooldown's countdown ticks each second; otherwise times move by the minute.
   const cooling = view.accounts?.accounts.some((account) => account.status === "cooling-down")
@@ -69,6 +80,7 @@ function Dashboard(props: {
       setAnnouncement(`${account.label} moved to priority ${priority} of ${poolSize}.`)
     },
     askRemove: setRemoving,
+    flashes: live.flashes,
   }
 
   return (

@@ -39,6 +39,7 @@ export const useAccountActions = (daemon: Daemon, client: DaemonClient): Account
       change(
         (list) => withSettings(list, account.id, settings),
         () => client.updateAccount(account.id, settings),
+        { id: account.id, settings },
       ).catch((error: unknown) =>
         notify.error(`Couldn't ${verb} ${account.label}`, reason(account, asFailure(error))),
       )
@@ -52,6 +53,7 @@ export const useAccountActions = (daemon: Daemon, client: DaemonClient): Account
         change(
           (list) => list,
           () => client.removeAccount(account.id),
+          { id: account.id, removed: true },
         ).then(
           () => true,
           (error: unknown) => {

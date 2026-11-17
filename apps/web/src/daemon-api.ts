@@ -74,8 +74,53 @@ export class DaemonCallError extends Error {
   }
 }
 
+/**
+ * A change to one account, from `GET /api/events`, with every pool as it is
+ * after it. `status-changed` and `settings-changed` carry the account as it
+ * was before in `previous`.
+ */
+export type AccountEvent =
+  | {
+      readonly type: "added" | "removed"
+      readonly account: Account
+      readonly pools: ReadonlyArray<Pool>
+    }
+  | {
+      readonly type: "status-changed" | "settings-changed"
+      readonly account: Account
+      readonly previous: Account
+      readonly pools: ReadonlyArray<Pool>
+    }
+
+/** A message on the daemon's event stream: the accounts as they are when it opens, then each change. */
+export type StreamMessage = { readonly type: "snapshot"; readonly list: AccountList } | AccountEvent
+
+/** What the dashboard does as its event stream opens, carries a message, or fails. */
+export interface StreamHandlers {
+  readonly message: (message: StreamMessage) => void
+  /**
+   * The stream failed. `closed` is true when it will not reconnect by
+   * itself, as when the daemon refused it; otherwise it is reconnecting.
+   */
+  readonly error: (closed: boolean) => void
+}
+
+/** Opens an event stream at `url` that reports its raw `data`; the browser's EventSource by default. */
+export type OpenEventStream = (
+  url: string,
+  handlers: {
+    readonly data: (data: string) => void
+    readonly error: (closed: boolean) => void
+  },
+) => { readonly close: () => void }
+
 export interface DaemonClient {
   readonly accounts: (signal?: AbortSignal) => Promise<AccountList>
+  /**
+   * `GET /api/events`: subscribes to account changes until the returned
+   * function is called. A message this dashboard cannot read is skipped.
+   */
+  readonly events: (handlers: StreamHandlers) => () => void
   readonly daemon: (signal?: AbortSignal) => Promise<DaemonInfo>
   readonly key: () => Promise<string>
   /** `PATCH /api/accounts/:id`. */
@@ -139,17 +184,39 @@ const decodeAccount = (value: unknown): Account => {
   }
 }
 
+const decodePools = (value: unknown): ReadonlyArray<Pool> =>
+  array(value).map((pool) => {
+    const fields = object(pool)
+    return {
+      provider: oneOf(PROVIDERS, fields["provider"]),
+      newSessionsAccountId: nullableString(fields["newSessionsAccountId"]),
+    }
+  })
+
 const decodeAccountList = (value: unknown): AccountList => {
   const json = object(value)
-  return {
-    accounts: array(json["accounts"]).map(decodeAccount),
-    pools: array(json["pools"]).map((pool) => {
-      const fields = object(pool)
+  return { accounts: array(json["accounts"]).map(decodeAccount), pools: decodePools(json["pools"]) }
+}
+
+const decodeStreamMessage = (value: unknown): StreamMessage => {
+  const json = object(value)
+  const pools = () => decodePools(json["pools"])
+  switch (json["type"]) {
+    case "snapshot":
+      return { type: "snapshot", list: decodeAccountList(json) }
+    case "added":
+    case "removed":
+      return { type: json["type"], account: decodeAccount(json["account"]), pools: pools() }
+    case "status-changed":
+    case "settings-changed":
       return {
-        provider: oneOf(PROVIDERS, fields["provider"]),
-        newSessionsAccountId: nullableString(fields["newSessionsAccountId"]),
+        type: json["type"],
+        account: decodeAccount(json["account"]),
+        previous: decodeAccount(json["previous"]),
+        pools: pools(),
       }
-    }),
+    default:
+      throw new Unreadable()
   }
 }
 
@@ -176,7 +243,20 @@ const errorMessage = (value: unknown): string | undefined => {
 
 const accountPath = (id: string) => `/api/accounts/${encodeURIComponent(id)}`
 
-export const createDaemonClient = (fetchImpl: typeof fetch): DaemonClient => {
+/** The browser's EventSource, which reconnects by itself after a dropped connection. */
+export const browserEventStream: OpenEventStream = (url, handlers) => {
+  const source = new EventSource(url)
+  source.addEventListener("message", (event: MessageEvent<unknown>) =>
+    handlers.data(String(event.data)),
+  )
+  source.addEventListener("error", () => handlers.error(source.readyState === EventSource.CLOSED))
+  return { close: () => source.close() }
+}
+
+export const createDaemonClient = (
+  fetchImpl: typeof fetch,
+  openEvents: OpenEventStream = browserEventStream,
+): DaemonClient => {
   const call = async <A>(
     path: string,
     decode: (body: unknown) => A,
@@ -217,6 +297,21 @@ export const createDaemonClient = (fetchImpl: typeof fetch): DaemonClient => {
 
   return {
     accounts: (signal) => call("/api/accounts", decodeAccountList, { signal }),
+    events: (handlers) => {
+      const stream = openEvents("/api/events", {
+        data: (data) => {
+          let message: StreamMessage
+          try {
+            message = decodeStreamMessage(JSON.parse(data))
+          } catch {
+            return
+          }
+          handlers.message(message)
+        },
+        error: handlers.error,
+      })
+      return stream.close
+    },
     daemon: (signal) => call("/api/daemon", decodeDaemonInfo, { signal }),
     key: () => call("/api/key", decodeKey),
     updateAccount: (id, settings) =>

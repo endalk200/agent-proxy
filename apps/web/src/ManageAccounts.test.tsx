@@ -23,9 +23,7 @@ const threeAccounts = () =>
   })
 
 const show = async (daemon: FakeDaemon) => {
-  // A long poll, so each change shows up because the dashboard asked again
-  // after making it, not because a poll happened to come round.
-  render(<App fetch={daemon.fetch} pollInterval={60_000} />)
+  render(<App fetch={daemon.fetch} openEvents={daemon.openEvents} />)
   return screen.findByRole("table", { name: "Claude accounts" })
 }
 

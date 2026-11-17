@@ -1,5 +1,6 @@
 import type {
   Account,
+  AccountEvent,
   AccountList,
   AccountSettings,
   AccountStatus,
@@ -78,6 +79,20 @@ export const withSettings = (
         priority,
       }
     }),
+  }
+}
+
+/** `list` once `event` has happened: its account added, replaced or gone, and the pools as the event says. */
+export const applyEvent = (list: AccountList, event: AccountEvent): AccountList => {
+  const others = list.accounts.filter((account) => account.id !== event.account.id)
+  if (event.type === "removed") return { accounts: others, pools: event.pools }
+  const at = list.accounts.findIndex((account) => account.id === event.account.id)
+  return {
+    accounts:
+      at === -1
+        ? [...list.accounts, event.account]
+        : list.accounts.map((account, index) => (index === at ? event.account : account)),
+    pools: event.pools,
   }
 }
 
