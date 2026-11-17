@@ -1,11 +1,13 @@
 import { Menu } from "@base-ui/react/menu"
 import { Switch } from "@base-ui/react/switch"
+import { useEffect, useState } from "react"
 
 import { CommandLine, ProxyKeyRow } from "./ConnectClients.tsx"
 import type { Account, AccountList, DaemonClient, Pool, Provider } from "./daemon-api.ts"
 import {
   accountsOf,
   clients,
+  clientsOf,
   lastUsedText,
   planWeight,
   type PoolState,
@@ -18,6 +20,7 @@ import {
   IconChevronDown,
   IconChevronRight,
   IconChevronUp,
+  IconGrip,
   IconMore,
   IconPencil,
   IconTrash,
@@ -25,12 +28,39 @@ import {
   Tip,
 } from "./ui.tsx"
 
-/** Which clients spend a provider's pool, as "Claude Code and opencode". */
-const clientsOf = (provider: Provider) =>
-  clients
-    .filter((client) => client.providers.includes(provider))
-    .map((client) => client.name)
-    .join(" and ")
+const REORDER_HINT = "reorder-hint"
+
+/** What the accounts page and the account sheet let the owner do. */
+export interface AccountControls {
+  /** True while the daemon is unreachable: nothing can be changed. */
+  readonly readOnly: boolean
+  /** The account whose sheet is open. */
+  readonly openId: string | undefined
+  readonly open: (account: Account) => void
+  readonly setEnabled: (account: Account, enabled: boolean) => void
+  readonly rename: (account: Account, label: string) => void
+  /** Moves `account` to `priority` in its pool, 1 first. */
+  readonly move: (account: Account, priority: number) => void
+  /** Asks the owner to confirm removing `account`. */
+  readonly askRemove: (account: Account) => void
+}
+
+/** A row's own controls, where a click does not open the sheet. */
+const ROW_CONTROLS = "button, input, a, [role=switch], [role=menu]"
+
+/** A row being dragged: account `id`, shown at index `to` of its pool. */
+interface Drag {
+  readonly id: string
+  readonly to: number
+}
+
+/** `pool` with the dragged account moved to where the drag shows it. */
+const dragOrder = (pool: ReadonlyArray<Account>, drag: Drag): ReadonlyArray<Account> => {
+  const dragged = pool.find((account) => account.id === drag.id)
+  if (dragged === undefined) return pool
+  const others = pool.filter((account) => account !== dragged)
+  return [...others.slice(0, drag.to), dragged, ...others.slice(drag.to)]
+}
 
 /** The accounts page body: one table per pool, or the first-run guide. */
 export function AccountsPage(props: {
@@ -38,7 +68,7 @@ export function AccountsPage(props: {
   now: number
   address: string
   client: DaemonClient
-  readOnly: boolean
+  controls: AccountControls
 }) {
   const { list } = props
   if (list.accounts.length === 0) {
@@ -46,13 +76,16 @@ export function AccountsPage(props: {
   }
   return (
     <div className="sections">
+      <p className="sr-only" id={REORDER_HINT}>
+        Drag, or press the up and down arrow keys, to change its priority.
+      </p>
       {list.pools.map((pool) => (
         <PoolSection
           key={pool.provider}
           list={list}
           pool={pool}
           now={props.now}
-          readOnly={props.readOnly}
+          controls={props.controls}
         />
       ))}
     </div>
@@ -82,10 +115,42 @@ function PoolLine({ state, provider }: { state: PoolState; provider: Provider })
   }
 }
 
-function PoolSection(props: { list: AccountList; pool: Pool; now: number; readOnly: boolean }) {
+function PoolSection(props: {
+  list: AccountList
+  pool: Pool
+  now: number
+  controls: AccountControls
+}) {
   const { provider } = props.pool
   const name = providerNames[provider]
-  const accounts = accountsOf(props.list, provider)
+  const pool = accountsOf(props.list, provider)
+  const [drag, setDrag] = useState<Drag | undefined>()
+  const accounts = drag === undefined ? pool : dragOrder(pool, drag)
+  const { move } = props.controls
+
+  // While a row is dragged, the pointer may be released anywhere, and Escape
+  // puts the row back.
+  useEffect(() => {
+    if (drag === undefined) return
+    const drop = () => {
+      setDrag(undefined)
+      const from = pool.findIndex((account) => account.id === drag.id)
+      const dragged = pool[from]
+      if (dragged !== undefined && from !== drag.to) move(dragged, drag.to + 1)
+    }
+    const cancel = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDrag(undefined)
+    }
+    document.addEventListener("pointerup", drop)
+    document.addEventListener("pointercancel", drop)
+    document.addEventListener("keydown", cancel)
+    return () => {
+      document.removeEventListener("pointerup", drop)
+      document.removeEventListener("pointercancel", drop)
+      document.removeEventListener("keydown", cancel)
+    }
+  }, [drag, pool, move])
+
   const state = poolState(props.list, props.pool)
   const servingId = state.kind === "serving" ? state.account.id : undefined
   const headingId = `pool-${provider}`
@@ -114,7 +179,10 @@ function PoolSection(props: { list: AccountList; pool: Pool; now: number; readOn
       )}
 
       <div className="table-wrap">
-        <table className="accounts" aria-label={`${name} accounts`}>
+        <table
+          className={`accounts ${drag === undefined ? "" : "is-dragging"}`}
+          aria-label={`${name} accounts`}
+        >
           <thead>
             <tr>
               <th scope="col" aria-label="Priority" className="col-prio">
@@ -135,13 +203,20 @@ function PoolSection(props: { list: AccountList; pool: Pool; now: number; readOn
             </tr>
           </thead>
           <tbody>
-            {accounts.map((account) => (
+            {accounts.map((account, index) => (
               <AccountRow
                 key={account.id}
                 account={account}
+                place={index + 1}
+                lifted={drag?.id === account.id}
+                onDragStart={() => setDrag({ id: account.id, to: index })}
+                onDragOver={() =>
+                  drag !== undefined && drag.to !== index && setDrag({ ...drag, to: index })
+                }
                 serving={account.id === servingId}
+                count={accounts.length}
                 now={props.now}
-                readOnly={props.readOnly}
+                controls={props.controls}
               />
             ))}
           </tbody>
@@ -151,15 +226,88 @@ function PoolSection(props: { list: AccountList; pool: Pool; now: number; readOn
   )
 }
 
-function AccountRow(props: { account: Account; serving: boolean; now: number; readOnly: boolean }) {
-  const { account } = props
+function AccountRow(props: {
+  account: Account
+  /** Where the row shows in its pool: its priority, or where a drag would put it. */
+  place: number
+  lifted: boolean
+  onDragStart: () => void
+  onDragOver: () => void
+  serving: boolean
+  count: number
+  now: number
+  controls: AccountControls
+}) {
+  const { account, controls } = props
+  const { readOnly } = controls
+  const [renaming, setRenaming] = useState(false)
+  const open = controls.openId === account.id
   return (
-    <tr className={`row is-${account.status} ${props.serving ? "is-serving" : ""}`}>
+    // A click anywhere on the row that is not one of its controls opens the
+    // account's sheet, as the label's button does from the keyboard.
+    <tr
+      className={`row is-${account.status} ${props.serving ? "is-serving" : ""} ${props.lifted ? "is-lifted" : ""} ${open ? "is-open" : ""}`}
+      data-account-row=""
+      onPointerOver={props.onDragOver}
+      onClick={(event) => {
+        if (event.target instanceof Element && event.target.closest(ROW_CONTROLS) !== null) return
+        controls.open(account)
+      }}
+    >
       <td className="col-prio">
-        <span className="prio">{account.priority}</span>
+        <button
+          type="button"
+          className="grip"
+          aria-label={`Reorder ${account.label}`}
+          aria-describedby={REORDER_HINT}
+          disabled={readOnly}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return
+            // A touch is captured by the element it starts on; release it, so
+            // the rows it passes over hear it.
+            if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+              event.currentTarget.releasePointerCapture(event.pointerId)
+            }
+            props.onDragStart()
+          }}
+          onKeyDown={(event) => {
+            const step = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0
+            if (step === 0) return
+            event.preventDefault()
+            const priority = account.priority + step
+            if (priority >= 1 && priority <= props.count) controls.move(account, priority)
+          }}
+        >
+          <span className="grip-dots" aria-hidden="true">
+            <IconGrip size={14} />
+          </span>
+          <span className="prio">{props.place}</span>
+        </button>
       </td>
       <td className="col-who">
-        <span className="who-name">{account.label}</span>
+        {renaming ? (
+          <LabelInput
+            account={account}
+            className="who-rename"
+            onDone={(label) => {
+              setRenaming(false)
+              if (label !== undefined) controls.rename(account, label)
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            className="who-name"
+            data-opens-sheet={account.id}
+            aria-haspopup="dialog"
+            aria-expanded={open}
+            title={readOnly ? undefined : "Double-click to rename"}
+            onClick={() => controls.open(account)}
+            onDoubleClick={() => !readOnly && setRenaming(true)}
+          >
+            {account.label}
+          </button>
+        )}
         {props.serving && (
           <>
             {" "}
@@ -186,48 +334,140 @@ function AccountRow(props: { account: Account; serving: boolean; now: number; re
         <Switch.Root
           className="switch"
           checked={account.enabled}
-          readOnly
+          onCheckedChange={(enabled) => controls.setEnabled(account, enabled)}
+          disabled={readOnly}
           aria-label={`${account.label} enabled`}
         >
           <Switch.Thumb className="switch-thumb" />
         </Switch.Root>
       </td>
       <td className="col-menu">
-        <RowMenu account={account} disabled={props.readOnly} />
+        <RowMenu
+          account={account}
+          count={props.count}
+          controls={controls}
+          onRename={() => setRenaming(true)}
+        />
       </td>
     </tr>
   )
 }
 
-/** The row's ⋯ menu. Its actions arrive with account management in the dashboard. */
-function RowMenu({ account, disabled }: { account: Account; disabled: boolean }) {
+/**
+ * An account's label being edited. Enter or leaving the field keeps the new
+ * label; Escape, an unchanged label or a blank one keeps the old. `onDone`
+ * gets the new label, trimmed, or nothing when the old one stays.
+ */
+export function LabelInput(props: {
+  account: Account
+  className: string
+  onDone: (label: string | undefined) => void
+}) {
+  const [value, setValue] = useState(props.account.label)
+  const [done, setDone] = useState(false)
+  const finish = (keep: boolean) => {
+    if (done) return
+    setDone(true)
+    const label = value.trim()
+    props.onDone(keep && label !== "" && label !== props.account.label ? label : undefined)
+  }
+  return (
+    <input
+      className={`input ${props.className}`}
+      value={value}
+      // oxlint-disable-next-line jsx-a11y/no-autofocus -- it appears because the owner asked to rename
+      autoFocus
+      maxLength={80}
+      spellCheck={false}
+      aria-label={`Label for ${props.account.label}`}
+      onFocus={(event) => event.currentTarget.select()}
+      onChange={(event) => setValue(event.target.value)}
+      onBlur={() => finish(true)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault()
+          finish(true)
+        } else if (event.key === "Escape") {
+          event.preventDefault()
+          event.stopPropagation()
+          finish(false)
+        }
+      }}
+    />
+  )
+}
+
+/** The row's ⋯ menu. */
+function RowMenu(props: {
+  account: Account
+  count: number
+  controls: AccountControls
+  onRename: () => void
+}) {
+  const { account, controls } = props
+  // Rename waits for the menu to close, so the menu hands focus to the label's
+  // field rather than taking it back.
+  const [renaming, setRenaming] = useState(false)
   const items = [
-    { label: "Open details", icon: <IconChevronRight size={14} /> },
-    { label: "Rename", icon: <IconPencil size={14} /> },
-    { label: "Move up", icon: <IconChevronUp size={14} />, separatorBefore: true },
-    { label: "Move down", icon: <IconChevronDown size={14} /> },
-    { label: "Remove…", icon: <IconTrash size={14} />, separatorBefore: true, danger: true },
+    {
+      label: "Open details",
+      icon: <IconChevronRight size={14} />,
+      onClick: () => controls.open(account),
+    },
+    {
+      label: "Rename",
+      icon: <IconPencil size={14} />,
+      onClick: () => setRenaming(true),
+    },
+    {
+      label: "Move up",
+      icon: <IconChevronUp size={14} />,
+      separatorBefore: true,
+      disabled: account.priority === 1,
+      onClick: () => controls.move(account, account.priority - 1),
+    },
+    {
+      label: "Move down",
+      icon: <IconChevronDown size={14} />,
+      disabled: account.priority === props.count,
+      onClick: () => controls.move(account, account.priority + 1),
+    },
+    {
+      label: "Remove…",
+      icon: <IconTrash size={14} />,
+      separatorBefore: true,
+      danger: true,
+      onClick: () => controls.askRemove(account),
+    },
   ]
   return (
-    <Menu.Root>
+    <Menu.Root
+      onOpenChange={(open) => {
+        if (open) setRenaming(false)
+      }}
+      onOpenChangeComplete={(open) => {
+        if (!open && renaming) props.onRename()
+      }}
+    >
       <Tip label="Actions">
         <Menu.Trigger
           className="iconbtn"
           aria-label={`Actions for ${account.label}`}
-          disabled={disabled}
+          disabled={controls.readOnly}
         >
           <IconMore size={16} />
         </Menu.Trigger>
       </Tip>
       <Menu.Portal>
         <Menu.Positioner className="layer" sideOffset={4} align="end">
-          <Menu.Popup className="menu">
+          <Menu.Popup className="menu" finalFocus={!renaming}>
             {items.map((item) => (
               <div key={item.label} className="menu-group">
                 {item.separatorBefore === true && <Menu.Separator className="menu-sep" />}
                 <Menu.Item
                   className={`menu-item ${item.danger === true ? "is-danger" : ""}`}
-                  disabled
+                  disabled={item.disabled === true}
+                  onClick={item.onClick}
                 >
                   <span className="menu-icon">{item.icon}</span>
                   {item.label}

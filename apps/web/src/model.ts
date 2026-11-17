@@ -1,4 +1,11 @@
-import type { Account, AccountList, AccountStatus, Pool, Provider } from "./daemon-api.ts"
+import type {
+  Account,
+  AccountList,
+  AccountSettings,
+  AccountStatus,
+  Pool,
+  Provider,
+} from "./daemon-api.ts"
 
 /** The dashboard's words for what the daemon reports, in GLOSSARY.md's vocabulary. */
 
@@ -26,11 +33,51 @@ export const clients: ReadonlyArray<Client> = [
   { name: "opencode", command: "agent-proxy connect opencode", providers: ["claude", "codex"] },
 ]
 
+/** Which clients spend a provider's pool, as "Claude Code and opencode". */
+export const clientsOf = (provider: Provider): string =>
+  clients
+    .filter((client) => client.providers.includes(provider))
+    .map((client) => client.name)
+    .join(" and ")
+
 /** A pool's accounts, highest priority first. */
 export const accountsOf = (list: AccountList, provider: Provider): ReadonlyArray<Account> =>
   list.accounts
     .filter((account) => account.provider === provider)
     .toSorted((a, b) => a.priority - b.priority)
+
+/**
+ * `list` as it will be once the daemon applies `settings` to account `id`:
+ * a new priority moves the account within its pool and renumbers the rest,
+ * and turning an account off makes it Disabled. Which account gets new
+ * sessions is left to the daemon to say.
+ */
+export const withSettings = (
+  list: AccountList,
+  id: string,
+  settings: AccountSettings,
+): AccountList => {
+  const changed = list.accounts.find((account) => account.id === id)
+  if (changed === undefined) return list
+  const pool = accountsOf(list, changed.provider).filter((account) => account.id !== id)
+  const position = Math.min(Math.max(settings.priority ?? changed.priority, 1), pool.length + 1)
+  const order = [...pool.slice(0, position - 1), changed, ...pool.slice(position - 1)]
+  return {
+    ...list,
+    accounts: list.accounts.map((account) => {
+      const priority = order.indexOf(account) + 1
+      if (account.id !== id) return priority === 0 ? account : { ...account, priority }
+      const enabled = settings.enabled ?? account.enabled
+      return {
+        ...account,
+        label: settings.label ?? account.label,
+        enabled,
+        status: enabled ? account.status : "disabled",
+        priority,
+      }
+    }),
+  }
+}
 
 /**
  * What a pool does with a new session:
@@ -68,6 +115,14 @@ export const lastUsedText = (lastUsedAt: string | null, now: number): string => 
   if (hours < 24) return `${hours} hr ago`
   const days = Math.round(hours / 24)
   return days === 1 ? "yesterday" : `${days} days ago`
+}
+
+/** "1st", "2nd", "3rd", "4th", … "11th", "12th", "13th", "21st". */
+export const ordinal = (n: number): string => {
+  const tens = n % 100
+  if (tens >= 11 && tens <= 13) return `${n}th`
+  const suffix = ["th", "st", "nd", "rd"][n % 10] ?? "th"
+  return `${n}${suffix}`
 }
 
 /** "45m", "3h 12m", "2d 4h": how long the daemon has been up. */

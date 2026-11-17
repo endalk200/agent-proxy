@@ -118,6 +118,34 @@ export const IconTrash = ({ size }: IconProps) => (
   </Svg>
 )
 
+export const IconInfo = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 16v-4M12 8h.01" />
+  </Svg>
+)
+export const IconGrip = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <circle cx="9" cy="6" r="1" />
+    <circle cx="9" cy="12" r="1" />
+    <circle cx="9" cy="18" r="1" />
+    <circle cx="15" cy="6" r="1" />
+    <circle cx="15" cy="12" r="1" />
+    <circle cx="15" cy="18" r="1" />
+  </Svg>
+)
+export const IconActivity = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+  </Svg>
+)
+export const IconChart = ({ size }: IconProps) => (
+  <Svg size={size}>
+    <path d="M3 3v18h18" />
+    <path d="M18 17V9M13 17V5M8 17v-3" />
+  </Svg>
+)
+
 /**
  * Provider marks, deliberately generic rather than the providers' logos:
  * Claude a warm eight-point spark, Codex a terminal prompt in a rounded square.
