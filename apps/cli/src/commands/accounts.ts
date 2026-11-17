@@ -82,15 +82,16 @@ const signInWithBrowser = (login: LoginView, name: string) =>
     yield* Console.log(
       `Opening your browser to sign in to ${name}. If it does not open, visit:\n\n  ${login.authorizeUrl}\n\nWaiting for you to sign in (Ctrl-C cancels)…`,
     )
-    yield* browser
-      .open(login.authorizeUrl)
-      .pipe(
-        Effect.catchTag("BrowserError", () =>
-          Console.log("Could not open a browser. Open the URL above yourself."),
-        ),
-      )
+    // The opener runs beside the wait, not before it: `xdg-open` can stay
+    // attached to the browser it starts, and the login must finish regardless.
+    yield* browser.open(login.authorizeUrl).pipe(
+      Effect.catchTag("BrowserError", () =>
+        Console.log("Could not open a browser. Open the URL above yourself."),
+      ),
+      Effect.forkScoped,
+    )
     return yield* awaitLogin(login.id)
-  })
+  }).pipe(Effect.scoped)
 
 /**
  * Prints the sign-in page's URL and waits for the owner to paste the URL the

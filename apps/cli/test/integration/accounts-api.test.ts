@@ -484,12 +484,19 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const claude = yield* fakeClaude
-        const first = yield* makeHome(claude)
-        yield* first.signIn(alice)
-        const [file] = yield* first.accountFiles
-        const leftover = `${first.accountsDir}/.${file?.name}.1a2b3c4d.tmp`
-        yield* fs.writeFileString(leftover, '{"id": "ha', { mode: 0o600 })
-        const second = yield* makeHome(claude, { dataHome: first.dataHome })
+        const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
+        // The first daemon signs in, leaves a temp file as a crash would, and is gone.
+        const leftover = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const first = yield* makeHome(claude, { dataHome })
+            yield* first.signIn(alice)
+            const [file] = yield* first.accountFiles
+            const path = `${first.accountsDir}/.${file?.name}.1a2b3c4d.tmp`
+            yield* fs.writeFileString(path, '{"id": "ha', { mode: 0o600 })
+            return path
+          }),
+        )
+        const second = yield* makeHome(claude, { dataHome })
         expect(yield* second.accounts).toHaveLength(1)
         expect(yield* fs.exists(leftover)).toBe(false)
       }),

@@ -1,6 +1,6 @@
 # Accounts
 
-`agent-proxy accounts` lists the accounts the daemon holds, with provider, label, email, plan, priority, and status, as a table or `--json`. `agent-proxy accounts add claude` signs in a Claude account through a login the daemon runs: it opens the browser, or with `--no-browser` prints the sign-in URL and takes the callback URL the owner pastes. The login's redirect returns to `http://localhost:54545/callback`, where the daemon listens only while a login waits. A new account joins the bottom of its pool, labelled after its email unless `--label` names it; signing in to an account already held updates its credentials and keeps its label, priority, and enabled setting. The daemon keeps each account in its own 0600 file in `$XDG_DATA_HOME/agent-proxy/accounts/`, a 0700 directory.
+`agent-proxy accounts` lists the accounts the daemon holds, with provider, label, email, plan, priority, and status, as a table or `--json`. `agent-proxy accounts add claude` signs in a Claude account through a login the daemon runs: it opens the browser, or with `--no-browser` prints the sign-in URL and takes the callback URL the owner pastes. The login's redirect returns to `http://localhost:54545/callback`, where the daemon listens only while a login waits. A new account joins the bottom of its pool, labelled after its email unless `--label` names it; signing in to an account already held updates its credentials and keeps its priority and enabled setting, and its label unless `--label` gives a new one. The daemon keeps each account in its own 0600 file in `$XDG_DATA_HOME/agent-proxy/accounts/`, a 0700 directory.
 
 ## Sub-features
 
@@ -45,6 +45,7 @@ Preconditions:
 
 - `verify cli` has no stdin, so the paste path is driven through `verify shell` with a FIFO; keep the FIFO's writer open (`exec 3>`) or `accounts add` sees end of input.
 - `accounts add claude` without `--no-browser` opens the machine's real browser at claude.com; do not run it unattended.
+- `AGENT_PROXY_PROVIDER_ENDPOINTS` (a JSON object shaped like `{"claude":{"authorizeUrl":…,"tokenUrl":…,"profileUrl":…,"callbackPort":…}}`, any field optional) points the daemon at other provider endpoints. Set it with `verify cli --env` on `daemon start` to drive a full sign-in against a fake provider through the built binary. It is for verification and tests only, not an owner setting; an invalid value stops the daemon from starting with a message naming the variable.
 - A finished login contacts the real Claude token and profile endpoints. Only the owner's real sign-in reaches them; the drives above never send Claude a request.
 - Port 54545 is fixed. A daemon outside the run that is waiting on a Claude login holds it, and the run's login then fails with `Could not listen on 127.0.0.1:54545`.
 - Seeded files must match the daemon's format exactly; a file that does not decode is skipped with a `"skipping an unreadable account file"` warning in `daemon.log`, not shown as an error.

@@ -41,6 +41,11 @@ const browserThatSignsIn = Browser.of({
     }),
 })
 
+/** A browser opener that signs in but never exits, as `xdg-open` can stay attached to a terminal browser. */
+const browserThatSignsInAndLingers = Browser.of({
+  open: (url) => Effect.promise(() => fetch(url)).pipe(Effect.andThen(Effect.never)),
+})
+
 /** A browser that is never seen: opening it does nothing. */
 const browserThatIdles = Browser.of({ open: () => Effect.void })
 
@@ -61,7 +66,14 @@ const signInWithoutReachingDaemon = (authorizeUrl: string) =>
     Effect.map((response) => response.headers.get("location") ?? ""),
   )
 
-const makeHome = (claude: FakeClaude) =>
+/**
+ * `endpoints: "env"` leaves the real `ProviderEndpoints.layer` in place and points
+ * it at the fake through `AGENT_PROXY_PROVIDER_ENDPOINTS`, the way the sandbox does.
+ */
+const makeHome = (
+  claude: FakeClaude,
+  options: { readonly endpoints?: "service" | "env"; readonly endpointsJson?: string } = {},
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-accounts-cli-" })
@@ -72,6 +84,12 @@ const makeHome = (claude: FakeClaude) =>
       XDG_CONFIG_HOME: `${root}/config`,
       XDG_STATE_HOME: `${root}/state`,
       XDG_DATA_HOME: `${root}/data`,
+      ...(options.endpoints === "env"
+        ? {
+            AGENT_PROXY_PROVIDER_ENDPOINTS:
+              options.endpointsJson ?? JSON.stringify({ claude: claude.endpoints }),
+          }
+        : {}),
     }
     const stateDir = `${root}/state/agent-proxy`
     const output: Array<string> = []
@@ -88,12 +106,14 @@ const makeHome = (claude: FakeClaude) =>
           },
         }
         yield* runCli(argv).pipe(
+          options.endpoints === "env"
+            ? Effect.provide(ProviderEndpoints.layer)
+            : Effect.provideService(
+                ProviderEndpoints,
+                ProviderEndpoints.of({ claude: claude.endpoints }),
+              ),
           Effect.provideService(Console.Console, console),
           Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
-          Effect.provideService(
-            ProviderEndpoints,
-            ProviderEndpoints.of({ claude: claude.endpoints }),
-          ),
           Effect.provideService(Browser, browser),
           Effect.provideService(Terminal.Terminal, terminalTyping(typed)),
         )
@@ -176,6 +196,44 @@ layer(
         expect(output).toMatch(
           /Added Claude account "alice" \(alice@example\.com, Max 20x\) at priority 1\.$/,
         )
+      }),
+    ),
+  )
+
+  it.effect("accounts add claude finishes even when the browser opener never exits", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.runDaemon
+        claude.signInAs(alice)
+        const output = yield* home.cli(["accounts", "add", "claude"], browserThatSignsInAndLingers)
+        expect(output).toMatch(/Added Claude account "alice" \(alice@example\.com, Max 20x\)/)
+      }),
+    ),
+  )
+
+  it.effect("AGENT_PROXY_PROVIDER_ENDPOINTS points a sign-in at other Claude endpoints", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude, { endpoints: "env" })
+        yield* home.runDaemon
+        const output = yield* home.add(alice)
+        expect(output).toMatch(/^ {2}http:\/\/127\.0\.0\.1:\d+\/cai\/oauth\/authorize\?/m)
+        expect(output).toMatch(/Added Claude account "alice" \(alice@example\.com, Max 20x\)/)
+      }),
+    ),
+  )
+
+  it.effect("AGENT_PROXY_PROVIDER_ENDPOINTS that is not valid fails with a message naming it", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude, {
+          endpoints: "env",
+          endpointsJson: '{"claude":{"tokenUrl":1}}',
+        })
+        const error = yield* Effect.flip(home.cli(["daemon", "run"]))
+        expect(String(error)).toContain("AGENT_PROXY_PROVIDER_ENDPOINTS")
       }),
     ),
   )

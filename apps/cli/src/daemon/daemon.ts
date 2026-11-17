@@ -6,7 +6,7 @@ import packageJson from "../../package.json" with { type: "json" }
 import { AccountStore } from "../accounts/store.ts"
 import { type ListenAddress, loadConfigFile } from "../config.ts"
 import { Logins } from "../logins/logins.ts"
-import { resolveStateDir } from "../paths.ts"
+import { resolveDataDir, resolveStateDir } from "../paths.ts"
 import { Processes } from "../processes.ts"
 import { ClaudeApi } from "../providers/claude-api.ts"
 import { ClaudeLogin } from "../providers/claude.ts"
@@ -119,6 +119,12 @@ export const startDaemon = Effect.gen(function* () {
 
   return yield* Effect.gen(function* () {
     yield* acquireLock(stateDir, pid)
+    // The data directory gets its own lock: two daemons with different state
+    // directories must still never share accounts, or both would refresh the
+    // same single-use refresh tokens and write the same files.
+    const dataDir = yield* resolveDataDir
+    yield* fs.makeDirectory(dataDir, { recursive: true, mode: 0o700 })
+    yield* acquireLock(dataDir, pid)
 
     // Registered after the lock, so a refused daemon never removes another's
     // state file, and before the listener, so it runs once the listener has drained.
