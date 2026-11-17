@@ -16,7 +16,10 @@ export interface FakeAccount {
   readonly plan: string
   readonly priority: number
   readonly enabled: boolean
-  readonly status: "active" | "needs-sign-in" | "disabled"
+  /** A string the dashboard does not know stands in for a status a newer daemon reports. */
+  readonly status: "active" | "cooling-down" | "needs-sign-in" | "disabled" | (string & {})
+  /** When a `cooling-down` account's cooldown ends; a daemon from before cooldowns leaves it out. */
+  readonly cooldownEndsAt?: string | null
   readonly addedAt: string
   readonly lastUsedAt: string | null
 }

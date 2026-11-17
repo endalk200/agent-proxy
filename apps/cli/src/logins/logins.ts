@@ -18,6 +18,7 @@ import {
 import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http"
 
 import type { Provider } from "../accounts/account.ts"
+import { Router, type RoutingView } from "../accounts/router.ts"
 import { AccountStore, type AccountStoreError, type Upserted } from "../accounts/store.ts"
 import { type LoginView, toAccountView } from "../daemon/api.ts"
 import { ClaudeLogin } from "../providers/claude.ts"
@@ -109,11 +110,12 @@ const parseCallback = (
 /** How a login's flow ended, as the login reports it. */
 const outcome = (
   exit: Exit.Exit<Upserted, Cause.TimeoutError | ProviderLoginError | AccountStoreError>,
+  routing: RoutingView,
 ): Partial<LoginView> => {
   if (Exit.isSuccess(exit)) {
     return {
       status: "succeeded",
-      account: toAccountView(exit.value.account),
+      account: toAccountView(exit.value.account, routing),
       created: exit.value.created,
     }
   }
@@ -163,6 +165,7 @@ export class Logins extends Context.Service<
     Logins,
     Effect.gen(function* () {
       const store = yield* AccountStore
+      const router = yield* Router
       const adapters: Readonly<Record<Provider, LoginAdapter>> = {
         claude: yield* ClaudeLogin,
         codex: yield* CodexLogin,
@@ -331,7 +334,7 @@ export class Logins extends Context.Service<
               flow.pipe(
                 Effect.onExit((exit) =>
                   Effect.gen(function* () {
-                    const ended = outcome(exit)
+                    const ended = outcome(exit, yield* router.view)
                     yield* Effect.logInfo("login finished").pipe(
                       Effect.annotateLogs({
                         login: id,

@@ -10,6 +10,7 @@ import {
 } from "effect/http"
 
 import { type Account, type Provider, providerNames } from "../accounts/account.ts"
+import type { LimitSignal } from "../accounts/router.ts"
 
 /**
  * What every provider adapter's upstream half shares: sending a client's
@@ -47,6 +48,43 @@ export interface UpstreamApi {
     account: Account,
     accessToken: string,
   ) => Effect.Effect<HttpClientResponse.HttpClientResponse, ProviderUnreachable>
+  /** The session `request` belongs to, as its client names it, if it does. */
+  readonly sessionOf: (request: ProxiedRequest) => string | undefined
+  /**
+   * What the provider's answer says about the account's limits, `now` being
+   * the time in epoch milliseconds. `body` is given for a 429 only, when it
+   * could be read.
+   */
+  readonly limitsOf: (answer: ProviderAnswer, now: number) => LimitSignal
+}
+
+/** A provider's answer as its adapter judges its limits. */
+export interface ProviderAnswer {
+  readonly status: number
+  readonly headers: Headers.Headers
+  readonly body: string | undefined
+}
+
+/** A number header's value, if it holds a finite number. */
+export const numberHeader = (headers: Headers.Headers, name: string): number | undefined => {
+  const value = headers[name]
+  if (value === undefined || value.trim() === "") return undefined
+  const number = Number(value)
+  return Number.isFinite(number) ? number : undefined
+}
+
+/** How long to wait before retrying, from `Retry-After` in seconds or as a date; a minute when it is missing. */
+export const retryAfterMs = (headers: Headers.Headers, now: number): number => {
+  const seconds = numberHeader(headers, "retry-after")
+  if (seconds !== undefined) return Math.max(0, seconds) * 1000
+  const date = Date.parse(headers["retry-after"] ?? "")
+  return Number.isNaN(date) ? 60_000 : Math.max(0, date - now)
+}
+
+/** The headroom left by the most used of `usedShares` (each 0 to 1), or none when none is known. */
+export const headroomOf = (usedShares: ReadonlyArray<number | undefined>): number | undefined => {
+  const known = usedShares.filter((share) => share !== undefined)
+  return known.length === 0 ? undefined : Math.min(1, Math.max(0, 1 - Math.max(...known)))
 }
 
 /**

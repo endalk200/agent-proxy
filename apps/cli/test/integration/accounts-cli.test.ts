@@ -177,7 +177,38 @@ const makeHome = (
       return (yield* fs.exists(dir)) ? (yield* fs.readDirectory(dir)).toSorted() : []
     })
 
-    return { codex, cli, runDaemon, printed, typed, add, list, order, fails, accountFiles }
+    /** Sends a Claude message request through the running daemon's proxy, as Claude Code does. */
+    const sendMessage = Effect.gen(function* () {
+      const state: unknown = JSON.parse(yield* fs.readFileString(`${stateDir}/daemon.json`))
+      const address =
+        typeof state === "object" && state !== null && "address" in state
+          ? String(state.address)
+          : ""
+      const key = (yield* cli(["key"])).trim()
+      return yield* Effect.promise(async () => {
+        const response = await fetch(`${address}/v1/messages`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-api-key": key },
+          body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 8, messages: [] }),
+        })
+        await response.text()
+        return response.status
+      })
+    })
+
+    return {
+      codex,
+      cli,
+      runDaemon,
+      printed,
+      typed,
+      add,
+      list,
+      order,
+      fails,
+      accountFiles,
+      sendMessage,
+    }
   })
 
 layer(
@@ -287,6 +318,72 @@ layer(
             "",
             'New Claude sessions go to "Personal Max".',
           ].join("\n"),
+        )
+      }),
+    ),
+  )
+
+  it.effect("accounts shows an account cooling down, and until when, in local time", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.runDaemon
+        yield* home.add(alice, ["--label", "Work"])
+        yield* home.add(bob)
+        const [aliceToken] = claude.issuedAccessTokens()
+        // Alice's 5-hour window resets at 2099-06-01T06:30:00Z: 15:30 in Tokyo.
+        claude.answerApiWith((request) =>
+          request.headers.get("authorization") === `Bearer ${aliceToken}`
+            ? Response.json(
+                { type: "error", error: { type: "rate_limit_error", message: "Limited" } },
+                {
+                  status: 429,
+                  headers: {
+                    "anthropic-ratelimit-unified-status": "rejected",
+                    "anthropic-ratelimit-unified-reset": "4083978600",
+                  },
+                },
+              )
+            : Response.json({ type: "message", content: [] }),
+        )
+        expect(yield* home.sendMessage).toBe(200)
+
+        expect(yield* home.cli(["accounts"])).toBe(
+          [
+            "PROVIDER  LABEL  EMAIL              PLAN     PRIORITY  STATUS",
+            "claude    Work   alice@example.com  Max 20x  1         Cooling down until Jun 1 15:30",
+            "claude    bob    bob@example.com    Pro      2         Active",
+            "",
+            'New Claude sessions go to "bob".',
+          ].join("\n"),
+        )
+        expect((yield* home.list).accounts).toEqual([
+          expect.objectContaining({
+            label: "Work",
+            status: "cooling-down",
+            cooldownEndsAt: "2099-06-01T06:30:00.000Z",
+          }),
+          expect.objectContaining({ label: "bob", status: "active", cooldownEndsAt: null }),
+        ])
+
+        // With every account cooling down, the pool says when the first is free
+        // again: bob's window resets at 2099-05-31T22:00:00Z, 07:00 in Tokyo.
+        claude.answerApiWith(() =>
+          Response.json(
+            { type: "error", error: { type: "rate_limit_error", message: "Limited" } },
+            {
+              status: 429,
+              headers: {
+                "anthropic-ratelimit-unified-status": "rejected",
+                "anthropic-ratelimit-unified-reset": "4083948000",
+              },
+            },
+          ),
+        )
+        expect(yield* home.sendMessage).toBe(429)
+        expect((yield* home.cli(["accounts"])).split("\n").at(-1)).toBe(
+          "No Claude account can take new sessions until Jun 1 07:00, when the first cooldown ends.",
         )
       }),
     ),

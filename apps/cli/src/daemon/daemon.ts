@@ -4,6 +4,7 @@ import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http"
 
 import packageJson from "../../package.json" with { type: "json" }
 import { CredentialKeeper } from "../accounts/keeper.ts"
+import { Router } from "../accounts/router.ts"
 import { AccountStore } from "../accounts/store.ts"
 import { type ListenAddress, loadConfigFile } from "../config.ts"
 import { Logins } from "../logins/logins.ts"
@@ -157,6 +158,7 @@ export const startDaemon = Effect.gen(function* () {
         Layer.provide(
           Layer.mergeAll(
             Layer.mergeAll(Logins.layer, CredentialKeeper.layer).pipe(
+              Layer.provideMerge(Router.layer),
               Layer.provideMerge(AccountStore.layer),
               Layer.provide(
                 Layer.mergeAll(

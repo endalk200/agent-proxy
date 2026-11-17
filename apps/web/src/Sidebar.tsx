@@ -1,7 +1,7 @@
 import { Popover } from "@base-ui/react/popover"
 
 import type { AccountList, DaemonInfo } from "./daemon-api.ts"
-import { hostOf, poolState, providerNames, uptimeText } from "./model.ts"
+import { clockText, countdown, hostOf, poolState, providerNames, uptimeText } from "./model.ts"
 import {
   copyText,
   IconCheck,
@@ -66,18 +66,23 @@ export function Sidebar(props: {
             {list.pools.map((pool) => {
               const state = poolState(list, pool)
               const name = providerNames[pool.provider]
+              const nextReset = state.kind === "blocked" ? state.nextReset : null
               const text =
                 state.kind === "serving"
                   ? state.account.label
-                  : state.kind === "blocked"
-                    ? "Unavailable"
-                    : "Off"
+                  : nextReset !== null
+                    ? `Back ${countdown(nextReset, props.now)}`
+                    : state.kind === "blocked"
+                      ? "Unavailable"
+                      : "Off"
               const spoken =
                 state.kind === "serving"
                   ? `${name}: new sessions go to ${state.account.label}`
-                  : state.kind === "blocked"
-                    ? `${name}: no account can take new sessions`
-                    : `${name}: every account is disabled`
+                  : nextReset !== null
+                    ? `${name}: no account can take new sessions until ${clockText(nextReset, props.now)}`
+                    : state.kind === "blocked"
+                      ? `${name}: no account can take new sessions`
+                      : `${name}: every account is disabled`
               return (
                 <li
                   key={pool.provider}
