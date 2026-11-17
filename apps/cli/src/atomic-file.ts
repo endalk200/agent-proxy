@@ -27,11 +27,12 @@ export const writeFileAtomic = (
         yield* handle.writeAll(new TextEncoder().encode(content))
         yield* handle.sync
       }),
+    ).pipe(
+      Effect.andThen(options?.mode === undefined ? Effect.void : fs.chmod(temp, options.mode)),
+      Effect.andThen(fs.rename(temp, file)),
+      // A failed write never leaves its content, credentials and all, behind.
+      Effect.onError(() => fs.remove(temp, { force: true }).pipe(Effect.ignore)),
     )
-    if (options?.mode !== undefined) {
-      yield* fs.chmod(temp, options.mode)
-    }
-    yield* fs.rename(temp, file)
   })
 
 /** Creates `directory` and its parents, and makes it readable by the owner only, even if it existed. */

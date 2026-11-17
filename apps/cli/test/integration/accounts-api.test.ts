@@ -480,6 +480,37 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
         }),
     )
 
+    it.effect(
+      "repairs a pool whose priorities a failed change left out of order when it starts",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const claude = yield* fakeClaude
+          const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
+          // A removal that stopped before renumbering leaves a gap at priority 2.
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const first = yield* makeHome(claude, { dataHome })
+              yield* first.seedAccount(alice, {
+                label: "A",
+                priority: 1,
+                enabled: true,
+                needsSignIn: false,
+              })
+              yield* first.seedAccount(bob, {
+                label: "B",
+                priority: 3,
+                enabled: true,
+                needsSignIn: false,
+              })
+            }),
+          )
+          const second = yield* makeHome(claude, { dataHome })
+          const priorities = (yield* second.accounts).map((account) => account.priority)
+          expect(priorities.toSorted((a, b) => a - b)).toEqual([1, 2])
+        }),
+    )
+
     it.effect("removes temp files a crash left behind when it starts", () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem

@@ -389,6 +389,21 @@ layer(
     ),
   )
 
+  it.effect("labels are stored and matched without surrounding spaces", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.runDaemon
+        yield* home.add(alice, ["--label", " Work "])
+        yield* home.add(bob, ["--label", "Spare"])
+        yield* home.cli(["accounts", "set", "Spare", "--label", "  Home  "])
+        expect(yield* home.order).toEqual(["1 Work", "2 Home"])
+        yield* home.cli(["accounts", "remove", " Work "])
+        expect(yield* home.order).toEqual(["1 Home"])
+      }),
+    ),
+  )
+
   it.effect("accounts set renames an account picked by its label, email or id prefix", () =>
     TestClock.withLive(
       Effect.gen(function* () {

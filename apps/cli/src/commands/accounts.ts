@@ -205,7 +205,7 @@ const findAccount = (query: string) =>
         ? []
         : accounts.filter(
             (account) =>
-              account.label.toLowerCase() === wanted ||
+              account.label.trim().toLowerCase() === wanted ||
               account.email.toLowerCase() === wanted ||
               account.id.toLowerCase().startsWith(wanted),
           )
