@@ -100,7 +100,14 @@ export function AccountSheet(props: {
         <Dialog.Popup
           ref={popup}
           className="sheet"
-          initialFocus={popup}
+          // A rename the owner just started in the table (a quick double-click
+          // opens the sheet first) keeps its field focused; otherwise the
+          // sheet takes focus itself, as always.
+          initialFocus={() =>
+            document.activeElement?.classList.contains("who-rename") === true
+              ? false
+              : popup.current
+          }
           finalFocus={
             returnFocus && account !== undefined
               ? () => openerOf(account.id) ?? document.getElementById("page-title")

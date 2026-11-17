@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { App } from "./App.tsx"
@@ -598,6 +598,22 @@ describe("review fixes", () => {
     await waitFor(() =>
       expect(document.activeElement).toBe(within(opened).getByRole("button", { name: "Rename" })),
     )
+  })
+
+  it("keeps the rename field after a very fast double-click, which opens the sheet first", async () => {
+    const daemon = threeAccounts()
+    const table = await show(daemon)
+    const label = within(table).getByRole("button", { name: "Work" })
+
+    act(() => {
+      fireEvent.click(label, { detail: 1 })
+      fireEvent.click(label, { detail: 2 })
+      fireEvent.doubleClick(label)
+    })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    const input = within(table).getByRole("textbox", { name: "Label for Work" })
+    await waitFor(() => expect(document.activeElement).toBe(input))
   })
 
   it("saves nothing when the browser cancels a drag", async () => {
