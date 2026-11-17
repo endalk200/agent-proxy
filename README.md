@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code and Codex at the daemon (`agent-proxy connect claude-code | codex`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts and Codex from your Codex (ChatGPT) accounts, and a dashboard of your accounts at its own address (`http://127.0.0.1:8318/` by default); opencode comes later.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code and Codex at the daemon (`agent-proxy connect claude-code | codex`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts and Codex from your Codex (ChatGPT) accounts, and a dashboard of your accounts that updates live at its own address (`http://127.0.0.1:8318/` by default); opencode comes later.
 
 ## Requirements
 
