@@ -35,7 +35,7 @@ Name only user paths, stable handles, commands, and observable results; leave im
 
 ## Features
 
-- [Accounts](./accounts.md): `accounts` and `accounts --json`, `accounts add claude` through the browser or a pasted callback URL, cancelling a login, and the account files.
+- [Accounts](./accounts.md): `accounts` and `accounts --json` with each pool's next account, `accounts add claude` through the browser or a pasted callback URL, cancelling a login, `accounts set`, `enable`, `disable` and `remove`, and the account files.
 - [Claude proxy](./claude-proxy.md): Claude Code's requests served as the highest-priority Active Claude account, the proxy key check, `HEAD /api/hello`, the "no account" errors, and passthrough of headers, limit headers and streams.
 - [Proxy key](./key.md): `key` and `key --rotate`, the key file, and the old key's refusal after rotation.
 - [Daemon](./daemon.md): `daemon run`, `start`, `stop`, and `status`, `/healthz`, the state file, the single-instance lock, JSON logs, and loading `config.toml`.
