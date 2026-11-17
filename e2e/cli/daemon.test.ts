@@ -6,6 +6,8 @@ import { FetchHttpClient, HttpClient } from "effect/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/process"
 import { TestClock } from "effect/testing"
 
+import { isAlive } from "../support/process.ts"
+
 // The daemon's lifecycle, black-box: the built binary in a sandbox whose
 // config binds any free port. Only commands, their output, the state file,
 // and HTTP are observed. Every test stops its daemon, even when it fails.
@@ -26,15 +28,6 @@ const Status = Schema.fromJsonString(
 
 const notRunning =
   "The agent-proxy daemon is not running. Start it with `agent-proxy daemon start`."
-
-const isAlive = (pid: number) => {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
 
 const sandboxed = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem

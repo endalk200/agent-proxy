@@ -4,6 +4,8 @@ import { expect, layer } from "@effect/vitest"
 import { Effect, FileSystem, Schedule, Schema } from "effect"
 import { TestClock } from "effect/testing"
 
+import { isAlive } from "../support/process.ts"
+
 // The credential keeper across a crash, black-box: the built daemon in a
 // sandbox refreshes a seeded account against a fake Claude token endpoint
 // that never answers, and is killed with SIGKILL mid-refresh. Only commands,
@@ -16,15 +18,6 @@ const Accounts = Schema.fromJsonString(
 )
 
 const StateFile = Schema.fromJsonString(Schema.Struct({ pid: Schema.Int }))
-
-const isAlive = (pid: number) => {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
 
 /** Waits for `condition`, checking every 20ms, failing after 5 seconds. */
 const eventually = (what: string, condition: () => boolean) =>
