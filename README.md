@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds and lists Claude accounts (`agent-proxy accounts`), and reports its setup (`info`); the daemon does not serve clients yet.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds and lists Claude accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts; Codex and opencode come later.
 
 ## Requirements
 
@@ -92,6 +92,26 @@ The daemon runs each login itself (ADR-0007), so it must be running. The sign-in
 A new account joins the bottom of its pool, labelled after its email unless `--label` names it. Signing in again to an account the daemon already holds updates its credentials in place and keeps its label, priority, and enabled setting.
 
 Accounts live in `$XDG_DATA_HOME/agent-proxy/accounts/`, by default `~/.local/share/agent-proxy/accounts/`: one file per account, readable only by you. Only the daemon writes them.
+
+## Serving Claude Code
+
+Every request to the proxy carries the proxy key, even on this machine. The daemon generates it on its first run and keeps it in `$XDG_DATA_HOME/agent-proxy/key`, readable only by you.
+
+```sh
+agent-proxy key            # print the key
+agent-proxy key --rotate   # replace it; the old key stops working at once
+```
+
+Point Claude Code at the daemon in `~/.claude/settings.json`, with the address `agent-proxy daemon status` shows:
+
+```json
+{
+  "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:8318" },
+  "apiKeyHelper": "agent-proxy key"
+}
+```
+
+Each request then goes to Claude as your highest-priority Active Claude account. Claude Code runs `agent-proxy key` again after a rejected key, so a rotated key takes effect without a restart. It shows "API Usage Billing", because it sees an API key; the requests still spend your subscription.
 
 ## Configuration
 
