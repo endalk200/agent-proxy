@@ -67,8 +67,11 @@ export const toAccountList = (accounts: ReadonlyArray<Account>): AccountList => 
 })
 
 /** `PATCH /api/accounts/:id`: change an account's settings; each one left out stays as it is. */
+/** A label: at least one character that is not a space; it is stored trimmed. */
+const Label = Schema.String.check(Schema.makeFilter((value) => value.trim() !== ""))
+
 export const UpdateAccount = Schema.Struct({
-  label: Schema.optionalKey(Schema.NonEmptyString),
+  label: Schema.optionalKey(Label),
   /** A position in the account's pool, 1 first; the others shift to make room. */
   priority: Schema.optionalKey(Schema.Int),
   /** A disabled account sits out of its pool and keeps its priority. */
@@ -112,7 +115,7 @@ export type LoginView = typeof LoginView.Type
 export const StartLogin = Schema.Struct({
   provider: Provider,
   /** The label for a new account, or a new label for an account signed in again. */
-  label: Schema.optionalKey(Schema.NonEmptyString),
+  label: Schema.optionalKey(Label),
 })
 export type StartLogin = typeof StartLogin.Type
 
