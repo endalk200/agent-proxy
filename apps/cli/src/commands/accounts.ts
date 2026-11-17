@@ -1,4 +1,5 @@
 import {
+  Clock,
   type Config,
   Console,
   Effect,
@@ -30,21 +31,49 @@ import { asUserError, userError } from "./errors.ts"
 
 const statusNames: Readonly<Record<AccountStatus, string>> = {
   active: "Active",
+  "cooling-down": "Cooling down",
   "needs-sign-in": "Needs sign-in",
   disabled: "Disabled",
 }
 
+const timeFormat = new Intl.DateTimeFormat("en-US", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+})
+const dayFormat = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" })
+
+/** `iso` in local time: "15:30" when it is today, else "Jun 1 15:30". */
+const clockText = (iso: string, now: number) => {
+  const date = new Date(iso)
+  const time = timeFormat.format(date)
+  return date.toDateString() === new Date(now).toDateString()
+    ? time
+    : `${dayFormat.format(date)} ${time}`
+}
+
+/** An account's status as the owner reads it, with when a cooldown ends. */
+const statusText = (account: AccountView, now: number) =>
+  account.status === "cooling-down" && account.cooldownEndsAt !== null
+    ? `${statusNames[account.status]} until ${clockText(account.cooldownEndsAt, now)}`
+    : statusNames[account.status]
+
 /** Which account a pool's new sessions go to, in a sentence. */
-const formatPool = (pool: PoolView, accounts: ReadonlyArray<AccountView>) => {
+const formatPool = (pool: PoolView, accounts: ReadonlyArray<AccountView>, now: number) => {
   const name = providerNames[pool.provider]
   const next = accounts.find((account) => account.id === pool.newSessionsAccountId)
-  return next === undefined
+  if (next !== undefined) return `New ${name} sessions go to "${next.label}".`
+  const firstFree = accounts
+    .filter((account) => account.provider === pool.provider)
+    .flatMap((account) => (account.cooldownEndsAt === null ? [] : [account.cooldownEndsAt]))
+    .toSorted()[0]
+  return firstFree === undefined
     ? `No ${name} account can take new sessions: each one needs sign-in or is disabled.`
-    : `New ${name} sessions go to "${next.label}".`
+    : `No ${name} account can take new sessions until ${clockText(firstFree, now)}, when the first cooldown ends.`
 }
 
 /** The accounts as an aligned table and who gets each pool's new sessions, or how to add the first one. */
-export const formatAccounts = ({ accounts, pools }: AccountList): string => {
+export const formatAccounts = ({ accounts, pools }: AccountList, now: number): string => {
   if (accounts.length === 0) {
     return "No accounts yet. Add one with `agent-proxy accounts add claude` or `agent-proxy accounts add codex`."
   }
@@ -56,7 +85,7 @@ export const formatAccounts = ({ accounts, pools }: AccountList): string => {
       account.email,
       account.plan,
       String(account.priority),
-      statusNames[account.status],
+      statusText(account, now),
     ]),
   ]
   const widths = rows[0]?.map((_, column) =>
@@ -69,7 +98,7 @@ export const formatAccounts = ({ accounts, pools }: AccountList): string => {
       )
       .join("  "),
   )
-  return [...table, "", ...pools.map((pool) => formatPool(pool, accounts))].join("\n")
+  return [...table, "", ...pools.map((pool) => formatPool(pool, accounts, now))].join("\n")
 }
 
 const jsonFlag = Flag.Boolean("json").pipe(
@@ -312,7 +341,9 @@ export const accountsCommand = Command.make(
   { json: jsonFlag },
   Effect.fn("accounts")(function* ({ json }) {
     const list = yield* listAccounts.pipe(Effect.mapError(asUserError))
-    yield* Console.log(json ? JSON.stringify(list, null, 2) : formatAccounts(list))
+    yield* Console.log(
+      json ? JSON.stringify(list, null, 2) : formatAccounts(list, yield* Clock.currentTimeMillis),
+    )
   }),
 ).pipe(
   Command.withDescription("List accounts with their status, or add, change or remove one"),

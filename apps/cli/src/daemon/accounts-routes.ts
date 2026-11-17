@@ -1,6 +1,7 @@
 import { Effect } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
+import { Router } from "../accounts/router.ts"
 import { AccountStore } from "../accounts/store.ts"
 import { Logins } from "../logins/logins.ts"
 import { StartLogin, SubmitCallback, toAccountList, toAccountView, UpdateAccount } from "./api.ts"
@@ -36,7 +37,8 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
       localOnly(
         Effect.gen(function* () {
           const accounts = yield* (yield* AccountStore).list
-          return HttpServerResponse.jsonUnsafe(toAccountList(accounts))
+          const routing = yield* (yield* Router).view
+          return HttpServerResponse.jsonUnsafe(toAccountList(accounts, routing))
         }).pipe(
           Effect.catchTag("AccountStoreError", (error) =>
             Effect.succeed(apiError(500, error.message)),
@@ -51,7 +53,8 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
         Effect.gen(function* () {
           const settings = yield* HttpServerRequest.schemaBodyJson(UpdateAccount)
           const account = yield* (yield* AccountStore).updateSettings(yield* pathId, settings)
-          return HttpServerResponse.jsonUnsafe(toAccountView(account))
+          const routing = yield* (yield* Router).view
+          return HttpServerResponse.jsonUnsafe(toAccountView(account, routing))
         }).pipe(
           Effect.catchTags({
             SchemaError: badRequest(updateAccountShape),
@@ -69,7 +72,8 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
       localOnly(
         Effect.gen(function* () {
           const account = yield* (yield* AccountStore).remove(yield* pathId)
-          return HttpServerResponse.jsonUnsafe(toAccountView(account))
+          const routing = yield* (yield* Router).view
+          return HttpServerResponse.jsonUnsafe(toAccountView(account, routing))
         }).pipe(
           Effect.catchTags({
             AccountNotFound: (error) => Effect.succeed(apiError(404, error.message)),
