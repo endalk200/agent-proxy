@@ -3,6 +3,7 @@ import { BunRuntime, BunServices } from "@effect/platform-bun"
 import { Cause, Effect, Exit, Layer, Runtime } from "effect"
 import { FetchHttpClient } from "effect/http"
 
+import { Browser } from "./browser.ts"
 import { main } from "./cli.ts"
 import { Processes } from "./processes.ts"
 import { ProviderEndpoints } from "./providers/endpoints.ts"
@@ -32,6 +33,7 @@ main.pipe(
       Processes.layerProcess,
       FetchHttpClient.layer,
       ProviderEndpoints.layer,
+      Browser.layerSystem.pipe(Layer.provide(BunServices.layer)),
     ),
   ),
   BunRuntime.runMain({ teardown }),

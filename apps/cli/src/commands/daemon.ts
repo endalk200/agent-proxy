@@ -1,5 +1,5 @@
 import { Console, Effect, FileSystem, Option, References, Schedule, Schema } from "effect"
-import { CliError, Command, Flag } from "effect/cli"
+import { Command, Flag } from "effect/cli"
 
 import { loadConfigFile } from "../config.ts"
 import { fetchDaemonInfo, isHealthy, type DaemonInfo } from "../daemon/client.ts"
@@ -7,12 +7,7 @@ import { startDaemon } from "../daemon/daemon.ts"
 import { readStateFile, stateFiles } from "../daemon/state.ts"
 import { resolveStateDir } from "../paths.ts"
 import { Processes } from "../processes.ts"
-
-/** Shows an error's own message to the user, without a stack trace. */
-const asUserError = (error: { readonly message: string }) =>
-  new CliError.UserError({ cause: error, userMessage: error.message })
-
-const userError = (userMessage: string) => new CliError.UserError({ cause: undefined, userMessage })
+import { asUserError, userError } from "./errors.ts"
 
 /** `45s`, `3m 12s`, `2h 5m`, `3d 4h`: the two largest units. */
 export const formatUptime = (totalSeconds: number): string => {
