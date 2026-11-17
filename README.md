@@ -93,6 +93,8 @@ A new account joins the bottom of its pool, labelled after its email unless `--l
 
 Accounts live in `$XDG_DATA_HOME/agent-proxy/accounts/`, by default `~/.local/share/agent-proxy/accounts/`: one file per account, readable only by you. Only the daemon writes them.
 
+The daemon keeps each account's tokens fresh: it refreshes a Claude account about an hour before its token expires, whether or not anything is using it. When a refresh is refused, or its outcome is lost (the connection drops after it was sent, or the daemon stops mid-refresh), the account shows **Needs sign-in** and serves nothing until you sign in to it again with `accounts add claude`. Refresh tokens work once, so a refresh that may have happened is never retried. A refresh that never reached Claude, or that Claude answered with an outage, is retried a few minutes later.
+
 ## Serving Claude Code
 
 Every request to the proxy carries the proxy key, even on this machine. The daemon generates it on its first run and keeps it in `$XDG_DATA_HOME/agent-proxy/key`, readable only by you.
@@ -111,7 +113,7 @@ Point Claude Code at the daemon in `~/.claude/settings.json`, with the address `
 }
 ```
 
-Each request then goes to Claude as your highest-priority Active Claude account. Claude Code runs `agent-proxy key` again after a rejected key, so a rotated key takes effect without a restart. It shows "API Usage Billing", because it sees an API key; the requests still spend your subscription.
+Each request then goes to Claude as your highest-priority Active Claude account. When Claude rejects that account's token, the daemon refreshes it once and retries the request on the same account. Claude Code runs `agent-proxy key` again after a rejected key, so a rotated key takes effect without a restart. It shows "API Usage Billing", because it sees an API key; the requests still spend your subscription.
 
 ## Configuration
 
