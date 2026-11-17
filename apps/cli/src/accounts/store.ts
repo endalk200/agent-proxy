@@ -13,6 +13,7 @@ import {
   Semaphore,
 } from "effect"
 
+import { ensurePrivateDirectory, writeFileAtomic } from "../atomic-file.ts"
 import { resolveDataDir } from "../paths.ts"
 import { Account, type Credentials, type Identity } from "./account.ts"
 
@@ -42,7 +43,7 @@ const storeError = (message: string) => (cause: unknown) =>
 /** Account files end in `.json`; anything else, such as a temp file a crash left, is ignored. */
 const isAccountFile = (name: string) => name.endsWith(".json") && !name.startsWith(".")
 
-/** A file `write` creates before renaming it over an account file. */
+/** A file `writeFileAtomic` creates before renaming it over an account file. */
 const isTempFile = (name: string) => name.startsWith(".") && name.endsWith(".tmp")
 
 /**
@@ -124,36 +125,20 @@ export class AccountStore extends Context.Service<
           .toSorted((a, b) => a.provider.localeCompare(b.provider) || a.priority - b.priority)
       }).pipe(Effect.mapError(storeError(`Could not read the accounts in ${dir}`)))
 
-      /** Both directories exist and are readable by the owner only, even if they existed before. */
-      const ensureDirectories = Effect.forEach(
-        [dataDir, dir],
-        (directory) =>
-          fs
-            .makeDirectory(directory, { recursive: true, mode: 0o700 })
-            .pipe(Effect.andThen(fs.chmod(directory, 0o700))),
-        { discard: true },
-      )
-
-      /**
-       * Replaces the account's file atomically: the new content goes to a
-       * temp file, is flushed to disk, and is renamed over the old file. A
-       * crash leaves the old file or the new one, never part of either.
-       */
+      /** Replaces the account's file atomically, both directories readable by the owner only. */
       const write = (account: Account) =>
         Effect.gen(function* () {
-          yield* ensureDirectories
-          const target = path.join(dir, `${account.id}.json`)
-          const temp = path.join(dir, `.${account.id}.json.${randomBytes(4).toString("hex")}.tmp`)
-          const content = new TextEncoder().encode(`${JSON.stringify(account, null, 2)}\n`)
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              const file = yield* fs.open(temp, { flag: "wx", mode: 0o600 })
-              yield* file.writeAll(content)
-              yield* file.sync
-            }),
+          yield* ensurePrivateDirectory(dataDir)
+          yield* ensurePrivateDirectory(dir)
+          yield* writeFileAtomic(
+            path.join(dir, `${account.id}.json`),
+            `${JSON.stringify(account, null, 2)}\n`,
           )
-          yield* fs.rename(temp, target)
-        }).pipe(Effect.mapError(storeError(`Could not save account ${account.id} in ${dir}`)))
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.mapError(storeError(`Could not save account ${account.id} in ${dir}`)),
+        )
 
       const upsert = Effect.fn("AccountStore.upsert")(
         function* (
