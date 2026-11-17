@@ -101,6 +101,8 @@ The account a command acts on is named by its label, its email (either ignoring 
 
 Accounts live in `$XDG_DATA_HOME/agent-proxy/accounts/`, by default `~/.local/share/agent-proxy/accounts/`: one file per account, readable only by you. Only the daemon writes them.
 
+The daemon keeps each account's tokens fresh: it refreshes a Claude account about an hour before its token expires, whether or not anything is using it. When a refresh is refused, or its outcome is lost (the connection drops after it was sent, or the daemon stops mid-refresh), the account shows **Needs sign-in** and serves nothing until you sign in to it again with `accounts add claude`. Refresh tokens work once, so a refresh that may have happened is never retried. A refresh that never reached Claude, or that Claude answered with an outage, is retried a few minutes later.
+
 ## Serving Claude Code
 
 Every request to the proxy carries the proxy key, even on this machine. The daemon generates it on its first run and keeps it in `$XDG_DATA_HOME/agent-proxy/key`, readable only by you.
@@ -130,7 +132,7 @@ It shows the change as a diff and writes only when you answer `y`. The old file 
 
 The address is the running daemon's. When the daemon is not running, `connect` uses the `listen` address in the config file, and fails if that is port 0, any free port, which is known only once the daemon runs.
 
-Each request then goes to Claude as your highest-priority Active Claude account. Claude Code runs `agent-proxy key` again after a rejected key, so a rotated key takes effect without a restart. It shows "API Usage Billing", because it sees an API key; the requests still spend your subscription.
+Each request then goes to Claude as your highest-priority Active Claude account. When Claude rejects that account's token, the daemon refreshes it once and retries the request on the same account. Claude Code runs `agent-proxy key` again after a rejected key, so a rotated key takes effect without a restart. It shows "API Usage Billing", because it sees an API key; the requests still spend your subscription.
 
 ## Configuration
 

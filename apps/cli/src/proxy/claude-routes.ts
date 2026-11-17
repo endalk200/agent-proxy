@@ -1,7 +1,14 @@
-import { Effect } from "effect"
-import { Headers, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
+import { Effect, Option } from "effect"
+import {
+  Headers,
+  type HttpClientResponse,
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/http"
 
-import { chooseAccount } from "../accounts/account.ts"
+import { type Account, chooseAccount } from "../accounts/account.ts"
+import { CredentialKeeper } from "../accounts/keeper.ts"
 import { AccountStore } from "../accounts/store.ts"
 import { ClaudeApi } from "../providers/claude-api.ts"
 import { ProxyKey } from "./proxy-key.ts"
@@ -11,7 +18,9 @@ import { ProxyKey } from "./proxy-key.ts"
  * which runs it) sends to `ANTHROPIC_BASE_URL`, per spike #6.
  *
  * - `POST /v1/messages` and `POST /v1/messages/count_tokens`, query string
- *   and all, go to Claude as the highest-priority Active Claude account.
+ *   and all, go to Claude as the highest-priority Active Claude account. When
+ *   Claude rejects its token (401), the token is refreshed once and the
+ *   request retried on the same account.
  * - `HEAD /api/hello`, Claude Code's startup check, is answered here without
  *   the proxy key, which it does not send.
  */
@@ -52,34 +61,61 @@ const presentedKey = (headers: Headers.Headers) => {
  */
 const NOT_RELAYED = ["connection", "keep-alive", "transfer-encoding", "content-length"]
 
+/** Why no Claude account can take the request. 400 is the status every client shows at once, with this message (spike #6). */
+const noAccount = (accounts: ReadonlyArray<Account>) =>
+  anthropicError(
+    400,
+    "invalid_request_error",
+    accounts.some((other) => other.provider === "claude")
+      ? "agent-proxy: no Claude account available, every account needs sign-in or is disabled. Run `agent-proxy accounts`."
+      : "agent-proxy: no Claude account. Add one with `agent-proxy accounts add claude`.",
+  )
+
+/** Claude's response, streamed to the client as it arrives. */
+const relay = (upstream: HttpClientResponse.HttpClientResponse) =>
+  HttpServerResponse.stream(upstream.stream, {
+    status: upstream.status,
+    headers: Headers.removeMany(upstream.headers, NOT_RELAYED),
+  })
+
+/** Reads and drops a response the client will not get, freeing its connection. */
+const discard = (upstream: HttpClientResponse.HttpClientResponse) =>
+  Effect.ignore(upstream.arrayBuffer)
+
 const forward = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest
   const presented = presentedKey(request.headers)
   if (presented === undefined) return noKey
   if (!(yield* (yield* ProxyKey).matches(presented))) return wrongKey
 
-  const accounts = yield* (yield* AccountStore).list
-  const account = chooseAccount(accounts, "claude")
-  if (account === undefined) {
-    // 400 is the status every client shows at once, with this message (spike #6).
-    return anthropicError(
-      400,
-      "invalid_request_error",
-      accounts.some((other) => other.provider === "claude")
-        ? "agent-proxy: no Claude account available, every account needs sign-in or is disabled. Run `agent-proxy accounts`."
-        : "agent-proxy: no Claude account. Add one with `agent-proxy accounts add claude`.",
-    )
-  }
-
   const body = new Uint8Array(yield* request.arrayBuffer)
-  const upstream = yield* (yield* ClaudeApi).send(
-    { method: "POST", url: request.url, headers: request.headers, body },
-    account.credentials.accessToken,
-  )
-  return HttpServerResponse.stream(upstream.stream, {
-    status: upstream.status,
-    headers: Headers.removeMany(upstream.headers, NOT_RELAYED),
-  })
+  const store = yield* AccountStore
+  const keeper = yield* CredentialKeeper
+  const claude = yield* ClaudeApi
+  const send = (accessToken: string) =>
+    claude.send({ method: "POST", url: request.url, headers: request.headers, body }, accessToken)
+
+  // An account can turn out unable to serve only once chosen, when its tokens
+  // cannot be refreshed; the choice is then made again without it.
+  for (;;) {
+    const accounts = yield* store.list
+    const account = chooseAccount(accounts, "claude")
+    if (account === undefined) return noAccount(accounts)
+    const credentials = yield* keeper.credentialsFor(account)
+    if (Option.isNone(credentials)) continue
+
+    const upstream = yield* send(credentials.value.accessToken)
+    if (upstream.status !== 401) return relay(upstream)
+
+    // Claude rejected the token: refresh once and retry on the same account.
+    const retry = yield* keeper.credentialsAfterRejection(account, credentials.value.accessToken)
+    if (Option.isSome(retry) && retry.value.accessToken === credentials.value.accessToken) {
+      return relay(upstream)
+    }
+    yield* discard(upstream)
+    if (Option.isNone(retry)) continue
+    return relay(yield* send(retry.value.accessToken))
+  }
 }).pipe(
   Effect.catchTags({
     AccountStoreError: (error) => Effect.succeed(anthropicError(500, "api_error", error.message)),

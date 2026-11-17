@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto"
 
-import { Data, Effect } from "effect"
+import { Data, type Duration, Effect } from "effect"
 
 import type { Credentials, Identity, Provider } from "../accounts/account.ts"
 
@@ -56,3 +56,41 @@ export const makePkce = Effect.sync(() => {
     state: randomBytes(32).toString("base64url"),
   }
 })
+
+/**
+ * The provider refused the refresh for good: the refresh token is invalid,
+ * already used, or revoked. Only signing in again brings the account back.
+ */
+export class RefreshRejected extends Data.TaggedError("RefreshRejected")<{
+  readonly reason: string
+}> {}
+
+/**
+ * The refresh may or may not have happened: it was sent, but no answer was
+ * read. Refresh tokens are single-use, so it must never be replayed.
+ */
+export class RefreshOutcomeUnknown extends Data.TaggedError("RefreshOutcomeUnknown")<{
+  readonly reason: string
+  readonly cause?: unknown
+}> {}
+
+/**
+ * The refresh did not happen and the account's tokens still stand: the
+ * provider could not be reached, or answered that it is overloaded. A later
+ * refresh may succeed.
+ */
+export class RefreshUnavailable extends Data.TaggedError("RefreshUnavailable")<{
+  readonly reason: string
+  readonly cause?: unknown
+}> {}
+
+export type RefreshError = RefreshRejected | RefreshOutcomeUnknown | RefreshUnavailable
+
+/** What every provider adapter offers for keeping an account's tokens fresh. */
+export interface TokenAdapter {
+  readonly provider: Provider
+  /** How long before its access token expires an account is refreshed. */
+  readonly refreshLead: Duration.Duration
+  /** Exchanges a refresh token, once, for a new token pair. */
+  readonly refresh: (refreshToken: string) => Effect.Effect<Credentials, RefreshError>
+}

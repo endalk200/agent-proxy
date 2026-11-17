@@ -17,6 +17,7 @@ import { ensurePrivateDirectory, writeFileAtomic } from "../atomic-file.ts"
 import { resolveDataDir } from "../paths.ts"
 import {
   Account,
+  type CredentialState,
   type Credentials,
   type Identity,
   type Provider,
@@ -123,6 +124,17 @@ export class AccountStore extends Context.Service<
      * was. The accounts below it in its pool move up one place.
      */
     readonly remove: (id: string) => Effect.Effect<Account, AccountStoreError | AccountNotFound>
+    /**
+     * Changes the credential state of account `id` to what `change` makes of
+     * the account as currently stored, persisted before this returns. The
+     * owner's settings are left alone. `change` returns `undefined` to leave
+     * the account unchanged. Returns the account as stored afterwards, or
+     * none when there is no account `id`.
+     */
+    readonly updateCredentials: (
+      id: string,
+      change: (account: Account) => CredentialState | undefined,
+    ) => Effect.Effect<Option.Option<Account>, AccountStoreError>
   }
 >()("agent-proxy/AccountStore") {
   /** The store in the data directory resolved from the environment. */
@@ -218,8 +230,10 @@ export class AccountStore extends Context.Service<
               account.providerAccountId === identity.providerAccountId,
           )
           if (existing !== undefined) {
+            // A fresh sign-in settles any refresh a stopped daemon left unrecorded.
+            const { refreshStartedAt: _settled, ...kept } = existing
             const account: Account = {
-              ...existing,
+              ...kept,
               email: identity.email,
               plan: identity.plan,
               label: options.label?.trim() ?? existing.label,
@@ -322,7 +336,43 @@ export class AccountStore extends Context.Service<
         ),
       )
 
-      return AccountStore.of({ list, upsert, updateSettings, remove })
+      const updateCredentials = Effect.fn("AccountStore.updateCredentials")(
+        function* (id: string, change: (account: Account) => CredentialState | undefined) {
+          const file = `${id}.json`
+          // A file removed meanwhile stays removed: never written back.
+          if (!isAccountFile(file) || !(yield* fs.exists(path.join(dir, file)))) {
+            return Option.none<Account>()
+          }
+          const stored = yield* read(file)
+          if (Option.isNone(stored)) return stored
+          const next = change(stored.value)
+          if (next === undefined) return stored
+          const {
+            credentials: _old,
+            needsSignIn: _flag,
+            refreshStartedAt: _marker,
+            ...rest
+          } = stored.value
+          const account: Account = { ...rest, ...next }
+          yield* write(account)
+          return Option.some(account)
+        },
+        (effect) =>
+          writes.withPermit(
+            effect.pipe(
+              Effect.catchTag("PlatformError", (cause) =>
+                Effect.fail(
+                  new AccountStoreError({
+                    message: `Could not read the accounts in ${dir}`,
+                    cause,
+                  }),
+                ),
+              ),
+            ),
+          ),
+      )
+
+      return AccountStore.of({ list, upsert, updateSettings, remove, updateCredentials })
     }),
   )
 }
