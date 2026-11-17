@@ -21,3 +21,16 @@ export const resolveConfigPath = Effect.gen(function* () {
     : path.join(yield* Config.NonEmptyString("HOME"), ".config")
   return path.join(configHome, "agent-proxy", "config.toml")
 })
+
+/**
+ * Where the daemon keeps its lock, state file, and logs:
+ * `$XDG_STATE_HOME/agent-proxy`, else `$HOME/.local/state/agent-proxy`.
+ */
+export const resolveStateDir = Effect.gen(function* () {
+  const path = yield* Path.Path
+  const xdgStateHome = yield* Config.option(Config.NonEmptyString("XDG_STATE_HOME"))
+  const stateHome = Option.isSome(xdgStateHome)
+    ? xdgStateHome.value
+    : path.join(yield* Config.NonEmptyString("HOME"), ".local", "state")
+  return path.join(stateHome, "agent-proxy")
+})

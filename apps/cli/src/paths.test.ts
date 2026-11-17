@@ -1,7 +1,7 @@
 import { expect, layer } from "@effect/vitest"
 import { ConfigProvider, Effect, Path } from "effect"
 
-import { resolveConfigPath } from "./paths.ts"
+import { resolveConfigPath, resolveStateDir } from "./paths.ts"
 
 const resolveWith = (env: Record<string, string>) =>
   resolveConfigPath.pipe(
@@ -38,6 +38,30 @@ layer(Path.layer)("resolveConfigPath", (it) => {
     Effect.gen(function* () {
       const error = yield* Effect.flip(resolveWith({}))
       expect(error._tag).toBe("ConfigError")
+    }),
+  )
+
+  it.effect("keeps daemon state under XDG_STATE_HOME", () =>
+    Effect.gen(function* () {
+      const dir = yield* resolveStateDir.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromEnvRecord({ XDG_STATE_HOME: "/state", HOME: "/home/me" }),
+        ),
+      )
+      expect(dir).toBe("/state/agent-proxy")
+    }),
+  )
+
+  it.effect("keeps daemon state under HOME/.local/state without XDG_STATE_HOME", () =>
+    Effect.gen(function* () {
+      const dir = yield* resolveStateDir.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromEnvRecord({ HOME: "/home/me" }),
+        ),
+      )
+      expect(dir).toBe("/home/me/.local/state/agent-proxy")
     }),
   )
 })
