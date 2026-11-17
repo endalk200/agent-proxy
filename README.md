@@ -96,7 +96,7 @@ The daemon runs each login itself (ADR-0007), so it must be running. A Claude si
 
 A new account joins the bottom of its pool, labelled after its email unless `--label` names it. Signing in again to an account the daemon already holds updates its credentials in place and keeps its priority and enabled setting, and its label unless `--label` gives a new one.
 
-`accounts` ends with which account gets each pool's new sessions: the highest-priority Active one. Priority is a place in the pool: moving an account to priority 1 moves the others down one place, and removing one moves those below it up. A disabled account keeps its place, so enabling it returns it there. Removing an account deletes its file at once; a request it is already serving still finishes, and the next one goes to the next account.
+`accounts` ends with which account gets each pool's new sessions: the highest-priority Active one (see [Sessions and limits](#sessions-and-limits)). An account that hit a limit shows **Cooling down** with the local time its cooldown ends, such as `Cooling down until 15:30`, and `--json` gives that end as `cooldownEndsAt`. Priority is a place in the pool: moving an account to priority 1 moves the others down one place, and removing one moves those below it up. A disabled account keeps its place, so enabling it returns it there. Removing an account deletes its file at once; a request it is already serving still finishes, and the next one goes to the next account.
 
 The account a command acts on is named by its label, its email (either ignoring case), or the start of its id from `accounts --json`. A name that fits several accounts fails and lists them with their ids.
 
@@ -133,7 +133,7 @@ It shows the change as a diff and writes only when you answer `y`. The old file 
 
 The address is the running daemon's. When the daemon is not running, `connect` uses the `listen` address in the config file, and fails if that is port 0, any free port, which is known only once the daemon runs.
 
-Each request then goes to Claude as your highest-priority Active Claude account. When Claude rejects that account's token, the daemon refreshes it once and retries the request on the same account. Claude Code runs `agent-proxy key` again after a rejected key, so a rotated key takes effect without a restart. It shows "API Usage Billing", because it sees an API key; the requests still spend your subscription.
+Each request then goes to Claude as one of your Claude accounts, chosen as [Sessions and limits](#sessions-and-limits) describes. When Claude rejects that account's token, the daemon refreshes it once and retries the request on the same account. Claude Code runs `agent-proxy key` again after a rejected key, so a rotated key takes effect without a restart. It shows "API Usage Billing", because it sees an API key; the requests still spend your subscription.
 
 ## Serving Codex
 
@@ -149,7 +149,19 @@ wire_api = "responses"
 auth = { command = "agent-proxy", args = ["key"] }
 ```
 
-Leave `supports_websockets` unset. The daemon serves `POST /responses` (streamed), `GET /models` and `POST /alpha/search` under `/backend-api/codex` from `chatgpt.com`, as your highest-priority Active Codex account: it puts that account's token in `Authorization` and its ChatGPT workspace in `chatgpt-account-id`, and passes everything else through, the `x-codex-*` limit headers included. It refuses a WebSocket upgrade with 426, and Codex falls back to HTTP. When the backend rejects the account's token, the daemon refreshes it once and retries on the same account. opencode's OpenAI Responses provider works with the same base URL and the key as its `apiKey`.
+Leave `supports_websockets` unset. The daemon serves `POST /responses` (streamed), `GET /models` and `POST /alpha/search` under `/backend-api/codex` from `chatgpt.com`, as one of your Codex accounts, chosen as [Sessions and limits](#sessions-and-limits) describes: it puts that account's token in `Authorization` and its ChatGPT workspace in `chatgpt-account-id`, and passes everything else through, the `x-codex-*` limit headers included. It refuses a WebSocket upgrade with 426, and Codex falls back to HTTP. When the backend rejects the account's token, the daemon refreshes it once and retries on the same account. opencode's OpenAI Responses provider works with the same base URL and the key as its `apiKey`.
+
+## Sessions and limits
+
+A session stays on one account, so the provider's prompt cache keeps working (ADR-0003). The daemon knows a session by what the client sends: Claude Code's `x-claude-code-session-id` (its subagents send their parent's), Codex's `session-id`, or, from opencode, the body's `prompt_cache_key`. A session's first request goes to the highest-priority Active account of its pool; accounts that share a priority, which happens only when a change was interrupted, go to the one with the most headroom left in its usage windows. The session then stays on that account until the account stops being Active or the session sits idle for an hour. A request that names no session is routed afresh every time. Sessions live in memory only.
+
+When an account hits a limit, the daemon cools it down for as long as the provider says:
+
+- a Claude window rejection (`anthropic-ratelimit-unified-*-status: rejected`) until that window resets;
+- a Codex `usage_limit_reached` until its `resets_at`, for every model the account serves;
+- any other 429, such as a per-minute rate limit, for its `Retry-After` only.
+
+If nothing has reached the client yet, the request goes straight to the next account and the session moves with it, so the client never notices. A failure after the answer has started streaming reaches the client as it is. When every account in the pool is cooling down, the client gets the provider's own limit answer with the earliest reset: Claude Code shows the limit and when it resets, and Codex shows its usage-limit message. When every account needs sign-in or is disabled, the client gets a 400 saying so at once. Cooldowns live in memory; after a restart, the next limit answer starts them again.
 
 ## Configuration
 
