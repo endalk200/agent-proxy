@@ -4,7 +4,6 @@ import { Tabs } from "@base-ui/react/tabs"
 import { type ReactNode, useId, useRef, useState } from "react"
 
 import { type AccountControls, LabelInput } from "./AccountsPage.tsx"
-import { CommandLine } from "./ConnectClients.tsx"
 import type { Account, AccountList } from "./daemon-api.ts"
 import {
   accountsOf,
@@ -406,13 +405,17 @@ function StatusCard(props: { account: Account; list: AccountList; controls: Acco
             Enable
           </button>
         )}
+        {account.status === "needs-sign-in" && (
+          <button
+            type="button"
+            className="btn btn-sm is-primary"
+            disabled={props.controls.readOnly}
+            onClick={() => props.controls.signIn({ kind: "again", account })}
+          >
+            Sign in again
+          </button>
+        )}
       </div>
-      {account.status === "needs-sign-in" && (
-        <div className="statuscard-action">
-          <span>Sign in again from a terminal:</span>
-          <CommandLine command={`agent-proxy accounts add ${account.provider}`} />
-        </div>
-      )}
     </section>
   )
 }
