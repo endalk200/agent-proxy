@@ -150,7 +150,31 @@ const makeHome = (
       return cli(["accounts", "add", "claude", ...extra])
     }
 
-    return { cli, runDaemon, printed, typed, add }
+    /** The accounts and pools `accounts --json` reports. */
+    const list = Effect.flatMap(cli(["accounts", "--json"]), (json) =>
+      Schema.decodeEffect(Schema.fromJsonString(AccountList))(json),
+    )
+
+    /** `<priority> <label>` for each account, in the order `accounts` lists them. */
+    const order = Effect.map(list, ({ accounts }) =>
+      accounts.map(
+        (account) => `${account.priority} ${account.label}${account.enabled ? "" : " (disabled)"}`,
+      ),
+    )
+
+    /** Runs a command that should fail, and returns the message the owner sees. */
+    const fails = (argv: ReadonlyArray<string>) =>
+      Effect.map(Effect.flip(cli(argv)), (error) =>
+        error._tag === "UserError" ? error.userMessage : String(error),
+      )
+
+    /** The account files the daemon keeps. */
+    const accountFiles = Effect.gen(function* () {
+      const dir = `${env.XDG_DATA_HOME}/agent-proxy/accounts`
+      return (yield* fs.exists(dir)) ? (yield* fs.readDirectory(dir)).toSorted() : []
+    })
+
+    return { cli, runDaemon, printed, typed, add, list, order, fails, accountFiles }
   })
 
 layer(
@@ -167,8 +191,15 @@ layer(
         const home = yield* makeHome(yield* fakeClaude)
         const error = yield* Effect.flip(home.cli(["accounts"]))
         expect(error._tag === "UserError" && error.userMessage).toBe(notRunning)
-        const addError = yield* Effect.flip(home.cli(["accounts", "add", "claude"]))
-        expect(addError._tag === "UserError" && addError.userMessage).toBe(notRunning)
+        for (const argv of [
+          ["accounts", "add", "claude"],
+          ["accounts", "set", "Work", "--label", "Home"],
+          ["accounts", "enable", "Work"],
+          ["accounts", "disable", "Work"],
+          ["accounts", "remove", "Work"],
+        ]) {
+          expect(yield* home.fails(argv)).toBe(notRunning)
+        }
       }),
     ),
   )
@@ -250,6 +281,8 @@ layer(
             "PROVIDER  LABEL         EMAIL              PLAN     PRIORITY  STATUS",
             "claude    Personal Max  alice@example.com  Max 20x  1         Active",
             "claude    bob           bob@example.com    Pro      2         Active",
+            "",
+            'New Claude sessions go to "Personal Max".',
           ].join("\n"),
         )
       }),
@@ -290,7 +323,7 @@ layer(
         expect(again).toMatch(
           /Signed in again to Claude account "Work" \(alice@example\.com, Max 20x\); its credentials are updated\.$/,
         )
-        expect((yield* home.cli(["accounts"])).split("\n")).toHaveLength(2)
+        expect((yield* home.cli(["accounts"])).match(/alice@example\.com/g)).toHaveLength(1)
       }),
     ),
   )
@@ -352,6 +385,138 @@ layer(
         )
         expect(late._tag).toBe("Failure")
         expect(yield* home.cli(["accounts"])).toMatch(/^No accounts yet/)
+      }),
+    ),
+  )
+
+  it.effect("accounts set renames an account picked by its label, email or id prefix", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.runDaemon
+        yield* home.add(alice)
+        yield* home.add(bob)
+
+        expect(yield* home.cli(["accounts", "set", "bob", "--label", "Spare"])).toBe(
+          'Renamed Claude account "bob" (bob@example.com) to "Spare".',
+        )
+        expect(yield* home.cli(["accounts", "set", "ALICE@example.com", "--label", "Work"])).toBe(
+          'Renamed Claude account "alice" (alice@example.com) to "Work".',
+        )
+        const spare = (yield* home.list).accounts.find((account) => account.label === "Spare")
+        yield* home.cli(["accounts", "set", (spare?.id ?? "").slice(0, 6), "--label", "Personal"])
+        expect(yield* home.order).toEqual(["1 Work", "2 Personal"])
+      }),
+    ),
+  )
+
+  it.effect(
+    "an <account> naming several accounts fails and lists them; one naming none says so",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome(yield* fakeClaude)
+          yield* home.runDaemon
+          yield* home.add(alice, ["--label", "Work"])
+          yield* home.add(bob, ["--label", "work"])
+          const [work, bobs] = (yield* home.list).accounts
+
+          expect(yield* home.fails(["accounts", "disable", "Work"])).toBe(
+            [
+              '"Work" matches 2 accounts. Name one by its label, its email, or enough of its id:',
+              `  ${work?.id}  Claude  "Work"  alice@example.com`,
+              `  ${bobs?.id}  Claude  "work"  bob@example.com`,
+            ].join("\n"),
+          )
+          expect(yield* home.fails(["accounts", "remove", "carol"])).toBe(
+            'No account matches "carol". Run `agent-proxy accounts` to see each one\'s label and email.',
+          )
+          expect(yield* home.order).toEqual(["1 Work", "2 work"])
+        }),
+      ),
+  )
+
+  it.effect("accounts set --priority moves an account within its pool, shifting the others", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.runDaemon
+        yield* home.add(alice)
+        yield* home.add(bob)
+
+        expect(yield* home.cli(["accounts", "set", "bob", "--priority", "1"])).toBe(
+          'Moved Claude account "bob" (bob@example.com) to priority 1.',
+        )
+        expect(yield* home.order).toEqual(["1 bob", "2 alice"])
+        expect(yield* home.fails(["accounts", "set", "bob", "--priority", "3"])).toBe(
+          "The Claude pool has 2 accounts, so a priority is 1 or 2.",
+        )
+        expect(yield* home.fails(["accounts", "set", "bob"])).toBe(
+          "Nothing to change. Give --label, --priority, or both.",
+        )
+        expect(yield* home.fails(["accounts", "set", "bob", "--label", " "])).toBe(
+          "A label cannot be blank.",
+        )
+        expect(
+          yield* home.cli(["accounts", "set", "bob", "--label", "Spare", "--priority", "2"]),
+        ).toBe(
+          [
+            'Renamed Claude account "bob" (bob@example.com) to "Spare".',
+            'Moved Claude account "Spare" (bob@example.com) to priority 2.',
+          ].join("\n"),
+        )
+        expect(yield* home.order).toEqual(["1 alice", "2 Spare"])
+      }),
+    ),
+  )
+
+  it.effect(
+    "accounts disable keeps an account out of its pool at its priority; enable restores it",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome(yield* fakeClaude)
+          yield* home.runDaemon
+          yield* home.add(alice, ["--label", "Work"])
+          yield* home.add(bob)
+
+          expect(yield* home.cli(["accounts", "disable", "work"])).toBe(
+            'Disabled Claude account "Work" (alice@example.com). It keeps priority 1.',
+          )
+          expect(yield* home.order).toEqual(["1 Work (disabled)", "2 bob"])
+          expect(yield* home.cli(["accounts"])).toMatch(
+            /Work .* Disabled\n.*\n\nNew Claude sessions go to "bob"\.$/,
+          )
+          yield* home.cli(["accounts", "disable", "bob"])
+          expect(yield* home.cli(["accounts"])).toMatch(
+            /\n\nNo Claude account can take new sessions: each one needs sign-in or is disabled\.$/,
+          )
+
+          expect(yield* home.cli(["accounts", "enable", "Work"])).toBe(
+            'Enabled Claude account "Work" (alice@example.com) at priority 1.',
+          )
+          const { accounts, pools } = yield* home.list
+          expect(pools).toEqual([{ provider: "claude", newSessionsAccountId: accounts[0]?.id }])
+          expect(yield* home.order).toEqual(["1 Work", "2 bob (disabled)"])
+        }),
+      ),
+  )
+
+  it.effect("accounts remove deletes the account's file, and the accounts below move up", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.runDaemon
+        yield* home.add(alice, ["--label", "Work"])
+        yield* home.add(bob)
+        const [work] = (yield* home.list).accounts
+
+        expect(yield* home.cli(["accounts", "remove", "alice@example.com"])).toBe(
+          'Removed Claude account "Work" (alice@example.com) and its credentials.',
+        )
+        expect(yield* home.order).toEqual(["1 bob"])
+        expect(yield* home.accountFiles).toHaveLength(1)
+        expect(yield* home.accountFiles).not.toContain(`${work?.id}.json`)
       }),
     ),
   )

@@ -11,9 +11,9 @@ import {
 import { Argument, Command, Flag } from "effect/cli"
 import type { HttpClient } from "effect/http"
 
-import type { AccountStatus, Provider } from "../accounts/account.ts"
+import { type AccountStatus, providerNames } from "../accounts/account.ts"
 import { Browser } from "../browser.ts"
-import type { AccountView, LoginView } from "../daemon/api.ts"
+import type { AccountList, AccountView, LoginView, PoolView } from "../daemon/api.ts"
 import {
   cancelLogin,
   type DaemonApiError,
@@ -21,12 +21,12 @@ import {
   type DaemonUnexpectedResponse,
   getLogin,
   listAccounts,
+  removeAccount,
   startLogin,
   submitCallback,
+  updateAccount,
 } from "../daemon/client.ts"
 import { asUserError, userError } from "./errors.ts"
-
-const providerNames: Readonly<Record<Provider, string>> = { claude: "Claude" }
 
 const statusNames: Readonly<Record<AccountStatus, string>> = {
   active: "Active",
@@ -34,8 +34,17 @@ const statusNames: Readonly<Record<AccountStatus, string>> = {
   disabled: "Disabled",
 }
 
-/** The accounts as an aligned table, or how to add the first one. */
-export const formatAccounts = (accounts: ReadonlyArray<AccountView>): string => {
+/** Which account a pool's new sessions go to, in a sentence. */
+const formatPool = (pool: PoolView, accounts: ReadonlyArray<AccountView>) => {
+  const name = providerNames[pool.provider]
+  const next = accounts.find((account) => account.id === pool.newSessionsAccountId)
+  return next === undefined
+    ? `No ${name} account can take new sessions: each one needs sign-in or is disabled.`
+    : `New ${name} sessions go to "${next.label}".`
+}
+
+/** The accounts as an aligned table and who gets each pool's new sessions, or how to add the first one. */
+export const formatAccounts = ({ accounts, pools }: AccountList): string => {
   if (accounts.length === 0) {
     return "No accounts yet. Add one with `agent-proxy accounts add claude`."
   }
@@ -53,15 +62,14 @@ export const formatAccounts = (accounts: ReadonlyArray<AccountView>): string => 
   const widths = rows[0]?.map((_, column) =>
     Math.max(...rows.map((row) => row[column]?.length ?? 0)),
   )
-  return rows
-    .map((row) =>
-      row
-        .map((cell, column) =>
-          column === row.length - 1 ? cell : cell.padEnd(widths?.[column] ?? 0),
-        )
-        .join("  "),
-    )
-    .join("\n")
+  const table = rows.map((row) =>
+    row
+      .map((cell, column) =>
+        column === row.length - 1 ? cell : cell.padEnd(widths?.[column] ?? 0),
+      )
+      .join("  "),
+  )
+  return [...table, "", ...pools.map((pool) => formatPool(pool, accounts))].join("\n")
 }
 
 const jsonFlag = Flag.Boolean("json").pipe(
@@ -183,14 +191,130 @@ const add = Command.make(
   ),
 )
 
+/**
+ * The account an `<account>` argument names: the one whose label or email is
+ * `query`, ignoring case, or whose id starts with it. Naming none, or more
+ * than one, fails with a message listing what it could mean.
+ */
+const findAccount = (query: string) =>
+  Effect.gen(function* () {
+    const { accounts } = yield* listAccounts.pipe(Effect.mapError(asUserError))
+    const wanted = query.trim().toLowerCase()
+    const matches =
+      wanted === ""
+        ? []
+        : accounts.filter(
+            (account) =>
+              account.label.toLowerCase() === wanted ||
+              account.email.toLowerCase() === wanted ||
+              account.id.toLowerCase().startsWith(wanted),
+          )
+    const [match] = matches
+    if (match === undefined) {
+      return yield* userError(
+        `No account matches "${query}". Run \`agent-proxy accounts\` to see each one's label and email.`,
+      )
+    }
+    if (matches.length > 1) {
+      const candidates = matches.map(
+        (account) =>
+          `  ${account.id}  ${providerNames[account.provider]}  "${account.label}"  ${account.email}`,
+      )
+      return yield* userError(
+        [
+          `"${query}" matches ${matches.length} accounts. Name one by its label, its email, or enough of its id:`,
+          ...candidates,
+        ].join("\n"),
+      )
+    }
+    return match
+  })
+
+/** How an account is named in what the commands print. */
+const describe = (account: AccountView) =>
+  `${providerNames[account.provider]} account "${account.label}" (${account.email})`
+
+const accountArgument = Argument.String("account").pipe(
+  Argument.withDescription("The account's label, email, or the start of its id"),
+)
+
+const set = Command.make(
+  "set",
+  {
+    account: accountArgument,
+    label: Flag.String("label").pipe(Flag.optional, Flag.withDescription("A new label")),
+    priority: Flag.Int("priority").pipe(
+      Flag.optional,
+      Flag.withDescription("A new place in its pool, 1 first; the others shift to make room"),
+    ),
+  },
+  Effect.fn("accounts.set")(function* ({ account: query, label, priority }) {
+    if (Option.isNone(label) && Option.isNone(priority)) {
+      return yield* userError("Nothing to change. Give --label, --priority, or both.")
+    }
+    if (Option.isSome(label) && label.value.trim() === "") {
+      return yield* userError("A label cannot be blank.")
+    }
+    const before = yield* findAccount(query)
+    const after = yield* updateAccount(before.id, {
+      ...(Option.isSome(label) ? { label: label.value.trim() } : {}),
+      ...(Option.isSome(priority) ? { priority: priority.value } : {}),
+    }).pipe(Effect.mapError(asUserError))
+    if (Option.isSome(label)) {
+      yield* Console.log(`Renamed ${describe(before)} to "${after.label}".`)
+    }
+    if (Option.isSome(priority)) {
+      yield* Console.log(`Moved ${describe(after)} to priority ${after.priority}.`)
+    }
+  }),
+).pipe(Command.withDescription("Change an account's label or its priority in its pool"))
+
+const enable = Command.make(
+  "enable",
+  { account: accountArgument },
+  Effect.fn("accounts.enable")(function* ({ account: query }) {
+    const before = yield* findAccount(query)
+    const after = yield* updateAccount(before.id, { enabled: true }).pipe(
+      Effect.mapError(asUserError),
+    )
+    yield* Console.log(`Enabled ${describe(after)} at priority ${after.priority}.`)
+  }),
+).pipe(Command.withDescription("Put an account back in its pool, at its priority"))
+
+const disable = Command.make(
+  "disable",
+  { account: accountArgument },
+  Effect.fn("accounts.disable")(function* ({ account: query }) {
+    const before = yield* findAccount(query)
+    const after = yield* updateAccount(before.id, { enabled: false }).pipe(
+      Effect.mapError(asUserError),
+    )
+    yield* Console.log(`Disabled ${describe(after)}. It keeps priority ${after.priority}.`)
+  }),
+).pipe(Command.withDescription("Keep an account out of its pool without removing it"))
+
+const remove = Command.make(
+  "remove",
+  { account: accountArgument },
+  Effect.fn("accounts.remove")(function* ({ account: query }) {
+    const account = yield* findAccount(query)
+    const removed = yield* removeAccount(account.id).pipe(Effect.mapError(asUserError))
+    yield* Console.log(`Removed ${describe(removed)} and its credentials.`)
+  }),
+).pipe(
+  Command.withDescription(
+    "Forget an account and its credentials; requests it is serving still finish",
+  ),
+)
+
 export const accountsCommand = Command.make(
   "accounts",
   { json: jsonFlag },
   Effect.fn("accounts")(function* ({ json }) {
-    const { accounts } = yield* listAccounts.pipe(Effect.mapError(asUserError))
-    yield* Console.log(json ? JSON.stringify({ accounts }, null, 2) : formatAccounts(accounts))
+    const list = yield* listAccounts.pipe(Effect.mapError(asUserError))
+    yield* Console.log(json ? JSON.stringify(list, null, 2) : formatAccounts(list))
   }),
 ).pipe(
-  Command.withDescription("List accounts with their status, or add one"),
-  Command.withSubcommands([add]),
+  Command.withDescription("List accounts with their status, or add, change or remove one"),
+  Command.withSubcommands([add, set, enable, disable, remove]),
 )
