@@ -225,6 +225,21 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
       )
     }
 
+    it.effect("a Codex refresh answered with a redirect is never sent again, there or here", () =>
+      Effect.gen(function* () {
+        const codex = yield* fakeOpenAi
+        const home = yield* makeHome(codex)
+        yield* home.signIn
+        // Back to the token endpoint itself: following it would send the token twice.
+        codex.redirectNextRefresh(codex.endpoints.tokenUrl)
+
+        yield* untilRefreshDue
+        yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+        yield* TestClock.adjust("2 hours")
+        expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
+      }),
+    )
+
     it.effect("a Codex refresh whose connection drops after sending is never retried", () =>
       Effect.gen(function* () {
         const codex = yield* fakeOpenAi

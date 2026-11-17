@@ -26,12 +26,21 @@ export interface CodexUser {
   readonly accountId: string
   readonly email: string
   readonly planType: string
+  /** The id_token carries the email only in its `https://api.openai.com/profile` claim. */
+  readonly emailInProfile?: boolean
 }
 
 export const carol: CodexUser = {
   accountId: "5e1d1c3a-cccc-4c4c-8c8c-000000000003",
   email: "carol@example.com",
   planType: "pro",
+}
+
+export const erin: CodexUser = {
+  accountId: "5e1d1c3a-eeee-4e4e-8e8e-000000000005",
+  email: "erin@example.com",
+  planType: "plus",
+  emailInProfile: true,
 }
 
 export const dave: CodexUser = {
@@ -101,6 +110,7 @@ const answerResponse: ApiHandler = () =>
 type RefreshTrouble =
   | { readonly _tag: "Drop" }
   | { readonly _tag: "Refuse"; readonly status: number; readonly body: unknown }
+  | { readonly _tag: "Redirect"; readonly location: string }
 
 export interface FakeCodex {
   readonly endpoints: CodexEndpoints
@@ -122,6 +132,8 @@ export interface FakeCodex {
   readonly dropNextRefresh: () => void
   /** The next refresh request gets `status` and `body` instead of new tokens. */
   readonly refuseNextRefresh: (status: number, body: unknown) => void
+  /** The next refresh request is redirected (307) to `location`, as a misbehaving endpoint might. */
+  readonly redirectNextRefresh: (location: string) => void
   /**
    * Later token answers leave out `expires_in`, so the access token's own
    * `exp` claim is the only word on when it expires.
@@ -157,7 +169,9 @@ export const fakeCodex = Effect.gen(function* () {
     refreshTokens.set(refreshToken, owner)
     return json({
       id_token: jwt({
-        email: owner.email,
+        ...(owner.emailInProfile === true
+          ? { "https://api.openai.com/profile": { email: owner.email } }
+          : { email: owner.email }),
         exp,
         "https://api.openai.com/auth": {
           chatgpt_account_id: owner.accountId,
@@ -191,6 +205,9 @@ export const fakeCodex = Effect.gen(function* () {
       )
     }
     if (trouble?._tag === "Refuse") return json(trouble.body, trouble.status)
+    if (trouble?._tag === "Redirect") {
+      return new Response(null, { status: 307, headers: { location: trouble.location } })
+    }
     const owner = refreshTokens.get(presented)
     if (body["client_id"] !== CLIENT_ID || owner === undefined) {
       return json(
@@ -341,6 +358,9 @@ export const fakeCodex = Effect.gen(function* () {
     },
     refuseNextRefresh: (status, body) => {
       refreshTrouble = { _tag: "Refuse", status, body }
+    },
+    redirectNextRefresh: (location) => {
+      refreshTrouble = { _tag: "Redirect", location }
     },
     omitExpiresIn: () => {
       withExpiresIn = false

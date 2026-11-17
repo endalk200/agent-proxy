@@ -1,5 +1,5 @@
 import { Clock, Context, DateTime, Duration, Effect, Layer, Option, Schema } from "effect"
-import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/http"
+import { HttpClientRequest, type HttpClientResponse } from "effect/http"
 
 import { ProviderEndpoints } from "./endpoints.ts"
 import {
@@ -11,6 +11,7 @@ import {
   refreshFailed,
   refreshUnanswered,
   type TokenAdapter,
+  oauthClient,
 } from "./provider.ts"
 
 /**
@@ -102,7 +103,7 @@ export class ClaudeLogin extends Context.Service<ClaudeLogin, LoginAdapter>()(
     ClaudeLogin,
     Effect.gen(function* () {
       const { claude: endpoints } = yield* ProviderEndpoints
-      const http = yield* HttpClient.HttpClient
+      const http = yield* oauthClient
 
       const exchangeCode = Effect.fn("ClaudeLogin.exchangeCode")(function* (
         params: ExchangeParams,
@@ -222,7 +223,7 @@ export class ClaudeTokens extends Context.Service<ClaudeTokens, TokenAdapter>()(
     ClaudeTokens,
     Effect.gen(function* () {
       const { claude: endpoints } = yield* ProviderEndpoints
-      const http = yield* HttpClient.HttpClient
+      const http = yield* oauthClient
 
       const refresh = Effect.fn("ClaudeTokens.refresh")(
         function* (refreshToken: string) {

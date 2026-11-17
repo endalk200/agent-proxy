@@ -15,6 +15,7 @@ import {
   dave,
   type FakeCodex,
   fakeCodex,
+  erin,
 } from "../support/fake-codex.ts"
 
 // Codex accounts and the Codex proxy, in-process: a real daemon on loopback in
@@ -154,6 +155,22 @@ const lastToken = (codex: FakeCodex) => codex.issuedAccessTokens().at(-1) ?? ""
 layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.layer))(
   "Codex accounts and the Codex proxy",
   (it) => {
+    it.effect("a Codex sign-in whose id_token has the email only in its profile claim works", () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome({ codex: yield* fakeCodex })
+          const login = yield* home.signIn(erin)
+          expect(login).toMatchObject({ provider: "codex", status: "succeeded" })
+          expect((yield* home.accounts).accounts).toEqual([
+            expect.objectContaining({
+              email: "erin@example.com",
+              providerAccountId: erin.accountId,
+            }),
+          ])
+        }),
+      ),
+    )
+
     it.effect("a Codex sign-in through the browser records the email, plan and account id", () =>
       TestClock.withLive(
         Effect.gen(function* () {
