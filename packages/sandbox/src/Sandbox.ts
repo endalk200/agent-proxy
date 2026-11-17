@@ -23,8 +23,12 @@ export interface Sandbox {
   readonly env: Readonly<Record<string, string>>
 }
 
-/** Written to `configFile` so runs start from a known config. Nothing reads it yet. */
-export const CONFIG_FIXTURE = "{}\n"
+/**
+ * Written to `configFile` so runs start from a known config. The daemon binds
+ * any free port, so parallel runs never collide (ADR-0002); the state file
+ * records the port it got.
+ */
+export const CONFIG_FIXTURE = 'listen = "127.0.0.1:0"\n'
 
 /** Computes the sandbox layout for `dir` without touching the filesystem. */
 export const layout = (path: Path.Path, dir: string, inheritedPath: string): Sandbox => {
@@ -44,7 +48,7 @@ export const layout = (path: Path.Path, dir: string, inheritedPath: string): San
     tmp,
     logs: path.join(dir, "logs"),
     artifacts: path.join(dir, "artifacts"),
-    configFile: path.join(configHome, "agent-proxy", "config.json"),
+    configFile: path.join(configHome, "agent-proxy", "config.toml"),
     env: {
       PATH: inheritedPath,
       HOME: home,

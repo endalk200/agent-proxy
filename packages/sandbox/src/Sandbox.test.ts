@@ -29,7 +29,7 @@ layer(Path.layer)("Sandbox.layout", (it) => {
   it.effect("resolves the config file where agent-proxy looks under XDG_CONFIG_HOME", () =>
     Effect.gen(function* () {
       const sandbox = yield* sandboxAt("/runs/abc")
-      expect(sandbox.configFile).toBe("/runs/abc/config/agent-proxy/config.json")
+      expect(sandbox.configFile).toBe("/runs/abc/config/agent-proxy/config.toml")
     }),
   )
 
