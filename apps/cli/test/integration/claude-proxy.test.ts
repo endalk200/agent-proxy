@@ -199,6 +199,29 @@ layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.
       ),
     )
 
+    it.effect("an empty proxy key counts as none, and gets the same no-key 401", () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const claude = yield* fakeClaude
+          const home = yield* makeHome(claude)
+          yield* home.signIn(alice)
+          // opencode substitutes an empty string for a key file it cannot read.
+          for (const header of [{ "x-api-key": "" }, { authorization: "Bearer " }]) {
+            const response = yield* home.send("/v1/messages?beta=true", {
+              method: "POST",
+              headers: { "content-type": "application/json", ...header },
+              body: messagesBody,
+            })
+            expect(response.status).toBe(401)
+            expect(JSON.parse(response.text).error.message).toBe(
+              "agent-proxy: no proxy key sent. Send the key `agent-proxy key` prints, as the x-api-key header or as Authorization: Bearer.",
+            )
+          }
+          expect(claude.apiRequests()).toEqual([])
+        }),
+      ),
+    )
+
     it.effect("a request with a wrong proxy key gets a 401 that does not echo the key", () =>
       TestClock.withLive(
         Effect.gen(function* () {

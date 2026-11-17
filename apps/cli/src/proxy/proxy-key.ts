@@ -3,7 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
 import { Context, Data, Effect, FileSystem, Layer, Path, Ref, Semaphore } from "effect"
 
 import { ensurePrivateDirectory, writeFileAtomic } from "../atomic-file.ts"
-import { resolveDataDir } from "../paths.ts"
+import { resolveProxyKeyFile } from "../paths.ts"
 
 /**
  * The proxy key (ADR-0005): the secret every proxy request carries. The
@@ -39,8 +39,8 @@ export class ProxyKey extends Context.Service<
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
-      const dataDir = yield* resolveDataDir
-      const file = path.join(dataDir, "key")
+      const file = yield* resolveProxyKeyFile
+      const dataDir = path.dirname(file)
 
       const save = (key: string) =>
         Effect.gen(function* () {

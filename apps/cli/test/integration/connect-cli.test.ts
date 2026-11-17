@@ -21,13 +21,21 @@ import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 
-// `connect claude-code` and `connect codex`, driven in-process through the
+// `connect claude-code`, `connect codex` and `connect opencode`, driven in-process through the
 // real command tree, on a temporary HOME, against an in-process daemon
 // (`daemon run`) whose address they write. The terminal the owner answers the confirmation in is the only fake.
 // What the command did is read back from the files it leaves in that HOME.
 
 const makeHome = (
-  options: { readonly listen?: string; readonly env?: Readonly<Record<string, string>> } = {},
+  options: {
+    readonly listen?: string
+    /** Extra variables; a function gets the new HOME, for paths under it. */
+    readonly env?:
+      | Readonly<Record<string, string>>
+      | ((home: string) => Readonly<Record<string, string>>)
+    /** Variables left out of the environment, such as `XDG_DATA_HOME` to use its default. */
+    readonly unset?: ReadonlyArray<string>
+  } = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
@@ -39,18 +47,22 @@ const makeHome = (
       `listen = "${options.listen ?? "127.0.0.1:0"}"\n`,
     )
     const home = `${root}/home`
-    const env = {
-      HOME: home,
-      XDG_CONFIG_HOME: `${root}/config`,
-      XDG_STATE_HOME: `${root}/state`,
-      XDG_DATA_HOME: `${root}/data`,
-      ...options.env,
-    }
+    const env = Object.fromEntries(
+      Object.entries({
+        HOME: home,
+        XDG_CONFIG_HOME: `${root}/config`,
+        XDG_STATE_HOME: `${root}/state`,
+        XDG_DATA_HOME: `${root}/data`,
+        ...(typeof options.env === "function" ? options.env(home) : options.env),
+      }).filter(([name]) => !options.unset?.includes(name)),
+    )
     const stateDir = `${root}/state/agent-proxy`
     const settings = `${home}/.claude/settings.json`
     const backup = `${settings}.bak`
     const codexConfig = `${home}/.codex/config.toml`
     const codexBackup = `${codexConfig}.bak`
+    const opencodeDir = `${root}/config/opencode`
+    const opencodeConfig = `${opencodeDir}/opencode.json`
     const output: Array<string> = []
     const errors: Array<string> = []
     const typed = yield* Queue.unbounded<string, Terminal.QuitError>()
@@ -149,6 +161,17 @@ const makeHome = (
     const connectCodex = (answer: string, extra: ReadonlyArray<string> = []) =>
       answering(["connect", "codex", ...extra], answer)
 
+    /** Runs `connect opencode <extra>` and answers its confirmation with `answer`. */
+    const connectOpencode = (answer: string, extra: ReadonlyArray<string> = []) =>
+      answering(["connect", "opencode", ...extra], answer)
+
+    /** Writes `name` (`opencode.json` by default) in opencode's config directory, as the owner had it. */
+    const writeOpencodeConfig = (content: string, name = "opencode.json") =>
+      Effect.gen(function* () {
+        yield* fs.makeDirectory(opencodeDir, { recursive: true })
+        yield* fs.writeFileString(`${opencodeDir}/${name}`, content)
+      })
+
     /** Writes `~/.codex/config.toml` as the owner had it before connecting. */
     const writeCodexConfig = (content: string) =>
       Effect.gen(function* () {
@@ -171,8 +194,10 @@ const makeHome = (
       read,
       connect,
       connectCodex,
+      connectOpencode,
       writeSettings,
       writeCodexConfig,
+      writeOpencodeConfig,
       typed,
       output,
       errors,
@@ -181,6 +206,9 @@ const makeHome = (
       backup,
       codexConfig,
       codexBackup,
+      root,
+      opencodeDir,
+      opencodeConfig,
     }
   })
 
@@ -801,6 +829,430 @@ Answer briefly.
           connectedCodexConfig(address),
         )
         expect(yield* fs.exists(`${home.home}/.codex`)).toBe(false)
+      }),
+    ),
+  )
+})
+
+/** The models `connect opencode` lists for the Codex provider, until the owner edits them. */
+const codexModels = {
+  "gpt-6.1-sol": { name: "GPT-6.1 Sol" },
+  "gpt-6.1-terra": { name: "GPT-6.1 Terra" },
+  "gpt-6-astra": { name: "GPT-6 Astra" },
+  "gpt-6-luna": { name: "GPT-6 Luna" },
+}
+
+/** The providers `connect opencode` adds, for a daemon at `address` whose key opencode reads from `keyFile`. */
+const opencodeProviders = (address: string, keyFile: string) => ({
+  "claude-agent": {
+    settings: { baseURL: address, apiKey: `{file:${keyFile}}` },
+  },
+  "agent-proxy-codex": {
+    name: "agent-proxy (Codex)",
+    canonical: "openai",
+    package: "@opencode/ai/providers/openai/responses",
+    settings: { baseURL: `${address}/backend-api/codex`, apiKey: `{file:${keyFile}}` },
+    models: codexModels,
+  },
+})
+
+/** The file a `{file:…}` reference names, with `~/` expanded as opencode does. */
+const fileReference = (reference: unknown, home: string) => {
+  const match = /^\{file:(.+)\}$/.exec(String(reference))
+  const file = match?.[1] ?? ""
+  return file.startsWith("~/") ? `${home}/${file.slice(2)}` : file
+}
+
+const claudeAgentLogin =
+  "opencode shows the Claude Agent models once its Claude login is connected: run `opencode auth login claude-agent --method claude-login` if you have not."
+
+layer(services)("agent-proxy connect opencode", (it) => {
+  it.effect(
+    "creates opencode.json with both providers, reading the key from the daemon's key file",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          // XDG_DATA_HOME at its default, so the key file lies under home.
+          const home = yield* makeHome({ unset: ["XDG_DATA_HOME"] })
+          const address = yield* home.runDaemon
+
+          const output = yield* home.connectOpencode("y")
+
+          const written = Option.getOrThrow(yield* home.read(home.opencodeConfig))
+          expect(JSON.parse(written)).toStrictEqual({
+            providers: opencodeProviders(address, "~/.local/share/agent-proxy/key"),
+          })
+          expect(written.endsWith("}\n")).toBe(true)
+          const keyFile = fileReference(
+            JSON.parse(written).providers["claude-agent"].settings.apiKey,
+            home.home,
+          )
+          expect((yield* fs.readFileString(keyFile)).trim()).toBe((yield* home.cli(["key"])).trim())
+          expect(output).toContain(
+            `Connecting opencode to the proxy at ${address} changes ${home.opencodeConfig}:`,
+          )
+          expect(output).toContain("--- /dev/null")
+          expect(output).toContain(`Connected opencode to the proxy at ${address}.`)
+          expect(output).toContain(claudeAgentLogin)
+          expect(yield* home.read(`${home.opencodeConfig}.bak`)).toStrictEqual(Option.none())
+        }),
+      ),
+  )
+
+  it.effect(
+    "names the key file by its real path when XDG_DATA_HOME is not the default, with ~/ only under home",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          // Outside home: the absolute path.
+          const outside = yield* makeHome()
+          const outsideAddress = yield* outside.runDaemon
+          yield* outside.connectOpencode("y")
+          const outsideConfig = JSON.parse(
+            Option.getOrThrow(yield* outside.read(outside.opencodeConfig)),
+          )
+          expect(outsideConfig.providers).toStrictEqual(
+            opencodeProviders(outsideAddress, `${outside.root}/data/agent-proxy/key`),
+          )
+
+          // Under home, but not the default: `~/` and the rest of the real path.
+          const underHome = yield* makeHome({
+            env: (home) => ({ XDG_DATA_HOME: `${home}/xdg/data` }),
+          })
+          const underAddress = yield* underHome.runDaemon
+          yield* underHome.connectOpencode("y")
+          const underConfig = JSON.parse(
+            Option.getOrThrow(yield* underHome.read(underHome.opencodeConfig)),
+          )
+          expect(underConfig.providers["agent-proxy-codex"].settings).toStrictEqual({
+            baseURL: `${underAddress}/backend-api/codex`,
+            apiKey: "{file:~/xdg/data/agent-proxy/key}",
+          })
+
+          for (const [home, config] of [
+            [outside, outsideConfig],
+            [underHome, underConfig],
+          ] as const) {
+            const keyFile = fileReference(
+              config.providers["agent-proxy-codex"].settings.apiKey,
+              home.home,
+            )
+            expect((yield* fs.readFileString(keyFile)).trim()).toBe(
+              (yield* home.cli(["key"])).trim(),
+            )
+          }
+        }),
+      ),
+  )
+
+  it.effect(
+    "keeps comments and every other setting byte for byte, backs the file up, and writes only once confirmed",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome({ unset: ["XDG_DATA_HOME"] })
+          const address = yield* home.runDaemon
+          const before = `{
+  "$schema": "https://opencode.ai/config.json",
+  // the default model
+  "model": "cliproxy-codex/gpt-6-luna",
+  "providers": {
+    "cliproxy-codex": {
+      "name": "CLI Proxy (Codex)",
+      "settings": { "baseURL": "http://127.0.0.1:8317/v1" }
+    }
+  },
+  "mcp": {}, // none yet
+}
+`
+          yield* home.writeOpencodeConfig(before)
+
+          const run = yield* Effect.forkChild(home.cli(["connect", "opencode"]))
+          const shown = yield* home.asked
+          expect(shown).toContain(`--- ${home.opencodeConfig}`)
+          expect(shown).toContain(`+++ ${home.opencodeConfig}`)
+          expect(shown).toContain(`+        "baseURL": "${address}",`)
+          expect(shown).toContain(`Write ${home.opencodeConfig}? [y/N]`)
+          expect(Option.getOrNull(yield* home.read(home.opencodeConfig))).toBe(before)
+
+          yield* Queue.offer(home.typed, "y")
+          const output = yield* Fiber.join(run)
+
+          expect(Option.getOrNull(yield* home.read(home.opencodeConfig))).toBe(`{
+  "$schema": "https://opencode.ai/config.json",
+  // the default model
+  "model": "cliproxy-codex/gpt-6-luna",
+  "providers": {
+    "cliproxy-codex": {
+      "name": "CLI Proxy (Codex)",
+      "settings": { "baseURL": "http://127.0.0.1:8317/v1" }
+    },
+    "claude-agent": {
+      "settings": {
+        "baseURL": "${address}",
+        "apiKey": "{file:~/.local/share/agent-proxy/key}"
+      }
+    },
+    "agent-proxy-codex": {
+      "name": "agent-proxy (Codex)",
+      "canonical": "openai",
+      "package": "@opencode/ai/providers/openai/responses",
+      "settings": {
+        "baseURL": "${address}/backend-api/codex",
+        "apiKey": "{file:~/.local/share/agent-proxy/key}"
+      },
+      "models": {
+        "gpt-6.1-sol": {
+          "name": "GPT-6.1 Sol"
+        },
+        "gpt-6.1-terra": {
+          "name": "GPT-6.1 Terra"
+        },
+        "gpt-6-astra": {
+          "name": "GPT-6 Astra"
+        },
+        "gpt-6-luna": {
+          "name": "GPT-6 Luna"
+        }
+      }
+    }
+  },
+  "mcp": {}, // none yet
+}
+`)
+          expect(Option.getOrNull(yield* home.read(`${home.opencodeConfig}.bak`))).toBe(before)
+          expect(output).toContain(`The old settings are in ${home.opencodeConfig}.bak.`)
+        }),
+      ),
+  )
+
+  it.effect(
+    "replaces only the settings it manages in providers already there, keeping the models the owner listed",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome()
+          const address = yield* home.runDaemon
+          const keyFile = `${home.root}/data/agent-proxy/key`
+          // The lines next to a new setting are laid out again (settings, and
+          // models, which canonical goes after); nothing else moves.
+          yield* home.writeOpencodeConfig(`{
+  "providers": {
+    "claude-agent": {
+      "settings": {
+        "baseURL": "http://127.0.0.1:9999",
+        "apiKey": "{file:~/old-key}",
+        "headerTimeout": 30000
+      }
+    },
+    "agent-proxy-codex": {
+      "name": "Codex via the proxy",
+      "package": "@opencode/ai/providers/openai/responses",
+      "settings": { "baseURL": "http://127.0.0.1:9999/backend-api/codex" },
+      "models": { "gpt-7": { "name": "GPT-7" } }
+    }
+  }
+}
+`)
+
+          yield* home.connectOpencode("y")
+
+          expect(Option.getOrNull(yield* home.read(home.opencodeConfig))).toBe(`{
+  "providers": {
+    "claude-agent": {
+      "settings": {
+        "baseURL": "${address}",
+        "apiKey": "{file:${keyFile}}",
+        "headerTimeout": 30000
+      }
+    },
+    "agent-proxy-codex": {
+      "name": "agent-proxy (Codex)",
+      "package": "@opencode/ai/providers/openai/responses",
+      "settings": {
+        "baseURL": "${address}/backend-api/codex",
+        "apiKey": "{file:${keyFile}}"
+      },
+      "models": {
+        "gpt-7": {
+          "name": "GPT-7"
+        }
+      },
+      "canonical": "openai"
+    }
+  }
+}
+`)
+        }),
+      ),
+  )
+
+  it.effect("says so and changes nothing when opencode is already connected", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+        yield* home.writeOpencodeConfig('{ "model": "claude-agent/opus" }\n')
+        yield* home.connectOpencode("y")
+        const config = yield* home.read(home.opencodeConfig)
+        const backup = yield* home.read(`${home.opencodeConfig}.bak`)
+
+        const output = yield* home.cli(["connect", "opencode"])
+
+        expect(output).toBe(
+          `opencode is already connected to the proxy at ${address}; ${home.opencodeConfig} is unchanged.\n`,
+        )
+        expect(yield* home.read(home.opencodeConfig)).toStrictEqual(config)
+        expect(yield* home.read(`${home.opencodeConfig}.bak`)).toStrictEqual(backup)
+      }),
+    ),
+  )
+
+  it.effect("--print prints the providers to add and the login note, and writes nothing", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome({ unset: ["XDG_DATA_HOME"] })
+        const address = yield* home.runDaemon
+
+        const output = yield* home.cli(["connect", "opencode", "--print"])
+
+        expect(JSON.parse(output)).toStrictEqual({
+          providers: opencodeProviders(address, "~/.local/share/agent-proxy/key"),
+        })
+        expect(output.startsWith('{\n  "providers": {\n    "claude-agent": {')).toBe(true)
+        expect(home.errors.join("")).toBe(
+          `Add these settings to ${home.opencodeConfig}:\n${claudeAgentLogin}\n`,
+        )
+        expect(yield* fs.exists(home.opencodeDir)).toBe(false)
+      }),
+    ),
+  )
+
+  it.effect("changes opencode.jsonc when it exists, since opencode lets it win", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+        const json = '{ "model": "claude-agent/opus" }\n'
+        yield* home.writeOpencodeConfig(json)
+        const jsonc = '// mine\n{ "theme": "system", }\n'
+        yield* home.writeOpencodeConfig(jsonc, "opencode.jsonc")
+
+        const output = yield* home.connectOpencode("y")
+
+        const changed = `${home.opencodeDir}/opencode.jsonc`
+        expect(output).toContain(`changes ${changed}:`)
+        expect(Option.getOrNull(yield* home.read(home.opencodeConfig))).toBe(json)
+        const written = Option.getOrThrow(yield* home.read(changed))
+        // The comment and the trailing comma stay; the one-line object the
+        // providers go into is laid out on lines.
+        expect(written.startsWith('// mine\n{\n  "theme": "system",\n  "providers": {\n')).toBe(
+          true,
+        )
+        expect(written.endsWith("  },\n}\n")).toBe(true)
+        expect(written).toContain(`"baseURL": "${address}/backend-api/codex"`)
+        expect(Option.getOrNull(yield* home.read(`${changed}.bak`))).toBe(jsonc)
+      }),
+    ),
+  )
+
+  it.effect("changes the opencode.json in $OPENCODE_CONFIG_DIR when that is set", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome({
+          env: (dir) => ({ OPENCODE_CONFIG_DIR: `${dir}/opencode-config` }),
+        })
+        const address = yield* home.runDaemon
+
+        const output = yield* home.connectOpencode("y")
+
+        expect(output).toContain("changes ~/opencode-config/opencode.json:")
+        const written = Option.getOrThrow(
+          yield* home.read(`${home.home}/opencode-config/opencode.json`),
+        )
+        expect(JSON.parse(written).providers["claude-agent"].settings.baseURL).toBe(address)
+        expect(yield* fs.exists(home.opencodeDir)).toBe(false)
+      }),
+    ),
+  )
+
+  it.effect("refuses a file it cannot read or change safely, and leaves it as it was", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        const shown = home.opencodeConfig
+
+        const broken = '{ "model": "claude-agent/opus"\n'
+        yield* home.writeOpencodeConfig(broken)
+        expect(yield* home.fails(["connect", "opencode"])).toBe(
+          `${shown} is not valid JSON (closing brace expected at offset 31), so it was left unchanged. Fix it, or move it aside, and run this again.`,
+        )
+        expect(Option.getOrNull(yield* home.read(shown))).toBe(broken)
+
+        const unfit = [
+          ["[]\n", "it is not a JSON object"],
+          ['{ "providers": [] }\n', "its providers is not an object"],
+          [
+            '{ "providers": { "claude-agent": { "settings": "x" } } }\n',
+            "its providers.claude-agent.settings is not an object",
+          ],
+          [
+            '{ "providers": { "agent-proxy-codex": { "models": ["gpt-6-luna"] } } }\n',
+            "its providers.agent-proxy-codex.models is not an object",
+          ],
+        ]
+        for (const [before, why] of unfit) {
+          yield* home.writeOpencodeConfig(before ?? "")
+          expect(yield* home.fails(["connect", "opencode"])).toBe(
+            `${shown} does not hold opencode settings (${why}), so it was left unchanged.`,
+          )
+          expect(Option.getOrNull(yield* home.read(shown))).toBe(before)
+        }
+
+        // A second "providers" key: opencode reads the last, an edit would land in the first.
+        const duplicate = '{ "providers": {}, "providers": { "other": {} } }\n'
+        yield* home.writeOpencodeConfig(duplicate)
+        expect(yield* home.fails(["connect", "opencode"])).toBe(
+          `${shown} sets the opencode providers in a way connect cannot change safely, so it was left unchanged. Add the settings \`agent-proxy connect opencode --print\` shows by hand.`,
+        )
+        expect(Option.getOrNull(yield* home.read(shown))).toBe(duplicate)
+        expect(yield* fs.readDirectory(home.opencodeDir)).toStrictEqual(["opencode.json"])
+      }),
+    ),
+  )
+
+  it.effect("writes through an opencode.json linked from a dotfiles repo", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+        const dotfiles = `${home.home}/.dotfiles/opencode`
+        yield* fs.makeDirectory(dotfiles, { recursive: true })
+        const before = '{ "model": "claude-agent/opus" }\n'
+        yield* fs.writeFileString(`${dotfiles}/opencode.json`, before)
+        yield* fs.makeDirectory(home.opencodeDir, { recursive: true })
+        yield* fs.symlink(`${dotfiles}/opencode.json`, home.opencodeConfig)
+
+        yield* home.connectOpencode("y")
+
+        expect((yield* fs.lstat(home.opencodeConfig)).type).toBe("SymbolicLink")
+        expect(yield* fs.readFileString(`${dotfiles}/opencode.json`)).toContain(
+          `"baseURL": "${address}"`,
+        )
+        expect(yield* fs.readDirectory(dotfiles)).toStrictEqual(["opencode.json"])
+        expect(Option.getOrNull(yield* home.read(`${home.opencodeConfig}.bak`))).toBe(before)
+
+        // With the link's target gone, it is refused and the link kept.
+        yield* fs.remove(`${dotfiles}/opencode.json`)
+        expect(yield* home.fails(["connect", "opencode"])).toContain("which does not exist")
+        expect((yield* fs.lstat(home.opencodeConfig)).type).toBe("SymbolicLink")
       }),
     ),
   )

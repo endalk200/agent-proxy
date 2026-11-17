@@ -155,7 +155,7 @@ layer(
         expect(rotated.stdout).toMatch(/^\S{32,}$/)
         expect(rotated.stdout).not.toBe(oldKey)
         expect(rotated.stderr).toBe(
-          "Rotated the proxy key; the old key no longer works. Clients that run `agent-proxy key` pick up the new one on their next request.",
+          "Rotated the proxy key; the old key no longer works. Clients that run `agent-proxy key` pick up the new one on their next request. opencode reads the key file only when it starts: restart it, or run `opencode reload`.",
         )
         expect(yield* statusWithKey(address, oldKey)).toBe(401)
         expect(yield* statusWithKey(address, rotated.stdout)).toBe(200)

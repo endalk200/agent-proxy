@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code and Codex at the daemon (`agent-proxy connect claude-code | codex`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts and Codex from your Codex (ChatGPT) accounts, and a dashboard of your accounts at its own address (`http://127.0.0.1:8318/` by default); opencode comes later.
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code, Codex and opencode at the daemon (`agent-proxy connect claude-code | codex | opencode`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts, Codex from your Codex (ChatGPT) accounts, opencode from both, and a dashboard of your accounts at its own address (`http://127.0.0.1:8318/` by default).
 
 ## Requirements
 
@@ -160,7 +160,47 @@ auth = { command = "agent-proxy", args = ["key"] }
 
 The rest of the file stays byte for byte, comments included. A `model_provider` naming another provider is replaced in place, and an existing `[model_providers.agent-proxy]` table is replaced whole; the diff shows both. It asks, backs up and writes as `connect claude-code` does, keeps a linked file a link, and refuses a file that is not valid TOML. A file it cannot change without changing its meaning (the provider in dotted keys, a subtable of it, a multi-line string with a line that starts with `[`) is refused and left alone; add the `--print` settings by hand, with `model_provider` above the first table. The file holds no secret: Codex fetches the key by running `agent-proxy key`.
 
-Leave `supports_websockets` unset. The daemon serves `POST /responses` (streamed), `GET /models` and `POST /alpha/search` under `/backend-api/codex` from `chatgpt.com`, as one of your Codex accounts, chosen as [Sessions and limits](#sessions-and-limits) describes: it puts that account's token in `Authorization` and its ChatGPT workspace in `chatgpt-account-id`, and passes everything else through, the `x-codex-*` limit headers included. It refuses a WebSocket upgrade with 426, and Codex falls back to HTTP. When the backend rejects the account's token, the daemon refreshes it once and retries on the same account. opencode's OpenAI Responses provider works with the same base URL and the key as its `apiKey`.
+Leave `supports_websockets` unset. The daemon serves `POST /responses` (streamed), `GET /models` and `POST /alpha/search` under `/backend-api/codex` from `chatgpt.com`, as one of your Codex accounts, chosen as [Sessions and limits](#sessions-and-limits) describes: it puts that account's token in `Authorization` and its ChatGPT workspace in `chatgpt-account-id`, and passes everything else through, the `x-codex-*` limit headers included. It refuses a WebSocket upgrade with 426, and Codex falls back to HTTP. When the backend rejects the account's token, the daemon refreshes it once and retries on the same account.
+
+## Serving opencode
+
+opencode spends your Claude accounts through its Claude Agent integration, and your Codex accounts through an OpenAI Responses provider. Point both at the daemon:
+
+```sh
+agent-proxy connect opencode          # show the change, ask, back up, write
+agent-proxy connect opencode --print  # print the settings only; change nothing
+```
+
+`connect opencode` adds two providers to opencode's global config, `~/.config/opencode/opencode.json` (`$XDG_CONFIG_HOME/opencode/` or `$OPENCODE_CONFIG_DIR` when set, and `opencode.jsonc` there when it exists, since opencode lets it win):
+
+```json
+{
+  "providers": {
+    "claude-agent": {
+      "settings": {
+        "baseURL": "http://127.0.0.1:8318",
+        "apiKey": "{file:~/.local/share/agent-proxy/key}"
+      }
+    },
+    "agent-proxy-codex": {
+      "name": "agent-proxy (Codex)",
+      "canonical": "openai",
+      "package": "@opencode/ai/providers/openai/responses",
+      "settings": {
+        "baseURL": "http://127.0.0.1:8318/backend-api/codex",
+        "apiKey": "{file:~/.local/share/agent-proxy/key}"
+      },
+      "models": { "gpt-6.1-sol": { "name": "GPT-6.1 Sol" }, "…": {} }
+    }
+  }
+}
+```
+
+opencode cannot run a command for its key, so both providers read the key file with `{file:…}`, named by its real path (`~/…` only when it lies under your home directory); the config still holds no secret. The Claude Agent integration runs your local `claude` and ignores `~/.claude/settings.json`, which is why its base URL is set here. Its models appear once the integration is connected: run `opencode auth login claude-agent --method claude-login` once. `connect` lists four Codex models (`gpt-6.1-sol`, `gpt-6.1-terra`, `gpt-6-astra`, `gpt-6-luna`) only when the provider has none, so edit the list freely.
+
+Comments, trailing commas and the rest of the file stay as they were; only the lines next to a new setting may be laid out again. Settings already in `claude-agent` or `agent-proxy-codex` that `connect` does not manage stay too. It asks, backs up and writes as `connect claude-code` does.
+
+opencode reads the key file when it loads its config, so after `agent-proxy key --rotate` restart it, or run `opencode reload`. A missing key file makes opencode send no key, and the proxy answers `no proxy key sent`.
 
 ## Sessions and limits
 

@@ -7,7 +7,7 @@ import { asUserError } from "./errors.ts"
 /**
  * `agent-proxy key [--rotate]`: prints the proxy key (ADR-0005) and nothing
  * else on stdout, so clients can run it to fetch the key (Claude Code's
- * `apiKeyHelper`, Codex's `auth` command).
+ * `apiKeyHelper`, Codex's `auth` command). opencode reads the key file instead.
  */
 export const keyCommand = Command.make(
   "key",
@@ -24,8 +24,10 @@ export const keyCommand = Command.make(
     }
     const { key } = yield* rotateProxyKey.pipe(Effect.mapError(asUserError))
     yield* Console.log(key)
+    // opencode reads the key with `{file:…}` when it loads its config, so it
+    // keeps sending the old key until it loads it again (spike #6).
     yield* Console.error(
-      "Rotated the proxy key; the old key no longer works. Clients that run `agent-proxy key` pick up the new one on their next request.",
+      "Rotated the proxy key; the old key no longer works. Clients that run `agent-proxy key` pick up the new one on their next request. opencode reads the key file only when it starts: restart it, or run `opencode reload`.",
     )
   }),
 ).pipe(Command.withDescription("Print the proxy key clients send, or replace it with --rotate"))

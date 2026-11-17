@@ -30,7 +30,7 @@ The daemon serves Codex on its listen address: with a custom Codex provider name
   auth = { command = "agent-proxy", args = ["key"] }
   ```
 
-- Point opencode's `@opencode/ai/providers/openai/responses` provider at `<daemon address>/backend-api/codex` with `apiKey` `{file:~/.local/share/agent-proxy/key}`.
+- Point opencode's `@opencode/ai/providers/openai/responses` provider at `<daemon address>/backend-api/codex` with `apiKey` `{file:~/.local/share/agent-proxy/key}`, as `agent-proxy connect opencode` does (see [Connect](./connect.md)).
 - Send any Responses API client's requests to `<daemon address>/backend-api/codex/…` with the key from `agent-proxy key`.
 
 ## Driving it with verify
