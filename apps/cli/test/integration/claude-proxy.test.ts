@@ -7,6 +7,7 @@ import { TestClock } from "effect/testing"
 import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints, realEndpoints } from "../../src/providers/endpoints.ts"
+import { RuntimeInfo } from "../../src/runtime-info.ts"
 import {
   alice,
   bob,
@@ -174,686 +175,681 @@ const messagesBody = JSON.stringify({
   messages: [{ role: "user", content: "hi" }],
 })
 
-layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.layer))(
-  "the Claude proxy",
-  (it) => {
-    it.effect("a request without the proxy key gets a 401 saying no key was sent", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const home = yield* makeHome(yield* fakeClaude)
+const services = Layer.mergeAll(
+  BunServices.layer,
+  RuntimeInfo.layerProcess,
+  Processes.layerProcess,
+  FetchHttpClient.layer,
+)
+
+layer(services)("the Claude proxy", (it) => {
+  it.effect("a request without the proxy key gets a 401 saying no key was sent", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        const response = yield* home.send("/v1/messages?beta=true", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: messagesBody,
+        })
+        expect(response.status).toBe(401)
+        expect(JSON.parse(response.text)).toEqual({
+          type: "error",
+          error: {
+            type: "authentication_error",
+            message:
+              "agent-proxy: no proxy key sent. Send the key `agent-proxy key` prints, as the x-api-key header or as Authorization: Bearer.",
+          },
+        })
+      }),
+    ),
+  )
+
+  it.effect("an empty proxy key counts as none, and gets the same no-key 401", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        // opencode substitutes an empty string for a key file it cannot read.
+        for (const header of [{ "x-api-key": "" }, { authorization: "Bearer " }]) {
           const response = yield* home.send("/v1/messages?beta=true", {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", ...header },
             body: messagesBody,
           })
           expect(response.status).toBe(401)
+          expect(JSON.parse(response.text).error.message).toBe(
+            "agent-proxy: no proxy key sent. Send the key `agent-proxy key` prints, as the x-api-key header or as Authorization: Bearer.",
+          )
+        }
+        expect(claude.apiRequests()).toEqual([])
+      }),
+    ),
+  )
+
+  it.effect("a request with a wrong proxy key gets a 401 that does not echo the key", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        const wrongKey = "ap-not-the-real-key-0123456789"
+        for (const header of [{ "x-api-key": wrongKey }, { authorization: `Bearer ${wrongKey}` }]) {
+          const response = yield* home.send("/v1/messages?beta=true", {
+            method: "POST",
+            headers: { "content-type": "application/json", ...header },
+            body: messagesBody,
+          })
+          expect(response.status).toBe(401)
+          expect(response.text).not.toContain(wrongKey)
           expect(JSON.parse(response.text)).toEqual({
             type: "error",
             error: {
               type: "authentication_error",
               message:
-                "agent-proxy: no proxy key sent. Send the key `agent-proxy key` prints, as the x-api-key header or as Authorization: Bearer.",
+                "agent-proxy: wrong proxy key. Run `agent-proxy key` to see the current key.",
             },
           })
-        }),
-      ),
-    )
+        }
+      }),
+    ),
+  )
 
-    it.effect("an empty proxy key counts as none, and gets the same no-key 401", () =>
+  it.effect(
+    "a request with the key reaches Claude with the account's token in place of the key",
+    () =>
       TestClock.withLive(
         Effect.gen(function* () {
           const claude = yield* fakeClaude
           const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          // opencode substitutes an empty string for a key file it cannot read.
-          for (const header of [{ "x-api-key": "" }, { authorization: "Bearer " }]) {
-            const response = yield* home.send("/v1/messages?beta=true", {
-              method: "POST",
-              headers: { "content-type": "application/json", ...header },
-              body: messagesBody,
-            })
-            expect(response.status).toBe(401)
-            expect(JSON.parse(response.text).error.message).toBe(
-              "agent-proxy: no proxy key sent. Send the key `agent-proxy key` prints, as the x-api-key header or as Authorization: Bearer.",
-            )
-          }
-          expect(claude.apiRequests()).toEqual([])
-        }),
-      ),
-    )
-
-    it.effect("a request with a wrong proxy key gets a 401 that does not echo the key", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const home = yield* makeHome(yield* fakeClaude)
-          const wrongKey = "ap-not-the-real-key-0123456789"
-          for (const header of [
-            { "x-api-key": wrongKey },
-            { authorization: `Bearer ${wrongKey}` },
-          ]) {
-            const response = yield* home.send("/v1/messages?beta=true", {
-              method: "POST",
-              headers: { "content-type": "application/json", ...header },
-              body: messagesBody,
-            })
-            expect(response.status).toBe(401)
-            expect(response.text).not.toContain(wrongKey)
-            expect(JSON.parse(response.text)).toEqual({
-              type: "error",
-              error: {
-                type: "authentication_error",
-                message:
-                  "agent-proxy: wrong proxy key. Run `agent-proxy key` to see the current key.",
-              },
-            })
-          }
-        }),
-      ),
-    )
-
-    it.effect(
-      "a request with the key reaches Claude with the account's token in place of the key",
-      () =>
-        TestClock.withLive(
-          Effect.gen(function* () {
-            const claude = yield* fakeClaude
-            const home = yield* makeHome(claude)
-            const token = yield* home.signIn(alice)
-            const key = yield* home.proxyKey
-
-            const response = yield* home.send("/v1/messages?beta=true", {
-              method: "POST",
-              // Claude Code sends the key both ways (spike #6).
-              headers: {
-                "content-type": "application/json",
-                authorization: `Bearer ${key}`,
-                "x-api-key": key,
-              },
-              body: messagesBody,
-            })
-
-            expect(response.status).toBe(200)
-            expect(JSON.parse(response.text)).toMatchObject({
-              content: [{ text: "Hello from the fake." }],
-            })
-            const [upstream] = claude.apiRequests()
-            expect(upstream).toMatchObject({ method: "POST", path: "/v1/messages?beta=true" })
-            expect(upstream?.headers["authorization"]).toBe(`Bearer ${token}`)
-            expect(upstream?.headers["x-api-key"]).toBeUndefined()
-            expect(JSON.stringify(upstream)).not.toContain(key)
-          }),
-        ),
-    )
-
-    it.effect("the client's other headers and body reach Claude unchanged", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
+          const token = yield* home.signIn(alice)
           const key = yield* home.proxyKey
-          // What Claude Code 2.1.326 sends (spike #6), with an odd but valid body.
-          const clientHeaders = {
-            accept: "application/json",
-            "anthropic-version": "2023-06-01",
-            "anthropic-dangerous-direct-browser-access": "true",
-            "content-type": "application/json",
-            "user-agent": "claude-cli/2.1.326 (external, cli)",
-            "x-app": "cli",
-            "x-claude-code-session-id": "4b0f9a2e-5d3c-4c1e-9f7a-2a6b8c0d1e3f",
-            "x-stainless-retry-count": "0",
-            "x-stainless-timeout": "600",
-          }
-          const body =
-            '{"model":"claude-sonnet-4-5",  "max_tokens":64,\n "messages":[{"role":"user","content":"héllo ✓"}]}\n'
 
-          yield* home.send("/v1/messages?beta=true", {
+          const response = yield* home.send("/v1/messages?beta=true", {
             method: "POST",
+            // Claude Code sends the key both ways (spike #6).
             headers: {
-              ...clientHeaders,
-              "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14",
+              "content-type": "application/json",
               authorization: `Bearer ${key}`,
               "x-api-key": key,
             },
-            body,
+            body: messagesBody,
           })
 
+          expect(response.status).toBe(200)
+          expect(JSON.parse(response.text)).toMatchObject({
+            content: [{ text: "Hello from the fake." }],
+          })
           const [upstream] = claude.apiRequests()
-          expect(upstream?.body).toBe(body)
-          expect(upstream?.headers).toMatchObject(clientHeaders)
-          expect(upstream?.headers["anthropic-beta"]).toBe(
-            "claude-code-20250219,interleaved-thinking-2025-05-14,oauth-2025-04-20",
-          )
-          expect(
-            Object.keys(upstream?.headers ?? {}).filter((name) => /^(b3|traceparent)$/.test(name)),
-          ).toEqual([])
+          expect(upstream).toMatchObject({ method: "POST", path: "/v1/messages?beta=true" })
+          expect(upstream?.headers["authorization"]).toBe(`Bearer ${token}`)
+          expect(upstream?.headers["x-api-key"]).toBeUndefined()
+          expect(JSON.stringify(upstream)).not.toContain(key)
         }),
       ),
-    )
+  )
 
-    it.effect("the OAuth beta is added only when the client did not send it", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          const key = yield* home.proxyKey
-          const send = (headers: Record<string, string>) =>
-            home.send("/v1/messages/count_tokens?beta=true", {
-              method: "POST",
-              headers: { "content-type": "application/json", "x-api-key": key, ...headers },
-              body: messagesBody,
-            })
+  it.effect("the client's other headers and body reach Claude unchanged", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const key = yield* home.proxyKey
+        // What Claude Code 2.1.326 sends (spike #6), with an odd but valid body.
+        const clientHeaders = {
+          accept: "application/json",
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+          "content-type": "application/json",
+          "user-agent": "claude-cli/2.1.326 (external, cli)",
+          "x-app": "cli",
+          "x-claude-code-session-id": "4b0f9a2e-5d3c-4c1e-9f7a-2a6b8c0d1e3f",
+          "x-stainless-retry-count": "0",
+          "x-stainless-timeout": "600",
+        }
+        const body =
+          '{"model":"claude-sonnet-4-5",  "max_tokens":64,\n "messages":[{"role":"user","content":"héllo ✓"}]}\n'
 
-          yield* send({})
-          yield* send({ "anthropic-beta": "oauth-2025-04-20,claude-code-20250219" })
+        yield* home.send("/v1/messages?beta=true", {
+          method: "POST",
+          headers: {
+            ...clientHeaders,
+            "anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14",
+            authorization: `Bearer ${key}`,
+            "x-api-key": key,
+          },
+          body,
+        })
 
-          expect(
-            claude
-              .apiRequests()
-              .map((request) => [request.path, request.headers["anthropic-beta"]]),
-          ).toEqual([
-            ["/v1/messages/count_tokens?beta=true", "oauth-2025-04-20"],
-            ["/v1/messages/count_tokens?beta=true", "oauth-2025-04-20,claude-code-20250219"],
-          ])
-        }),
-      ),
-    )
+        const [upstream] = claude.apiRequests()
+        expect(upstream?.body).toBe(body)
+        expect(upstream?.headers).toMatchObject(clientHeaders)
+        expect(upstream?.headers["anthropic-beta"]).toBe(
+          "claude-code-20250219,interleaved-thinking-2025-05-14,oauth-2025-04-20",
+        )
+        expect(
+          Object.keys(upstream?.headers ?? {}).filter((name) => /^(b3|traceparent)$/.test(name)),
+        ).toEqual([])
+      }),
+    ),
+  )
 
-    it.effect("a redirect from Claude reaches the client as it is, never followed", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          const key = yield* home.proxyKey
-          claude.answerApiWith(
-            () =>
-              new Response(null, {
-                status: 307,
-                headers: { location: "/v1/messages/count_tokens?beta=true" },
-              }),
-          )
-          const before = claude.apiRequests().length
-          const response = yield* home.send("/v1/messages?beta=true", {
+  it.effect("the OAuth beta is added only when the client did not send it", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const key = yield* home.proxyKey
+        const send = (headers: Record<string, string>) =>
+          home.send("/v1/messages/count_tokens?beta=true", {
             method: "POST",
-            headers: { "content-type": "application/json", "x-api-key": key },
-            body: messagesBody,
-            redirect: "manual",
-          })
-          expect(response.status).toBe(307)
-          expect(response.headers.get("location")).toBe("/v1/messages/count_tokens?beta=true")
-          expect(claude.apiRequests().length - before).toBe(1)
-        }),
-      ),
-    )
-
-    it.effect("an empty Bearer header counts as no key, so a valid x-api-key still works", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          const key = yield* home.proxyKey
-          const withKey = yield* home.send("/v1/messages?beta=true", {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              authorization: "Bearer ",
-              "x-api-key": key,
-            },
-            body: messagesBody,
-          })
-          expect(withKey.status).toBe(200)
-          const alone = yield* home.send("/v1/messages?beta=true", {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: "Bearer " },
-            body: messagesBody,
-          })
-          expect(alone.status).toBe(401)
-          expect(alone.text).toContain("no proxy key sent")
-        }),
-      ),
-    )
-
-    it.effect("Claude's status, limit headers and body reach the client unchanged", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          const key = yield* home.proxyKey
-          const rejected = {
-            ...limitHeaders,
-            "anthropic-ratelimit-unified-status": "rejected",
-            "anthropic-ratelimit-unified-5h-status": "rejected",
-            "anthropic-ratelimit-unified-5h-utilization": "1.0",
-            "retry-after": "7200",
-          }
-          const body =
-            '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit."}}'
-          claude.answerApiWith(
-            () =>
-              new Response(body, {
-                status: 429,
-                headers: { ...rejected, "content-type": "application/json" },
-              }),
-          )
-
-          const response = yield* home.send("/v1/messages?beta=true", {
-            method: "POST",
-            headers: { "content-type": "application/json", "x-api-key": key },
+            headers: { "content-type": "application/json", "x-api-key": key, ...headers },
             body: messagesBody,
           })
 
-          expect(response.status).toBe(429)
-          expect(response.text).toBe(body)
-          expect(Object.fromEntries(response.headers)).toMatchObject(rejected)
-        }),
-      ),
-    )
+        yield* send({})
+        yield* send({ "anthropic-beta": "oauth-2025-04-20,claude-code-20250219" })
 
-    it.effect("a streamed answer reaches the client event by event, not buffered to the end", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          const key = yield* home.proxyKey
-          const first = 'event: message_start\ndata: {"type":"message_start"}\n\n'
-          const rest = 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
-          // Claude sends the rest only once the client has read the first event.
-          const { promise: clientReadFirst, resolve: releaseRest } = Promise.withResolvers<void>()
-          claude.answerApiWith(
-            () =>
-              new Response(
-                new ReadableStream<Uint8Array>({
-                  async start(controller) {
-                    controller.enqueue(new TextEncoder().encode(first))
-                    await clientReadFirst
-                    controller.enqueue(new TextEncoder().encode(rest))
-                    controller.close()
-                  },
-                }),
-                { headers: { ...limitHeaders, "content-type": "text/event-stream" } },
-              ),
-          )
+        expect(
+          claude.apiRequests().map((request) => [request.path, request.headers["anthropic-beta"]]),
+        ).toEqual([
+          ["/v1/messages/count_tokens?beta=true", "oauth-2025-04-20"],
+          ["/v1/messages/count_tokens?beta=true", "oauth-2025-04-20,claude-code-20250219"],
+        ])
+      }),
+    ),
+  )
 
-          const received = yield* Effect.promise(async () => {
-            const response = await fetch(`${home.address}/v1/messages?beta=true`, {
-              method: "POST",
-              headers: { "content-type": "application/json", "x-api-key": key },
-              body: messagesBody,
-            })
-            const reader = (response.body ?? new ReadableStream<Uint8Array>()).getReader()
-            const firstRead = await Promise.race([
-              reader.read(),
-              Bun.sleep(3000).then(
-                () => "the first event did not arrive within 3 seconds" as const,
-              ),
-            ])
-            if (typeof firstRead === "string") {
-              releaseRest()
-              return {
-                contentType: response.headers.get("content-type"),
-                beforeRest: firstRead,
-                all: "",
-              }
-            }
-            const decoder = new TextDecoder()
-            const beforeRest = decoder.decode(firstRead.value, { stream: true })
-            releaseRest()
-            const readRest = async (text: string): Promise<string> => {
-              const chunk = await reader.read()
-              return chunk.done
-                ? text
-                : readRest(text + decoder.decode(chunk.value, { stream: true }))
-            }
-            return {
-              contentType: response.headers.get("content-type"),
-              beforeRest,
-              all: await readRest(beforeRest),
-            }
-          })
+  it.effect("a redirect from Claude reaches the client as it is, never followed", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const key = yield* home.proxyKey
+        claude.answerApiWith(
+          () =>
+            new Response(null, {
+              status: 307,
+              headers: { location: "/v1/messages/count_tokens?beta=true" },
+            }),
+        )
+        const before = claude.apiRequests().length
+        const response = yield* home.send("/v1/messages?beta=true", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-api-key": key },
+          body: messagesBody,
+          redirect: "manual",
+        })
+        expect(response.status).toBe(307)
+        expect(response.headers.get("location")).toBe("/v1/messages/count_tokens?beta=true")
+        expect(claude.apiRequests().length - before).toBe(1)
+      }),
+    ),
+  )
 
-          expect(received).toEqual({
-            contentType: "text/event-stream",
-            beforeRest: first,
-            all: first + rest,
-          })
-        }),
-      ),
-    )
+  it.effect("an empty Bearer header counts as no key, so a valid x-api-key still works", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const key = yield* home.proxyKey
+        const withKey = yield* home.send("/v1/messages?beta=true", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer ",
+            "x-api-key": key,
+          },
+          body: messagesBody,
+        })
+        expect(withKey.status).toBe(200)
+        const alone = yield* home.send("/v1/messages?beta=true", {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: "Bearer " },
+          body: messagesBody,
+        })
+        expect(alone.status).toBe(401)
+        expect(alone.text).toContain("no proxy key sent")
+      }),
+    ),
+  )
 
-    it.effect("a compressed answer reaches the client as Claude encoded it", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          const key = yield* home.proxyKey
-          const body = JSON.stringify({
-            type: "message",
-            content: [{ type: "text", text: "zipped" }],
-          })
-          claude.answerApiWith(
-            (request) =>
-              new Response(Bun.gzipSync(body), {
-                headers: {
-                  "content-type": "application/json",
-                  "content-encoding": "gzip",
-                  vary: request.headers.get("accept-encoding") ?? "",
+  it.effect("Claude's status, limit headers and body reach the client unchanged", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const key = yield* home.proxyKey
+        const rejected = {
+          ...limitHeaders,
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-5h-status": "rejected",
+          "anthropic-ratelimit-unified-5h-utilization": "1.0",
+          "retry-after": "7200",
+        }
+        const body =
+          '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit."}}'
+        claude.answerApiWith(
+          () =>
+            new Response(body, {
+              status: 429,
+              headers: { ...rejected, "content-type": "application/json" },
+            }),
+        )
+
+        const response = yield* home.send("/v1/messages?beta=true", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-api-key": key },
+          body: messagesBody,
+        })
+
+        expect(response.status).toBe(429)
+        expect(response.text).toBe(body)
+        expect(Object.fromEntries(response.headers)).toMatchObject(rejected)
+      }),
+    ),
+  )
+
+  it.effect("a streamed answer reaches the client event by event, not buffered to the end", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const key = yield* home.proxyKey
+        const first = 'event: message_start\ndata: {"type":"message_start"}\n\n'
+        const rest = 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+        // Claude sends the rest only once the client has read the first event.
+        const { promise: clientReadFirst, resolve: releaseRest } = Promise.withResolvers<void>()
+        claude.answerApiWith(
+          () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                async start(controller) {
+                  controller.enqueue(new TextEncoder().encode(first))
+                  await clientReadFirst
+                  controller.enqueue(new TextEncoder().encode(rest))
+                  controller.close()
                 },
               }),
-          )
+              { headers: { ...limitHeaders, "content-type": "text/event-stream" } },
+            ),
+        )
 
-          const response = yield* home.send("/v1/messages?beta=true", {
+        const received = yield* Effect.promise(async () => {
+          const response = await fetch(`${home.address}/v1/messages?beta=true`, {
             method: "POST",
-            headers: {
-              "content-type": "application/json",
-              "accept-encoding": "gzip, deflate, br",
-              "x-api-key": key,
-            },
+            headers: { "content-type": "application/json", "x-api-key": key },
             body: messagesBody,
           })
-
-          expect(response.status).toBe(200)
-          expect(response.headers.get("vary")).toBe("gzip, deflate, br")
-          expect(response.text).toBe(body)
-        }),
-      ),
-    )
-
-    it.effect("Claude Code's startup check, HEAD /api/hello without a key, gets 200", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const home = yield* makeHome(yield* fakeClaude)
-          const response = yield* home.send("/api/hello", { method: "HEAD" })
-          expect(response.status).toBe(200)
-        }),
-      ),
-    )
-
-    it.effect("the highest-priority Active Claude account serves the request", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.seedAccount(bob, { priority: 1, enabled: true, needsSignIn: true })
-          yield* home.seedAccount(bob, { priority: 2, enabled: false, needsSignIn: false })
-          const aliceToken = yield* home.signIn(alice)
-          yield* home.signIn(bob)
-
-          expect((yield* home.sendMessage).status).toBe(200)
-          expect(claude.apiRequests().map((request) => request.headers["authorization"])).toEqual([
-            `Bearer ${aliceToken}`,
-          ])
-        }),
-      ),
-    )
-
-    it.effect("a disabled account is skipped, and re-enabled serves again from its slot", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.seedAccount(alice, { priority: 1, enabled: true, needsSignIn: false })
-          yield* home.seedAccount(bob, { priority: 2, enabled: true, needsSignIn: false })
-          const servedBy = Effect.gen(function* () {
-            expect((yield* home.sendMessage).status).toBe(200)
-            return claude.apiRequests().at(-1)?.headers["authorization"]
-          })
-
-          const disabled = yield* home.api("PATCH", "/api/accounts/seeded1", { enabled: false })
-          expect(disabled).toMatchObject({
-            status: 200,
-            json: { enabled: false, status: "disabled", priority: 1 },
-          })
-          expect(yield* servedBy).toBe("Bearer sk-ant-oat01-seeded-2")
-
-          yield* home.api("PATCH", "/api/accounts/seeded1", { enabled: true })
-          expect(yield* servedBy).toBe("Bearer sk-ant-oat01-seeded-1")
-        }),
-      ),
-    )
-
-    it.effect("a request streaming on a removed account completes, and the next goes on", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.seedAccount(alice, { priority: 1, enabled: true, needsSignIn: false })
-          yield* home.seedAccount(bob, { priority: 2, enabled: true, needsSignIn: false })
-          const key = yield* home.proxyKey
-          const first = 'event: message_start\ndata: {"type":"message_start"}\n\n'
-          const rest = 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
-          // Claude sends the rest only once the account has been removed.
-          const { promise: removed, resolve: onRemoved } = Promise.withResolvers<void>()
-          claude.answerApiWith(
-            () =>
-              new Response(
-                new ReadableStream<Uint8Array>({
-                  async start(controller) {
-                    controller.enqueue(new TextEncoder().encode(first))
-                    await removed
-                    controller.enqueue(new TextEncoder().encode(rest))
-                    controller.close()
-                  },
-                }),
-                { headers: { "content-type": "text/event-stream" } },
-              ),
-          )
-
-          const response = yield* Effect.promise(() =>
-            fetch(`${home.address}/v1/messages?beta=true`, {
-              method: "POST",
-              headers: { "content-type": "application/json", "x-api-key": key },
-              body: messagesBody,
-            }),
-          )
           const reader = (response.body ?? new ReadableStream<Uint8Array>()).getReader()
-          yield* Effect.promise(() => reader.read())
-          expect(yield* home.api("DELETE", "/api/accounts/seeded1")).toMatchObject({ status: 200 })
-          onRemoved()
+          const firstRead = await Promise.race([
+            reader.read(),
+            Bun.sleep(3000).then(() => "the first event did not arrive within 3 seconds" as const),
+          ])
+          if (typeof firstRead === "string") {
+            releaseRest()
+            return {
+              contentType: response.headers.get("content-type"),
+              beforeRest: firstRead,
+              all: "",
+            }
+          }
           const decoder = new TextDecoder()
+          const beforeRest = decoder.decode(firstRead.value, { stream: true })
+          releaseRest()
           const readRest = async (text: string): Promise<string> => {
             const chunk = await reader.read()
             return chunk.done
               ? text
               : readRest(text + decoder.decode(chunk.value, { stream: true }))
           }
-          const received = yield* Effect.promise(() => readRest(""))
-          expect(received).toBe(rest)
+          return {
+            contentType: response.headers.get("content-type"),
+            beforeRest,
+            all: await readRest(beforeRest),
+          }
+        })
 
-          expect((yield* home.sendMessage).status).toBe(200)
-          expect(claude.apiRequests().map((request) => request.headers["authorization"])).toEqual([
-            "Bearer sk-ant-oat01-seeded-1",
-            "Bearer sk-ant-oat01-seeded-2",
-          ])
-        }),
-      ),
-    )
+        expect(received).toEqual({
+          contentType: "text/event-stream",
+          beforeRest: first,
+          all: first + rest,
+        })
+      }),
+    ),
+  )
 
-    it.effect("with no Claude account, the client is told to add one", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          const response = yield* home.sendMessage
-          expect(response.status).toBe(400)
-          expect(JSON.parse(response.text)).toEqual({
-            type: "error",
-            error: {
-              type: "invalid_request_error",
-              message:
-                "agent-proxy: no Claude account. Add one with `agent-proxy accounts add claude`.",
-            },
-          })
-          expect(claude.apiRequests()).toEqual([])
-        }),
-      ),
-    )
-
-    it.effect("with every Claude account needing sign-in or disabled, the client is told so", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.seedAccount(alice, { priority: 1, enabled: true, needsSignIn: true })
-          yield* home.seedAccount(bob, { priority: 2, enabled: false, needsSignIn: false })
-          const response = yield* home.sendMessage
-          expect(response.status).toBe(400)
-          expect(JSON.parse(response.text)).toEqual({
-            type: "error",
-            error: {
-              type: "invalid_request_error",
-              message:
-                "agent-proxy: no Claude account available, every account needs sign-in or is disabled. Run `agent-proxy accounts`.",
-            },
-          })
-          expect(claude.apiRequests()).toEqual([])
-        }),
-      ),
-    )
-
-    it.effect("rotating the key stops the old key at once and serves the new one", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          const oldKey = yield* home.proxyKey
-
-          const rotated = yield* home.send("/api/key/rotate", { method: "POST" })
-          expect(rotated.status).toBe(200)
-          const newKey = String(JSON.parse(rotated.text).key)
-          expect(newKey).not.toBe(oldKey)
-          expect(yield* home.proxyKey).toBe(newKey)
-
-          const withKey = (key: string) =>
-            home.send("/v1/messages?beta=true", {
-              method: "POST",
-              headers: { "content-type": "application/json", "x-api-key": key },
-              body: messagesBody,
-            })
-          const old = yield* withKey(oldKey)
-          expect(old.status).toBe(401)
-          expect(JSON.parse(old.text).error.message).toMatch(/^agent-proxy: wrong proxy key\./)
-          expect((yield* withKey(newKey)).status).toBe(200)
-        }),
-      ),
-    )
-
-    it.effect("the key is kept across restarts, alone in a file only the owner can read", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem
-          const claude = yield* fakeClaude
-          const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
-          const dataDir = `${dataHome}/agent-proxy`
-          const keyFile = `${dataDir}/key`
-          /** Runs `use` against a daemon that stops once it returns. */
-          const withDaemon = <A>(
-            use: (home: Effect.Success<ReturnType<typeof makeHome>>) => Effect.Effect<A>,
-          ) => Effect.scoped(Effect.flatMap(makeHome(claude, { dataHome }), use))
-
-          const first = yield* withDaemon((home) => home.proxyKey)
-          expect(yield* fs.readFileString(keyFile)).toBe(first)
-          expect((yield* fs.stat(keyFile)).mode & 0o777).toBe(0o600)
-          expect((yield* fs.stat(dataDir)).mode & 0o777).toBe(0o700)
-
-          const rotated = yield* withDaemon((home) =>
-            Effect.gen(function* () {
-              expect(yield* home.proxyKey).toBe(first)
-              const response = yield* home.send("/api/key/rotate", { method: "POST" })
-              return String(JSON.parse(response.text).key)
+  it.effect("a compressed answer reaches the client as Claude encoded it", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const key = yield* home.proxyKey
+        const body = JSON.stringify({
+          type: "message",
+          content: [{ type: "text", text: "zipped" }],
+        })
+        claude.answerApiWith(
+          (request) =>
+            new Response(Bun.gzipSync(body), {
+              headers: {
+                "content-type": "application/json",
+                "content-encoding": "gzip",
+                vary: request.headers.get("accept-encoding") ?? "",
+              },
             }),
-          )
-          expect(yield* withDaemon((home) => home.proxyKey)).toBe(rotated)
-          expect(yield* fs.readFileString(keyFile)).toBe(rotated)
-          expect(
-            (yield* fs.readDirectory(dataDir)).filter((name) => name.endsWith(".tmp")),
-          ).toEqual([])
-        }),
-      ),
-    )
+        )
 
-    it.effect("a client that stops reading mid-stream cancels Claude's stream", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          const key = yield* home.proxyKey
-          const { promise: cancelled, resolve: onCancel } = Promise.withResolvers<"cancelled">()
-          claude.answerApiWith(
-            () =>
-              new Response(
-                new ReadableStream<Uint8Array>({
-                  start(controller) {
-                    controller.enqueue(
-                      new TextEncoder().encode('event: ping\ndata: {"type":"ping"}\n\n'),
-                    )
-                  },
-                  cancel() {
-                    onCancel("cancelled")
-                  },
-                }),
-                { headers: { "content-type": "text/event-stream" } },
-              ),
-          )
+        const response = yield* home.send("/v1/messages?beta=true", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "accept-encoding": "gzip, deflate, br",
+            "x-api-key": key,
+          },
+          body: messagesBody,
+        })
 
-          const outcome = yield* Effect.promise(async () => {
-            const controller = new AbortController()
-            const response = await fetch(`${home.address}/v1/messages?beta=true`, {
-              method: "POST",
-              headers: { "content-type": "application/json", "x-api-key": key },
-              body: messagesBody,
-              signal: controller.signal,
-            })
-            await response.body?.getReader().read()
-            controller.abort()
-            return Promise.race([cancelled, Bun.sleep(3000).then(() => "still streaming" as const)])
-          })
+        expect(response.status).toBe(200)
+        expect(response.headers.get("vary")).toBe("gzip, deflate, br")
+        expect(response.text).toBe(body)
+      }),
+    ),
+  )
 
-          expect(outcome).toBe("cancelled")
-        }),
-      ),
-    )
+  it.effect("Claude Code's startup check, HEAD /api/hello without a key, gets 200", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        const response = yield* home.send("/api/hello", { method: "HEAD" })
+        expect(response.status).toBe(200)
+      }),
+    ),
+  )
 
-    it.effect("when Claude cannot be reached, the client gets a 502 saying so", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          // Nothing listens on port 1.
-          const home = yield* makeHome(claude, { apiBaseUrl: "http://127.0.0.1:1" })
-          yield* home.signIn(alice)
-          const response = yield* home.sendMessage
-          expect(response.status).toBe(502)
-          expect(JSON.parse(response.text)).toEqual({
-            type: "error",
-            error: {
-              type: "api_error",
-              message:
-                "agent-proxy: could not reach Claude. Check this machine's network connection.",
-            },
-          })
-        }),
-      ),
-    )
+  it.effect("the highest-priority Active Claude account serves the request", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.seedAccount(bob, { priority: 1, enabled: true, needsSignIn: true })
+        yield* home.seedAccount(bob, { priority: 2, enabled: false, needsSignIn: false })
+        const aliceToken = yield* home.signIn(alice)
+        yield* home.signIn(bob)
 
-    it.effect("AGENT_PROXY_PROVIDER_ENDPOINTS points proxied requests at another Claude API", () =>
-      TestClock.withLive(
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude, { endpointsFromEnv: true })
-          const token = yield* home.signIn(alice)
+        expect((yield* home.sendMessage).status).toBe(200)
+        expect(claude.apiRequests().map((request) => request.headers["authorization"])).toEqual([
+          `Bearer ${aliceToken}`,
+        ])
+      }),
+    ),
+  )
+
+  it.effect("a disabled account is skipped, and re-enabled serves again from its slot", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.seedAccount(alice, { priority: 1, enabled: true, needsSignIn: false })
+        yield* home.seedAccount(bob, { priority: 2, enabled: true, needsSignIn: false })
+        const servedBy = Effect.gen(function* () {
           expect((yield* home.sendMessage).status).toBe(200)
-          expect(claude.apiRequests().map((request) => request.headers["authorization"])).toEqual([
-            `Bearer ${token}`,
-          ])
-        }),
-      ),
-    )
-  },
-)
+          return claude.apiRequests().at(-1)?.headers["authorization"]
+        })
+
+        const disabled = yield* home.api("PATCH", "/api/accounts/seeded1", { enabled: false })
+        expect(disabled).toMatchObject({
+          status: 200,
+          json: { enabled: false, status: "disabled", priority: 1 },
+        })
+        expect(yield* servedBy).toBe("Bearer sk-ant-oat01-seeded-2")
+
+        yield* home.api("PATCH", "/api/accounts/seeded1", { enabled: true })
+        expect(yield* servedBy).toBe("Bearer sk-ant-oat01-seeded-1")
+      }),
+    ),
+  )
+
+  it.effect("a request streaming on a removed account completes, and the next goes on", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.seedAccount(alice, { priority: 1, enabled: true, needsSignIn: false })
+        yield* home.seedAccount(bob, { priority: 2, enabled: true, needsSignIn: false })
+        const key = yield* home.proxyKey
+        const first = 'event: message_start\ndata: {"type":"message_start"}\n\n'
+        const rest = 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+        // Claude sends the rest only once the account has been removed.
+        const { promise: removed, resolve: onRemoved } = Promise.withResolvers<void>()
+        claude.answerApiWith(
+          () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                async start(controller) {
+                  controller.enqueue(new TextEncoder().encode(first))
+                  await removed
+                  controller.enqueue(new TextEncoder().encode(rest))
+                  controller.close()
+                },
+              }),
+              { headers: { "content-type": "text/event-stream" } },
+            ),
+        )
+
+        const response = yield* Effect.promise(() =>
+          fetch(`${home.address}/v1/messages?beta=true`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-api-key": key },
+            body: messagesBody,
+          }),
+        )
+        const reader = (response.body ?? new ReadableStream<Uint8Array>()).getReader()
+        yield* Effect.promise(() => reader.read())
+        expect(yield* home.api("DELETE", "/api/accounts/seeded1")).toMatchObject({ status: 200 })
+        onRemoved()
+        const decoder = new TextDecoder()
+        const readRest = async (text: string): Promise<string> => {
+          const chunk = await reader.read()
+          return chunk.done ? text : readRest(text + decoder.decode(chunk.value, { stream: true }))
+        }
+        const received = yield* Effect.promise(() => readRest(""))
+        expect(received).toBe(rest)
+
+        expect((yield* home.sendMessage).status).toBe(200)
+        expect(claude.apiRequests().map((request) => request.headers["authorization"])).toEqual([
+          "Bearer sk-ant-oat01-seeded-1",
+          "Bearer sk-ant-oat01-seeded-2",
+        ])
+      }),
+    ),
+  )
+
+  it.effect("with no Claude account, the client is told to add one", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        const response = yield* home.sendMessage
+        expect(response.status).toBe(400)
+        expect(JSON.parse(response.text)).toEqual({
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message:
+              "agent-proxy: no Claude account. Add one with `agent-proxy accounts add claude`.",
+          },
+        })
+        expect(claude.apiRequests()).toEqual([])
+      }),
+    ),
+  )
+
+  it.effect("with every Claude account needing sign-in or disabled, the client is told so", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.seedAccount(alice, { priority: 1, enabled: true, needsSignIn: true })
+        yield* home.seedAccount(bob, { priority: 2, enabled: false, needsSignIn: false })
+        const response = yield* home.sendMessage
+        expect(response.status).toBe(400)
+        expect(JSON.parse(response.text)).toEqual({
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message:
+              "agent-proxy: no Claude account available, every account needs sign-in or is disabled. Run `agent-proxy accounts`.",
+          },
+        })
+        expect(claude.apiRequests()).toEqual([])
+      }),
+    ),
+  )
+
+  it.effect("rotating the key stops the old key at once and serves the new one", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const oldKey = yield* home.proxyKey
+
+        const rotated = yield* home.send("/api/key/rotate", { method: "POST" })
+        expect(rotated.status).toBe(200)
+        const newKey = String(JSON.parse(rotated.text).key)
+        expect(newKey).not.toBe(oldKey)
+        expect(yield* home.proxyKey).toBe(newKey)
+
+        const withKey = (key: string) =>
+          home.send("/v1/messages?beta=true", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-api-key": key },
+            body: messagesBody,
+          })
+        const old = yield* withKey(oldKey)
+        expect(old.status).toBe(401)
+        expect(JSON.parse(old.text).error.message).toMatch(/^agent-proxy: wrong proxy key\./)
+        expect((yield* withKey(newKey)).status).toBe(200)
+      }),
+    ),
+  )
+
+  it.effect("the key is kept across restarts, alone in a file only the owner can read", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const claude = yield* fakeClaude
+        const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
+        const dataDir = `${dataHome}/agent-proxy`
+        const keyFile = `${dataDir}/key`
+        /** Runs `use` against a daemon that stops once it returns. */
+        const withDaemon = <A>(
+          use: (home: Effect.Success<ReturnType<typeof makeHome>>) => Effect.Effect<A>,
+        ) => Effect.scoped(Effect.flatMap(makeHome(claude, { dataHome }), use))
+
+        const first = yield* withDaemon((home) => home.proxyKey)
+        expect(yield* fs.readFileString(keyFile)).toBe(first)
+        expect((yield* fs.stat(keyFile)).mode & 0o777).toBe(0o600)
+        expect((yield* fs.stat(dataDir)).mode & 0o777).toBe(0o700)
+
+        const rotated = yield* withDaemon((home) =>
+          Effect.gen(function* () {
+            expect(yield* home.proxyKey).toBe(first)
+            const response = yield* home.send("/api/key/rotate", { method: "POST" })
+            return String(JSON.parse(response.text).key)
+          }),
+        )
+        expect(yield* withDaemon((home) => home.proxyKey)).toBe(rotated)
+        expect(yield* fs.readFileString(keyFile)).toBe(rotated)
+        expect((yield* fs.readDirectory(dataDir)).filter((name) => name.endsWith(".tmp"))).toEqual(
+          [],
+        )
+      }),
+    ),
+  )
+
+  it.effect("a client that stops reading mid-stream cancels Claude's stream", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        const key = yield* home.proxyKey
+        const { promise: cancelled, resolve: onCancel } = Promise.withResolvers<"cancelled">()
+        claude.answerApiWith(
+          () =>
+            new Response(
+              new ReadableStream<Uint8Array>({
+                start(controller) {
+                  controller.enqueue(
+                    new TextEncoder().encode('event: ping\ndata: {"type":"ping"}\n\n'),
+                  )
+                },
+                cancel() {
+                  onCancel("cancelled")
+                },
+              }),
+              { headers: { "content-type": "text/event-stream" } },
+            ),
+        )
+
+        const outcome = yield* Effect.promise(async () => {
+          const controller = new AbortController()
+          const response = await fetch(`${home.address}/v1/messages?beta=true`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-api-key": key },
+            body: messagesBody,
+            signal: controller.signal,
+          })
+          await response.body?.getReader().read()
+          controller.abort()
+          return Promise.race([cancelled, Bun.sleep(3000).then(() => "still streaming" as const)])
+        })
+
+        expect(outcome).toBe("cancelled")
+      }),
+    ),
+  )
+
+  it.effect("when Claude cannot be reached, the client gets a 502 saying so", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        // Nothing listens on port 1.
+        const home = yield* makeHome(claude, { apiBaseUrl: "http://127.0.0.1:1" })
+        yield* home.signIn(alice)
+        const response = yield* home.sendMessage
+        expect(response.status).toBe(502)
+        expect(JSON.parse(response.text)).toEqual({
+          type: "error",
+          error: {
+            type: "api_error",
+            message:
+              "agent-proxy: could not reach Claude. Check this machine's network connection.",
+          },
+        })
+      }),
+    ),
+  )
+
+  it.effect("AGENT_PROXY_PROVIDER_ENDPOINTS points proxied requests at another Claude API", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude, { endpointsFromEnv: true })
+        const token = yield* home.signIn(alice)
+        expect((yield* home.sendMessage).status).toBe(200)
+        expect(claude.apiRequests().map((request) => request.headers["authorization"])).toEqual([
+          `Bearer ${token}`,
+        ])
+      }),
+    ),
+  )
+})

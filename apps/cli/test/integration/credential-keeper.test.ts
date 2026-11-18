@@ -8,6 +8,7 @@ import type { Credentials } from "../../src/accounts/account.ts"
 import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints, realEndpoints } from "../../src/providers/endpoints.ts"
+import { RuntimeInfo } from "../../src/runtime-info.ts"
 import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
 
 // The credential keeper, in-process: a real daemon on loopback in a throwaway
@@ -207,425 +208,429 @@ const rejectToken =
 const upstreamTokens = (claude: FakeClaude) =>
   claude.apiRequests().map((request) => request.headers["authorization"])
 
-layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.layer))(
-  "the credential keeper",
-  (it) => {
-    it.effect("refreshes a token an hour before it expires, with no request needing it", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        yield* home.signIn(alice)
-        expect(claude.refreshRequests()).toEqual([])
+const services = Layer.mergeAll(
+  BunServices.layer,
+  RuntimeInfo.layerProcess,
+  Processes.layerProcess,
+  FetchHttpClient.layer,
+)
 
-        // The keeper checks once a minute; the clock jumps past checks that
-        // are still reading the store, so it moves to an hour before expiry
-        // first, then one check later.
-        yield* untilRefreshDue
-        yield* within3s("the refresh", claude.refreshesArrived(1))
+layer(services)("the credential keeper", (it) => {
+  it.effect("refreshes a token an hour before it expires, with no request needing it", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      yield* home.signIn(alice)
+      expect(claude.refreshRequests()).toEqual([])
 
-        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
-        expect((yield* home.sendMessage).status).toBe(200)
-        expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-fake-2"])
-      }),
-    )
+      // The keeper checks once a minute; the clock jumps past checks that
+      // are still reading the store, so it moves to an hour before expiry
+      // first, then one check later.
+      yield* untilRefreshDue
+      yield* within3s("the refresh", claude.refreshesArrived(1))
 
-    it.effect("many requests while a token is expired cause exactly one refresh", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const held = claude.holdNextRefresh()
-        // The daemon starts holding an account whose token expired as it stopped.
-        const home = yield* makeHome(claude, {
-          seed: { ...claude.grant(alice), expiresAt: "1970-01-01T00:00:00.000Z" },
-        })
+      expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
+      expect((yield* home.sendMessage).status).toBe(200)
+      expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-fake-2"])
+    }),
+  )
 
-        const responses = yield* Effect.all(
-          Array.from({ length: 10 }, () => home.sendMessage),
-          { concurrency: "unbounded" },
-        ).pipe(Effect.forkChild)
-        yield* within3s("the refresh", held.arrived)
-        // Give the requests time to reach the daemon while the refresh is held.
-        yield* Effect.promise(() => Bun.sleep(200))
-        expect(claude.apiRequests()).toEqual([])
-        held.release()
+  it.effect("many requests while a token is expired cause exactly one refresh", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const held = claude.holdNextRefresh()
+      // The daemon starts holding an account whose token expired as it stopped.
+      const home = yield* makeHome(claude, {
+        seed: { ...claude.grant(alice), expiresAt: "1970-01-01T00:00:00.000Z" },
+      })
 
-        expect((yield* Fiber.join(responses)).map((response) => response.status)).toEqual(
-          Array.from({ length: 10 }, () => 200),
-        )
-        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
-        expect(upstreamTokens(claude)).toEqual(
-          Array.from({ length: 10 }, () => "Bearer sk-ant-oat01-fake-2"),
-        )
-      }),
-    )
+      const responses = yield* Effect.all(
+        Array.from({ length: 10 }, () => home.sendMessage),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild)
+      yield* within3s("the refresh", held.arrived)
+      // Give the requests time to reach the daemon while the refresh is held.
+      yield* Effect.promise(() => Bun.sleep(200))
+      expect(claude.apiRequests()).toEqual([])
+      held.release()
 
-    it.effect(
-      "a request whose token Claude rejects is retried once after a refresh, and succeeds",
-      () =>
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          claude.answerApiWith(rejectToken("Bearer sk-ant-oat01-fake-1"))
+      expect((yield* Fiber.join(responses)).map((response) => response.status)).toEqual(
+        Array.from({ length: 10 }, () => 200),
+      )
+      expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
+      expect(upstreamTokens(claude)).toEqual(
+        Array.from({ length: 10 }, () => "Bearer sk-ant-oat01-fake-2"),
+      )
+    }),
+  )
 
-          const response = yield* home.sendMessage
-
-          expect(response.status).toBe(200)
-          expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
-          expect(upstreamTokens(claude)).toEqual([
-            "Bearer sk-ant-oat01-fake-1",
-            "Bearer sk-ant-oat01-fake-2",
-          ])
-        }),
-    )
-
-    it.effect("a 401 whose body never finishes still leads to the refreshed retry", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        yield* home.signIn(alice)
-        claude.answerApiWith((request) =>
-          request.headers.get("authorization") === "Bearer sk-ant-oat01-fake-1"
-            ? new Response(
-                new ReadableStream<Uint8Array>({
-                  start: (controller) =>
-                    controller.enqueue(new TextEncoder().encode('{"type":"error",')),
-                }),
-                { status: 401, headers: { "content-type": "application/json" } },
-              )
-            : Response.json({ type: "message", content: [{ type: "text", text: "ok" }] }),
-        )
-
-        const response = yield* home.sendMessage.pipe(Effect.timeout("4 seconds"))
-
-        expect(response.status).toBe(200)
-        expect(upstreamTokens(claude)).toEqual([
-          "Bearer sk-ant-oat01-fake-1",
-          "Bearer sk-ant-oat01-fake-2",
-        ])
-      }),
-    )
-
-    it.effect("requests whose token Claude rejects all at once share one refresh", () =>
+  it.effect(
+    "a request whose token Claude rejects is retried once after a refresh, and succeeds",
+    () =>
       Effect.gen(function* () {
         const claude = yield* fakeClaude
         const home = yield* makeHome(claude)
         yield* home.signIn(alice)
         claude.answerApiWith(rejectToken("Bearer sk-ant-oat01-fake-1"))
 
-        const responses = yield* Effect.all(
-          Array.from({ length: 10 }, () => home.sendMessage),
-          { concurrency: "unbounded" },
-        )
-
-        expect(responses.map((response) => response.status)).toEqual(
-          Array.from({ length: 10 }, () => 200),
-        )
-        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
-      }),
-    )
-
-    it.effect("a request Claude rejects again after the refresh moves on to the next account", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        yield* home.signIn(alice)
-        yield* home.signIn(bob)
-        // Alice's tokens are refused, old and refreshed alike; Bob's work.
-        claude.answerApiWith((request) =>
-          ["Bearer sk-ant-oat01-fake-1", "Bearer sk-ant-oat01-fake-3"].includes(
-            request.headers.get("authorization") ?? "",
-          )
-            ? unauthorized()
-            : Response.json({ type: "message", content: [{ type: "text", text: "ok" }] }),
-        )
-
         const response = yield* home.sendMessage
 
         expect(response.status).toBe(200)
+        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
         expect(upstreamTokens(claude)).toEqual([
           "Bearer sk-ant-oat01-fake-1",
-          "Bearer sk-ant-oat01-fake-3",
           "Bearer sk-ant-oat01-fake-2",
         ])
       }),
-    )
+  )
 
-    it.effect(
-      "a request Claude rejects again after the refresh, with no other account, gets Claude's 401",
-      () =>
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          yield* home.signIn(alice)
-          claude.answerApiWith(() => unauthorized())
-
-          const response = yield* home.sendMessage
-
-          expect(response.status).toBe(401)
-          expect(JSON.parse(response.text)).toEqual(unauthorizedBody)
-          expect(upstreamTokens(claude)).toEqual([
-            "Bearer sk-ant-oat01-fake-1",
-            "Bearer sk-ant-oat01-fake-2",
-          ])
-        }),
-    )
-
-    for (const [status, refusal] of [
-      [400, { error: "invalid_grant", error_description: "Refresh token not found or invalid" }],
-      [400, { error: "refresh_token_reused", error_description: "Refresh token already used" }],
-      [401, { error: "invalid_grant", error_description: "Refresh token revoked" }],
-    ] as const) {
-      it.effect(
-        `a refresh refused with ${refusal.error} (${refusal.error_description}) flags the account Needs sign-in`,
-        () =>
-          Effect.gen(function* () {
-            const claude = yield* fakeClaude
-            const home = yield* makeHome(claude)
-            yield* home.signIn(alice)
-            claude.refuseNextRefresh(status, refusal)
-
-            yield* untilRefreshDue
-            yield* within3s("the refresh", claude.refreshesArrived(1))
-            yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-
-            const response = yield* home.sendMessage
-            expect(response.status).toBe(400)
-            expect(JSON.parse(response.text)).toEqual(noAccountAvailable)
-            expect(claude.apiRequests()).toEqual([])
-          }),
+  it.effect("a 401 whose body never finishes still leads to the refreshed retry", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      yield* home.signIn(alice)
+      claude.answerApiWith((request) =>
+        request.headers.get("authorization") === "Bearer sk-ant-oat01-fake-1"
+          ? new Response(
+              new ReadableStream<Uint8Array>({
+                start: (controller) =>
+                  controller.enqueue(new TextEncoder().encode('{"type":"error",')),
+              }),
+              { status: 401, headers: { "content-type": "application/json" } },
+            )
+          : Response.json({ type: "message", content: [{ type: "text", text: "ok" }] }),
       )
-    }
 
-    it.effect("a token Claude rejects whose refresh is refused gets the no-account error", () =>
+      const response = yield* home.sendMessage.pipe(Effect.timeout("4 seconds"))
+
+      expect(response.status).toBe(200)
+      expect(upstreamTokens(claude)).toEqual([
+        "Bearer sk-ant-oat01-fake-1",
+        "Bearer sk-ant-oat01-fake-2",
+      ])
+    }),
+  )
+
+  it.effect("requests whose token Claude rejects all at once share one refresh", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      yield* home.signIn(alice)
+      claude.answerApiWith(rejectToken("Bearer sk-ant-oat01-fake-1"))
+
+      const responses = yield* Effect.all(
+        Array.from({ length: 10 }, () => home.sendMessage),
+        { concurrency: "unbounded" },
+      )
+
+      expect(responses.map((response) => response.status)).toEqual(
+        Array.from({ length: 10 }, () => 200),
+      )
+      expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
+    }),
+  )
+
+  it.effect("a request Claude rejects again after the refresh moves on to the next account", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      yield* home.signIn(alice)
+      yield* home.signIn(bob)
+      // Alice's tokens are refused, old and refreshed alike; Bob's work.
+      claude.answerApiWith((request) =>
+        ["Bearer sk-ant-oat01-fake-1", "Bearer sk-ant-oat01-fake-3"].includes(
+          request.headers.get("authorization") ?? "",
+        )
+          ? unauthorized()
+          : Response.json({ type: "message", content: [{ type: "text", text: "ok" }] }),
+      )
+
+      const response = yield* home.sendMessage
+
+      expect(response.status).toBe(200)
+      expect(upstreamTokens(claude)).toEqual([
+        "Bearer sk-ant-oat01-fake-1",
+        "Bearer sk-ant-oat01-fake-3",
+        "Bearer sk-ant-oat01-fake-2",
+      ])
+    }),
+  )
+
+  it.effect(
+    "a request Claude rejects again after the refresh, with no other account, gets Claude's 401",
+    () =>
       Effect.gen(function* () {
         const claude = yield* fakeClaude
         const home = yield* makeHome(claude)
         yield* home.signIn(alice)
         claude.answerApiWith(() => unauthorized())
-        claude.refuseNextRefresh(400, { error: "invalid_grant" })
 
         const response = yield* home.sendMessage
 
-        expect(response.status).toBe(400)
-        expect(JSON.parse(response.text)).toEqual(noAccountAvailable)
-        expect((yield* home.accounts).map((account) => account.status)).toEqual(["needs-sign-in"])
+        expect(response.status).toBe(401)
+        expect(JSON.parse(response.text)).toEqual(unauthorizedBody)
+        expect(upstreamTokens(claude)).toEqual([
+          "Bearer sk-ant-oat01-fake-1",
+          "Bearer sk-ant-oat01-fake-2",
+        ])
       }),
-    )
+  )
 
-    it.effect("signing in again clears Needs sign-in", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        yield* home.signIn(alice)
-        claude.refuseNextRefresh(400, { error: "invalid_grant" })
-        yield* untilRefreshDue
-        yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-
-        yield* home.signIn(alice)
-
-        expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
-        expect((yield* home.sendMessage).status).toBe(200)
-        expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-fake-2"])
-      }),
-    )
-
+  for (const [status, refusal] of [
+    [400, { error: "invalid_grant", error_description: "Refresh token not found or invalid" }],
+    [400, { error: "refresh_token_reused", error_description: "Refresh token already used" }],
+    [401, { error: "invalid_grant", error_description: "Refresh token revoked" }],
+  ] as const) {
     it.effect(
-      "a refresh whose connection drops after sending is never retried, and the account needs sign-in after a restart too",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem
-          const claude = yield* fakeClaude
-          const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
-
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              const home = yield* makeHome(claude, { dataHome })
-              yield* home.signIn(alice)
-              claude.dropNextRefresh()
-              yield* untilRefreshDue
-              yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-              yield* TestClock.adjust("2 hours")
-              expect((yield* home.sendMessage).status).toBe(400)
-            }),
-          )
-          const restarted = yield* makeHome(claude, { dataHome })
-          yield* TestClock.adjust("1 day")
-
-          expect((yield* restarted.accounts).map((account) => account.status)).toEqual([
-            "needs-sign-in",
-          ])
-          expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
-          expect(claude.apiRequests()).toEqual([])
-        }),
-    )
-
-    it.effect(
-      "a daemon stopped mid-refresh leaves the old token pair, and the account needs sign-in when it starts again",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem
-          const claude = yield* fakeClaude
-          const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
-
-          const before = yield* Effect.scoped(
-            Effect.gen(function* () {
-              const home = yield* makeHome(claude, { dataHome })
-              yield* home.signIn(alice)
-              const files = yield* home.accountFiles
-              // Claude rejects the token hours before it is due a refresh, so
-              // the request asks for one, which is held until the daemon stops.
-              claude.answerApiWith(rejectToken("Bearer sk-ant-oat01-fake-1"))
-              const held = claude.holdNextRefresh()
-              yield* Effect.forkScoped(Effect.ignore(home.sendMessage))
-              yield* within3s("the refresh", held.arrived)
-              return { home, files }
-            }),
-          )
-          const [stopped] = yield* before.home.accountFiles
-          const [signedIn] = before.files
-          const left = JSON.parse(stopped?.text ?? "{}")
-          expect(left.credentials).toEqual(JSON.parse(signedIn?.text ?? "{}").credentials)
-          // The stop left no outcome recorded: it is the restart that flags the account.
-          expect(left.needsSignIn).toBe(false)
-
-          // The account shows Needs sign-in as soon as the daemon is back,
-          // though its token is hours from due, and is never refreshed again.
-          const restarted = yield* makeHome(claude, { dataHome })
-          expect((yield* restarted.accounts).map((account) => account.status)).toEqual([
-            "needs-sign-in",
-          ])
-          yield* TestClock.adjust("1 day")
-          expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
-          expect((yield* restarted.accountFiles).map((file) => file.name)).toEqual([signedIn?.name])
-        }),
-    )
-
-    for (const status of [502, 504]) {
-      it.effect(
-        `a refresh answered by a gateway ${status} is never sent again: the account needs sign-in`,
-        () =>
-          Effect.gen(function* () {
-            const claude = yield* fakeClaude
-            const home = yield* makeHome(claude)
-            yield* home.signIn(alice)
-            // A gateway error says nothing about whether Claude spent the refresh token.
-            claude.refuseNextRefresh(status, { error: "bad_gateway" })
-
-            yield* untilRefreshDue
-            yield* within3s("the refresh", claude.refreshesArrived(1))
-            yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-            yield* TestClock.adjust("1 day")
-            expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
-          }),
-      )
-    }
-
-    it.effect(
-      "a refresh Claude cannot take now leaves the account active and is tried again later",
+      `a refresh refused with ${refusal.error} (${refusal.error_description}) flags the account Needs sign-in`,
       () =>
         Effect.gen(function* () {
           const claude = yield* fakeClaude
           const home = yield* makeHome(claude)
           yield* home.signIn(alice)
-          claude.refuseNextRefresh(503, { error: "temporarily_unavailable" })
+          claude.refuseNextRefresh(status, refusal)
 
           yield* untilRefreshDue
-          yield* within3s("the first refresh", claude.refreshesArrived(1))
-          expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
-          expect((yield* home.sendMessage).status).toBe(200)
+          yield* within3s("the refresh", claude.refreshesArrived(1))
+          yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
 
-          yield* TestClock.adjust("5 minutes")
-          yield* within3s("the second refresh", claude.refreshesArrived(2))
-
-          expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1", "sk-ant-ort01-fake-1"])
-          expect((yield* home.sendMessage).status).toBe(200)
-          expect(upstreamTokens(claude)).toEqual([
-            "Bearer sk-ant-oat01-fake-1",
-            "Bearer sk-ant-oat01-fake-2",
-          ])
+          const response = yield* home.sendMessage
+          expect(response.status).toBe(400)
+          expect(JSON.parse(response.text)).toEqual(noAccountAvailable)
+          expect(claude.apiRequests()).toEqual([])
         }),
     )
+  }
 
+  it.effect("a token Claude rejects whose refresh is refused gets the no-account error", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      yield* home.signIn(alice)
+      claude.answerApiWith(() => unauthorized())
+      claude.refuseNextRefresh(400, { error: "invalid_grant" })
+
+      const response = yield* home.sendMessage
+
+      expect(response.status).toBe(400)
+      expect(JSON.parse(response.text)).toEqual(noAccountAvailable)
+      expect((yield* home.accounts).map((account) => account.status)).toEqual(["needs-sign-in"])
+    }),
+  )
+
+  it.effect("signing in again clears Needs sign-in", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      yield* home.signIn(alice)
+      claude.refuseNextRefresh(400, { error: "invalid_grant" })
+      yield* untilRefreshDue
+      yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+
+      yield* home.signIn(alice)
+
+      expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
+      expect((yield* home.sendMessage).status).toBe(200)
+      expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-fake-2"])
+    }),
+  )
+
+  it.effect(
+    "a refresh whose connection drops after sending is never retried, and the account needs sign-in after a restart too",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const claude = yield* fakeClaude
+        const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const home = yield* makeHome(claude, { dataHome })
+            yield* home.signIn(alice)
+            claude.dropNextRefresh()
+            yield* untilRefreshDue
+            yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+            yield* TestClock.adjust("2 hours")
+            expect((yield* home.sendMessage).status).toBe(400)
+          }),
+        )
+        const restarted = yield* makeHome(claude, { dataHome })
+        yield* TestClock.adjust("1 day")
+
+        expect((yield* restarted.accounts).map((account) => account.status)).toEqual([
+          "needs-sign-in",
+        ])
+        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
+        expect(claude.apiRequests()).toEqual([])
+      }),
+  )
+
+  it.effect(
+    "a daemon stopped mid-refresh leaves the old token pair, and the account needs sign-in when it starts again",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const claude = yield* fakeClaude
+        const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
+
+        const before = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const home = yield* makeHome(claude, { dataHome })
+            yield* home.signIn(alice)
+            const files = yield* home.accountFiles
+            // Claude rejects the token hours before it is due a refresh, so
+            // the request asks for one, which is held until the daemon stops.
+            claude.answerApiWith(rejectToken("Bearer sk-ant-oat01-fake-1"))
+            const held = claude.holdNextRefresh()
+            yield* Effect.forkScoped(Effect.ignore(home.sendMessage))
+            yield* within3s("the refresh", held.arrived)
+            return { home, files }
+          }),
+        )
+        const [stopped] = yield* before.home.accountFiles
+        const [signedIn] = before.files
+        const left = JSON.parse(stopped?.text ?? "{}")
+        expect(left.credentials).toEqual(JSON.parse(signedIn?.text ?? "{}").credentials)
+        // The stop left no outcome recorded: it is the restart that flags the account.
+        expect(left.needsSignIn).toBe(false)
+
+        // The account shows Needs sign-in as soon as the daemon is back,
+        // though its token is hours from due, and is never refreshed again.
+        const restarted = yield* makeHome(claude, { dataHome })
+        expect((yield* restarted.accounts).map((account) => account.status)).toEqual([
+          "needs-sign-in",
+        ])
+        yield* TestClock.adjust("1 day")
+        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
+        expect((yield* restarted.accountFiles).map((file) => file.name)).toEqual([signedIn?.name])
+      }),
+  )
+
+  for (const status of [502, 504]) {
     it.effect(
-      "a refresh that cannot reach Claude leaves the account active and its token in use",
+      `a refresh answered by a gateway ${status} is never sent again: the account needs sign-in`,
       () =>
         Effect.gen(function* () {
           const claude = yield* fakeClaude
-          // Nothing listens on port 1.
-          const home = yield* makeHome(claude, {
-            // Due a refresh as the daemon starts: the token expires in 30 minutes.
-            seed: {
-              accessToken: "sk-ant-oat01-seeded",
-              refreshToken: "sk-ant-ort01-seeded",
-              expiresAt: "1970-01-01T00:30:00.000Z",
-            },
-            tokenUrl: "http://127.0.0.1:1/v1/oauth/token",
-          })
+          const home = yield* makeHome(claude)
+          yield* home.signIn(alice)
+          // A gateway error says nothing about whether Claude spent the refresh token.
+          claude.refuseNextRefresh(status, { error: "bad_gateway" })
 
-          const response = yield* home.sendMessage
-
-          expect(response.status).toBe(200)
-          expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-seeded"])
-          expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
+          yield* untilRefreshDue
+          yield* within3s("the refresh", claude.refreshesArrived(1))
+          yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+          yield* TestClock.adjust("1 day")
+          expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
         }),
     )
+  }
 
-    it.effect("an account removed while its tokens refresh stays removed", () =>
+  it.effect(
+    "a refresh Claude cannot take now leaves the account active and is tried again later",
+    () =>
       Effect.gen(function* () {
         const claude = yield* fakeClaude
         const home = yield* makeHome(claude)
         yield* home.signIn(alice)
-        yield* home.signIn(bob)
-        const held = claude.holdNextRefresh()
+        claude.refuseNextRefresh(503, { error: "temporarily_unavailable" })
+
         yield* untilRefreshDue
-        yield* within3s("alice's refresh", held.arrived)
-
-        const removed = yield* home.fetchJson(`/api/accounts/${yield* home.idOf(alice)}`, {
-          method: "DELETE",
-        })
-        expect(removed.status).toBe(200)
-        held.release()
-        // The keeper refreshes due accounts one after another, so bob's
-        // refresh starts only once alice's has ended.
-        yield* within3s("bob's refresh", claude.refreshesArrived(2))
-
-        expect((yield* home.accounts).map((account) => account.email)).toEqual([bob.email])
-        expect((yield* home.accountFiles).map((file) => JSON.parse(file.text).email)).toEqual([
-          bob.email,
-        ])
-      }),
-    )
-
-    it.effect("a label set while the tokens refresh is kept along with the new tokens", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        yield* home.signIn(alice)
-        const held = claude.holdNextRefresh()
-        yield* untilRefreshDue
-        yield* within3s("the refresh", held.arrived)
-
-        const renamed = yield* home.fetchJson(`/api/accounts/${yield* home.idOf(alice)}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ label: "Work" }),
-        })
-        expect(renamed.status).toBe(200)
-        held.release()
-        // The request waits for the refresh in flight, then uses its tokens.
+        yield* within3s("the first refresh", claude.refreshesArrived(1))
+        expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
         expect((yield* home.sendMessage).status).toBe(200)
 
-        expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-fake-2"])
-        const [file] = yield* home.accountFiles
-        expect(JSON.parse(file?.text ?? "{}")).toMatchObject({
-          label: "Work",
-          credentials: {
-            accessToken: "sk-ant-oat01-fake-2",
-            refreshToken: "sk-ant-ort01-fake-2",
-          },
-        })
-        expect((yield* home.accounts).map((account) => account.label)).toEqual(["Work"])
+        yield* TestClock.adjust("5 minutes")
+        yield* within3s("the second refresh", claude.refreshesArrived(2))
+
+        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1", "sk-ant-ort01-fake-1"])
+        expect((yield* home.sendMessage).status).toBe(200)
+        expect(upstreamTokens(claude)).toEqual([
+          "Bearer sk-ant-oat01-fake-1",
+          "Bearer sk-ant-oat01-fake-2",
+        ])
       }),
-    )
-  },
-)
+  )
+
+  it.effect(
+    "a refresh that cannot reach Claude leaves the account active and its token in use",
+    () =>
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        // Nothing listens on port 1.
+        const home = yield* makeHome(claude, {
+          // Due a refresh as the daemon starts: the token expires in 30 minutes.
+          seed: {
+            accessToken: "sk-ant-oat01-seeded",
+            refreshToken: "sk-ant-ort01-seeded",
+            expiresAt: "1970-01-01T00:30:00.000Z",
+          },
+          tokenUrl: "http://127.0.0.1:1/v1/oauth/token",
+        })
+
+        const response = yield* home.sendMessage
+
+        expect(response.status).toBe(200)
+        expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-seeded"])
+        expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
+      }),
+  )
+
+  it.effect("an account removed while its tokens refresh stays removed", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      yield* home.signIn(alice)
+      yield* home.signIn(bob)
+      const held = claude.holdNextRefresh()
+      yield* untilRefreshDue
+      yield* within3s("alice's refresh", held.arrived)
+
+      const removed = yield* home.fetchJson(`/api/accounts/${yield* home.idOf(alice)}`, {
+        method: "DELETE",
+      })
+      expect(removed.status).toBe(200)
+      held.release()
+      // The keeper refreshes due accounts one after another, so bob's
+      // refresh starts only once alice's has ended.
+      yield* within3s("bob's refresh", claude.refreshesArrived(2))
+
+      expect((yield* home.accounts).map((account) => account.email)).toEqual([bob.email])
+      expect((yield* home.accountFiles).map((file) => JSON.parse(file.text).email)).toEqual([
+        bob.email,
+      ])
+    }),
+  )
+
+  it.effect("a label set while the tokens refresh is kept along with the new tokens", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      yield* home.signIn(alice)
+      const held = claude.holdNextRefresh()
+      yield* untilRefreshDue
+      yield* within3s("the refresh", held.arrived)
+
+      const renamed = yield* home.fetchJson(`/api/accounts/${yield* home.idOf(alice)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ label: "Work" }),
+      })
+      expect(renamed.status).toBe(200)
+      held.release()
+      // The request waits for the refresh in flight, then uses its tokens.
+      expect((yield* home.sendMessage).status).toBe(200)
+
+      expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-fake-2"])
+      const [file] = yield* home.accountFiles
+      expect(JSON.parse(file?.text ?? "{}")).toMatchObject({
+        label: "Work",
+        credentials: {
+          accessToken: "sk-ant-oat01-fake-2",
+          refreshToken: "sk-ant-ort01-fake-2",
+        },
+      })
+      expect((yield* home.accounts).map((account) => account.label)).toEqual(["Work"])
+    }),
+  )
+})

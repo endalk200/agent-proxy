@@ -8,6 +8,7 @@ import { AccountList, LoginView } from "../../src/daemon/api.ts"
 import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints, realEndpoints } from "../../src/providers/endpoints.ts"
+import { RuntimeInfo } from "../../src/runtime-info.ts"
 import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
 
 // The daemon's account and login API, in-process: a real listener on loopback,
@@ -184,487 +185,483 @@ const aliceAtWork: ClaudeUser = {
   organizationType: "claude_team",
 }
 
-layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.layer))(
-  "daemon account API",
-  (it) => {
-    it.effect("lists no accounts before any is added", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        const response = yield* home.request("GET", "/api/accounts")
-        expect(response).toEqual({ status: 200, json: { accounts: [], pools: [] } })
-      }),
-    )
+const services = Layer.mergeAll(
+  BunServices.layer,
+  RuntimeInfo.layerProcess,
+  Processes.layerProcess,
+  FetchHttpClient.layer,
+)
 
-    it.effect(
-      "a redirect login adds the account with its email, plan and provider account id",
-      () =>
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          claude.signInAs(alice)
+layer(services)("daemon account API", (it) => {
+  it.effect("lists no accounts before any is added", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      const response = yield* home.request("GET", "/api/accounts")
+      expect(response).toEqual({ status: 200, json: { accounts: [], pools: [] } })
+    }),
+  )
 
-          const started = yield* home.startLogin()
-          expect(started.status).toBe("pending")
-          const page = yield* signInWithBrowser(started.authorizeUrl)
-          expect(page.status).toBe(200)
-          expect(page.text).toContain("alice@example.com")
+  it.effect("a redirect login adds the account with its email, plan and provider account id", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      claude.signInAs(alice)
 
-          const finished = yield* home.login(started.id)
-          expect(finished).toMatchObject({ status: "succeeded", created: true })
-          expect(yield* home.accounts).toEqual([
-            expect.objectContaining({
-              provider: "claude",
-              providerAccountId: `${alice.accountUuid}:${alice.organizationUuid}`,
-              email: "alice@example.com",
-              plan: "Max 20x",
-              status: "active",
-              enabled: true,
-            }),
-          ])
+      const started = yield* home.startLogin()
+      expect(started.status).toBe("pending")
+      const page = yield* signInWithBrowser(started.authorizeUrl)
+      expect(page.status).toBe(200)
+      expect(page.text).toContain("alice@example.com")
+
+      const finished = yield* home.login(started.id)
+      expect(finished).toMatchObject({ status: "succeeded", created: true })
+      expect(yield* home.accounts).toEqual([
+        expect.objectContaining({
+          provider: "claude",
+          providerAccountId: `${alice.accountUuid}:${alice.organizationUuid}`,
+          email: "alice@example.com",
+          plan: "Max 20x",
+          status: "active",
+          enabled: true,
         }),
-    )
+      ])
+    }),
+  )
 
-    it.effect("a pasted callback URL finishes the login and adds the account", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        claude.signInAs(bob)
+  it.effect("a pasted callback URL finishes the login and adds the account", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      claude.signInAs(bob)
 
-        const started = yield* home.startLogin()
-        const pasted = yield* signInWithoutReachingDaemon(started.authorizeUrl)
-        const response = yield* home.request("POST", `/api/logins/${started.id}/callback`, {
-          url: pasted,
-        })
-        expect(response.status).toBe(200)
-        expect(yield* Schema.decodeUnknownEffect(LoginView)(response.json)).toMatchObject({
-          status: "succeeded",
-          created: true,
-          account: { email: "bob@example.com", plan: "Pro" },
-        })
-        expect(yield* home.accounts).toEqual([
-          expect.objectContaining({
-            provider: "claude",
-            providerAccountId: `${bob.accountUuid}:${bob.organizationUuid}`,
-            email: "bob@example.com",
-            plan: "Pro",
-          }),
-        ])
-      }),
-    )
+      const started = yield* home.startLogin()
+      const pasted = yield* signInWithoutReachingDaemon(started.authorizeUrl)
+      const response = yield* home.request("POST", `/api/logins/${started.id}/callback`, {
+        url: pasted,
+      })
+      expect(response.status).toBe(200)
+      expect(yield* Schema.decodeUnknownEffect(LoginView)(response.json)).toMatchObject({
+        status: "succeeded",
+        created: true,
+        account: { email: "bob@example.com", plan: "Pro" },
+      })
+      expect(yield* home.accounts).toEqual([
+        expect.objectContaining({
+          provider: "claude",
+          providerAccountId: `${bob.accountUuid}:${bob.organizationUuid}`,
+          email: "bob@example.com",
+          plan: "Pro",
+        }),
+      ])
+    }),
+  )
 
-    it.effect("a new account joins the bottom of its pool, labelled after its email", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        yield* home.signIn(alice)
-        yield* home.signIn(bob)
-        yield* home.signIn(aliceAtWork)
-        expect(
-          (yield* home.accounts).map(({ label, email, priority, plan }) => ({
-            label,
-            email,
-            priority,
-            plan,
-          })),
-        ).toEqual([
-          { label: "alice", email: "alice@example.com", priority: 1, plan: "Max 20x" },
-          { label: "bob", email: "bob@example.com", priority: 2, plan: "Pro" },
-          { label: "alice 2", email: "alice@work.example", priority: 3, plan: "Team" },
-        ])
-      }),
-    )
+  it.effect("a new account joins the bottom of its pool, labelled after its email", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      yield* home.signIn(alice)
+      yield* home.signIn(bob)
+      yield* home.signIn(aliceAtWork)
+      expect(
+        (yield* home.accounts).map(({ label, email, priority, plan }) => ({
+          label,
+          email,
+          priority,
+          plan,
+        })),
+      ).toEqual([
+        { label: "alice", email: "alice@example.com", priority: 1, plan: "Max 20x" },
+        { label: "bob", email: "bob@example.com", priority: 2, plan: "Pro" },
+        { label: "alice 2", email: "alice@work.example", priority: 3, plan: "Team" },
+      ])
+    }),
+  )
 
-    it.effect("a new account takes the label it was given", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        const login = yield* home.signIn(alice, { provider: "claude", label: "Personal Max" })
-        expect(login.account?.label).toBe("Personal Max")
-        expect((yield* home.accounts).map((account) => account.label)).toEqual(["Personal Max"])
-      }),
-    )
+  it.effect("a new account takes the label it was given", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      const login = yield* home.signIn(alice, { provider: "claude", label: "Personal Max" })
+      expect(login.account?.label).toBe("Personal Max")
+      expect((yield* home.accounts).map((account) => account.label)).toEqual(["Personal Max"])
+    }),
+  )
 
-    it.effect("signing in again updates the account in place, keeping its settings", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        yield* home.signIn(bob)
-        const first = yield* home.signIn(alice, { provider: "claude", label: "Work" })
-        const again = yield* home.signIn(alice)
+  it.effect("signing in again updates the account in place, keeping its settings", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      yield* home.signIn(bob)
+      const first = yield* home.signIn(alice, { provider: "claude", label: "Work" })
+      const again = yield* home.signIn(alice)
 
-        expect(again).toMatchObject({ status: "succeeded", created: false })
-        expect(again.account?.id).toBe(first.account?.id)
-        const accounts = yield* home.accounts
-        expect(accounts.map(({ email, label, priority }) => ({ email, label, priority }))).toEqual([
-          { email: "bob@example.com", label: "bob", priority: 1 },
-          { email: "alice@example.com", label: "Work", priority: 2 },
-        ])
-        // The file holds the tokens from the latest sign-in.
-        expect(yield* home.readAccountFile(first.account?.id ?? "")).toMatchObject({
-          credentials: { accessToken: claude.issuedAccessTokens().at(-1) },
-        })
-      }),
-    )
+      expect(again).toMatchObject({ status: "succeeded", created: false })
+      expect(again.account?.id).toBe(first.account?.id)
+      const accounts = yield* home.accounts
+      expect(accounts.map(({ email, label, priority }) => ({ email, label, priority }))).toEqual([
+        { email: "bob@example.com", label: "bob", priority: 1 },
+        { email: "alice@example.com", label: "Work", priority: 2 },
+      ])
+      // The file holds the tokens from the latest sign-in.
+      expect(yield* home.readAccountFile(first.account?.id ?? "")).toMatchObject({
+        credentials: { accessToken: claude.issuedAccessTokens().at(-1) },
+      })
+    }),
+  )
 
-    it.effect("signing in again to a disabled account keeps it disabled at its priority", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        const id = yield* home.seedAccount(alice, {
+  it.effect("signing in again to a disabled account keeps it disabled at its priority", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      const id = yield* home.seedAccount(alice, {
+        label: "Old",
+        priority: 3,
+        enabled: false,
+        needsSignIn: true,
+      })
+      const login = yield* home.signIn(alice)
+      expect(login).toMatchObject({ status: "succeeded", created: false })
+      expect(yield* home.accounts).toEqual([
+        expect.objectContaining({
+          id,
           label: "Old",
           priority: 3,
           enabled: false,
-          needsSignIn: true,
-        })
-        const login = yield* home.signIn(alice)
-        expect(login).toMatchObject({ status: "succeeded", created: false })
-        expect(yield* home.accounts).toEqual([
-          expect.objectContaining({
-            id,
-            label: "Old",
-            priority: 3,
-            enabled: false,
-            status: "disabled",
-            plan: "Max 20x",
-          }),
-        ])
-        expect(yield* home.readAccountFile(id)).toMatchObject({
-          credentials: { accessToken: claude.issuedAccessTokens().at(-1) },
-        })
-      }),
-    )
-
-    it.effect("signing in again to an account that needs sign-in makes it active", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        yield* home.seedAccount(bob, { label: "B", priority: 1, enabled: true, needsSignIn: true })
-        expect((yield* home.accounts).map((account) => account.status)).toEqual(["needs-sign-in"])
-        yield* home.signIn(bob)
-        expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
-      }),
-    )
-
-    it.effect(
-      "keeps each account in its own 0600 file in a 0700 directory, with no temp files",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem
-          const home = yield* makeHome(yield* fakeClaude)
-          const first = yield* home.signIn(alice)
-          const second = yield* home.signIn(bob)
-          yield* home.signIn(alice)
-
-          expect((yield* fs.stat(home.dataDir)).mode & 0o777).toBe(0o700)
-          expect((yield* fs.stat(home.accountsDir)).mode & 0o777).toBe(0o700)
-          expect(yield* home.accountFiles).toEqual(
-            [`${first.account?.id}.json`, `${second.account?.id}.json`]
-              .toSorted()
-              .map((name) => ({ name, mode: 0o600 })),
-          )
+          status: "disabled",
+          plan: "Max 20x",
         }),
-    )
+      ])
+      expect(yield* home.readAccountFile(id)).toMatchObject({
+        credentials: { accessToken: claude.issuedAccessTokens().at(-1) },
+      })
+    }),
+  )
 
-    it.effect("ignores a temp file left by a crash mid-write", () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
-        const home = yield* makeHome(yield* fakeClaude)
-        yield* home.signIn(alice)
-        const [file] = yield* home.accountFiles
-        // A crash between writing the temp file and renaming it leaves this behind.
-        yield* fs.writeFileString(`${home.accountsDir}/.${file?.name}.1a2b3c4d.tmp`, '{"id": "ha')
-        expect((yield* home.accounts).map((account) => account.email)).toEqual([
-          "alice@example.com",
-        ])
-      }),
-    )
+  it.effect("signing in again to an account that needs sign-in makes it active", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      yield* home.seedAccount(bob, { label: "B", priority: 1, enabled: true, needsSignIn: true })
+      expect((yield* home.accounts).map((account) => account.status)).toEqual(["needs-sign-in"])
+      yield* home.signIn(bob)
+      expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
+    }),
+  )
 
-    it.effect("cancelling a login stores nothing and frees the callback port", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        const started = yield* home.startLogin()
-        const port = callbackPort(started.authorizeUrl)
-        expect(yield* isFree(port)).toBe(false)
+  it.effect("keeps each account in its own 0600 file in a 0700 directory, with no temp files", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const home = yield* makeHome(yield* fakeClaude)
+      const first = yield* home.signIn(alice)
+      const second = yield* home.signIn(bob)
+      yield* home.signIn(alice)
 
-        const cancelled = yield* home.request("DELETE", `/api/logins/${started.id}`)
-        expect(cancelled.status).toBe(200)
-        expect(cancelled.json).toMatchObject({ status: "cancelled" })
-        expect(yield* isFree(port)).toBe(true)
-        // The browser coming back late finds nothing listening and adds nothing.
-        expect(yield* Effect.exit(signInWithBrowser(started.authorizeUrl))).toMatchObject({
-          _tag: "Failure",
-        })
-        expect(yield* home.accounts).toEqual([])
-      }),
-    )
+      expect((yield* fs.stat(home.dataDir)).mode & 0o777).toBe(0o700)
+      expect((yield* fs.stat(home.accountsDir)).mode & 0o777).toBe(0o700)
+      expect(yield* home.accountFiles).toEqual(
+        [`${first.account?.id}.json`, `${second.account?.id}.json`]
+          .toSorted()
+          .map((name) => ({ name, mode: 0o600 })),
+      )
+    }),
+  )
 
-    it.effect("a login nobody finishes expires after 10 minutes and frees the callback port", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        const started = yield* home.startLogin()
-        yield* TestClock.adjust("9 minutes")
-        expect((yield* home.login(started.id)).status).toBe("pending")
-        yield* TestClock.adjust("1 minute")
-        expect((yield* home.login(started.id)).status).toBe("expired")
-        expect(yield* isFree(callbackPort(started.authorizeUrl))).toBe(true)
-        expect(yield* home.accounts).toEqual([])
-      }),
-    )
+  it.effect("ignores a temp file left by a crash mid-write", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const home = yield* makeHome(yield* fakeClaude)
+      yield* home.signIn(alice)
+      const [file] = yield* home.accountFiles
+      // A crash between writing the temp file and renaming it leaves this behind.
+      yield* fs.writeFileString(`${home.accountsDir}/.${file?.name}.1a2b3c4d.tmp`, '{"id": "ha')
+      expect((yield* home.accounts).map((account) => account.email)).toEqual(["alice@example.com"])
+    }),
+  )
 
-    it.effect("starting another Claude login cancels the one still waiting", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        const first = yield* home.startLogin()
-        const second = yield* home.startLogin()
-        expect((yield* home.login(first.id)).status).toBe("cancelled")
-        expect((yield* home.login(second.id)).status).toBe("pending")
-      }),
-    )
+  it.effect("cancelling a login stores nothing and frees the callback port", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      const started = yield* home.startLogin()
+      const port = callbackPort(started.authorizeUrl)
+      expect(yield* isFree(port)).toBe(false)
 
-    it.effect("rejects a pasted URL from another sign-in and keeps waiting", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        const started = yield* home.startLogin()
-        const pasted = new URL(yield* signInWithoutReachingDaemon(started.authorizeUrl))
-        pasted.searchParams.set("state", "someone-elses-state")
+      const cancelled = yield* home.request("DELETE", `/api/logins/${started.id}`)
+      expect(cancelled.status).toBe(200)
+      expect(cancelled.json).toMatchObject({ status: "cancelled" })
+      expect(yield* isFree(port)).toBe(true)
+      // The browser coming back late finds nothing listening and adds nothing.
+      expect(yield* Effect.exit(signInWithBrowser(started.authorizeUrl))).toMatchObject({
+        _tag: "Failure",
+      })
+      expect(yield* home.accounts).toEqual([])
+    }),
+  )
 
-        const rejected = yield* home.request("POST", `/api/logins/${started.id}/callback`, {
-          url: pasted.toString(),
-        })
-        expect(rejected.status).toBe(400)
-        expect(rejected.json).toEqual({
-          error: "That URL belongs to another Claude sign-in, not the one in progress.",
-        })
-        expect((yield* home.login(started.id)).status).toBe("pending")
+  it.effect("a login nobody finishes expires after 10 minutes and frees the callback port", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      const started = yield* home.startLogin()
+      yield* TestClock.adjust("9 minutes")
+      expect((yield* home.login(started.id)).status).toBe("pending")
+      yield* TestClock.adjust("1 minute")
+      expect((yield* home.login(started.id)).status).toBe("expired")
+      expect(yield* isFree(callbackPort(started.authorizeUrl))).toBe(true)
+      expect(yield* home.accounts).toEqual([])
+    }),
+  )
 
-        const notUrl = yield* home.request("POST", `/api/logins/${started.id}/callback`, {
-          url: "the code",
-        })
-        expect(notUrl.status).toBe(400)
-        expect((yield* home.login(started.id)).status).toBe("pending")
-      }),
-    )
+  it.effect("starting another Claude login cancels the one still waiting", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      const first = yield* home.startLogin()
+      const second = yield* home.startLogin()
+      expect((yield* home.login(first.id)).status).toBe("cancelled")
+      expect((yield* home.login(second.id)).status).toBe("pending")
+    }),
+  )
 
-    it.effect("a login the owner denies fails and stores nothing", () =>
-      Effect.gen(function* () {
-        const claude = yield* fakeClaude
-        const home = yield* makeHome(claude)
-        claude.denyNext()
-        const started = yield* home.startLogin()
-        const page = yield* signInWithBrowser(started.authorizeUrl)
-        expect(page.status).toBe(400)
-        expect(yield* home.login(started.id)).toMatchObject({
-          status: "failed",
-          error: "Claude did not grant access: The user denied access",
-        })
-        expect(yield* home.accounts).toEqual([])
-      }),
-    )
+  it.effect("rejects a pasted URL from another sign-in and keeps waiting", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      const started = yield* home.startLogin()
+      const pasted = new URL(yield* signInWithoutReachingDaemon(started.authorizeUrl))
+      pasted.searchParams.set("state", "someone-elses-state")
 
-    it.effect(
-      "a login fails when Claude does not answer the token exchange within 30 seconds",
-      () =>
-        Effect.gen(function* () {
-          const claude = yield* fakeClaude
-          const home = yield* makeHome(claude)
-          const started = yield* home.startLogin()
-          const arrived = claude.hangNextToken()
-          const pasted = yield* signInWithoutReachingDaemon(started.authorizeUrl)
-          const submitted = yield* Effect.forkScoped(
-            home.request("POST", `/api/logins/${started.id}/callback`, { url: pasted }),
-          )
-          yield* Effect.promise(() => arrived)
-          yield* TestClock.adjust("30 seconds")
-          const response = yield* Fiber.join(submitted)
-          expect(response.json).toMatchObject({
-            status: "failed",
-            error: "Claude did not answer within 30 seconds. Try signing in again.",
-          })
-          expect(yield* isFree(callbackPort(started.authorizeUrl))).toBe(true)
-          expect(yield* home.accounts).toEqual([])
-        }),
-    )
+      const rejected = yield* home.request("POST", `/api/logins/${started.id}/callback`, {
+        url: pasted.toString(),
+      })
+      expect(rejected.status).toBe(400)
+      expect(rejected.json).toEqual({
+        error: "That URL belongs to another Claude sign-in, not the one in progress.",
+      })
+      expect((yield* home.login(started.id)).status).toBe("pending")
 
-    it.effect(
-      "repairs a pool whose priorities a failed change left out of order when it starts",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem
-          const claude = yield* fakeClaude
-          const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
-          // A removal that stopped before renumbering leaves a gap at priority 2.
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              const first = yield* makeHome(claude, { dataHome })
-              yield* first.seedAccount(alice, {
-                label: "A",
-                priority: 1,
-                enabled: true,
-                needsSignIn: false,
-              })
-              yield* first.seedAccount(bob, {
-                label: "B",
-                priority: 3,
-                enabled: true,
-                needsSignIn: false,
-              })
-            }),
-          )
-          const second = yield* makeHome(claude, { dataHome })
-          const priorities = (yield* second.accounts).map((account) => account.priority)
-          expect(priorities.toSorted((a, b) => a - b)).toEqual([1, 2])
-        }),
-    )
+      const notUrl = yield* home.request("POST", `/api/logins/${started.id}/callback`, {
+        url: "the code",
+      })
+      expect(notUrl.status).toBe(400)
+      expect((yield* home.login(started.id)).status).toBe("pending")
+    }),
+  )
 
-    it.effect("removes temp files a crash left behind when it starts", () =>
+  it.effect("a login the owner denies fails and stores nothing", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      claude.denyNext()
+      const started = yield* home.startLogin()
+      const page = yield* signInWithBrowser(started.authorizeUrl)
+      expect(page.status).toBe(400)
+      expect(yield* home.login(started.id)).toMatchObject({
+        status: "failed",
+        error: "Claude did not grant access: The user denied access",
+      })
+      expect(yield* home.accounts).toEqual([])
+    }),
+  )
+
+  it.effect("a login fails when Claude does not answer the token exchange within 30 seconds", () =>
+    Effect.gen(function* () {
+      const claude = yield* fakeClaude
+      const home = yield* makeHome(claude)
+      const started = yield* home.startLogin()
+      const arrived = claude.hangNextToken()
+      const pasted = yield* signInWithoutReachingDaemon(started.authorizeUrl)
+      const submitted = yield* Effect.forkScoped(
+        home.request("POST", `/api/logins/${started.id}/callback`, { url: pasted }),
+      )
+      yield* Effect.promise(() => arrived)
+      yield* TestClock.adjust("30 seconds")
+      const response = yield* Fiber.join(submitted)
+      expect(response.json).toMatchObject({
+        status: "failed",
+        error: "Claude did not answer within 30 seconds. Try signing in again.",
+      })
+      expect(yield* isFree(callbackPort(started.authorizeUrl))).toBe(true)
+      expect(yield* home.accounts).toEqual([])
+    }),
+  )
+
+  it.effect(
+    "repairs a pool whose priorities a failed change left out of order when it starts",
+    () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const claude = yield* fakeClaude
         const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
-        // The first daemon signs in, leaves a temp file as a crash would, and is gone.
-        const leftover = yield* Effect.scoped(
+        // A removal that stopped before renumbering leaves a gap at priority 2.
+        yield* Effect.scoped(
           Effect.gen(function* () {
             const first = yield* makeHome(claude, { dataHome })
-            yield* first.signIn(alice)
-            const [file] = yield* first.accountFiles
-            const path = `${first.accountsDir}/.${file?.name}.1a2b3c4d.tmp`
-            yield* fs.writeFileString(path, '{"id": "ha', { mode: 0o600 })
-            return path
+            yield* first.seedAccount(alice, {
+              label: "A",
+              priority: 1,
+              enabled: true,
+              needsSignIn: false,
+            })
+            yield* first.seedAccount(bob, {
+              label: "B",
+              priority: 3,
+              enabled: true,
+              needsSignIn: false,
+            })
           }),
         )
         const second = yield* makeHome(claude, { dataHome })
-        expect(yield* second.accounts).toHaveLength(1)
-        expect(yield* fs.exists(leftover)).toBe(false)
+        const priorities = (yield* second.accounts).map((account) => account.priority)
+        expect(priorities.toSorted((a, b) => a - b)).toEqual([1, 2])
       }),
-    )
+  )
 
-    it.effect("renaming an account changes its label and nothing else", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        const login = yield* home.signIn(alice)
-        const id = login.account?.id ?? ""
-        const response = yield* home.request("PATCH", `/api/accounts/${id}`, { label: "Work" })
-        expect(response.status).toBe(200)
-        expect(response.json).toMatchObject({ id, label: "Work", priority: 1, status: "active" })
-        expect(yield* home.accounts).toEqual([
-          expect.objectContaining({ id, label: "Work", priority: 1, enabled: true }),
-        ])
-      }),
-    )
+  it.effect("removes temp files a crash left behind when it starts", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const claude = yield* fakeClaude
+      const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
+      // The first daemon signs in, leaves a temp file as a crash would, and is gone.
+      const leftover = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const first = yield* makeHome(claude, { dataHome })
+          yield* first.signIn(alice)
+          const [file] = yield* first.accountFiles
+          const path = `${first.accountsDir}/.${file?.name}.1a2b3c4d.tmp`
+          yield* fs.writeFileString(path, '{"id": "ha', { mode: 0o600 })
+          return path
+        }),
+      )
+      const second = yield* makeHome(claude, { dataHome })
+      expect(yield* second.accounts).toHaveLength(1)
+      expect(yield* fs.exists(leftover)).toBe(false)
+    }),
+  )
 
-    it.effect("moving an account to a priority shifts the others in its pool", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        yield* home.signIn(alice)
-        yield* home.signIn(bob)
-        const work = yield* home.signIn(aliceAtWork, { provider: "claude", label: "Work" })
-        const order = Effect.map(home.accounts, (accounts) =>
-          accounts.map(({ label, priority }) => `${priority} ${label}`),
-        )
+  it.effect("renaming an account changes its label and nothing else", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      const login = yield* home.signIn(alice)
+      const id = login.account?.id ?? ""
+      const response = yield* home.request("PATCH", `/api/accounts/${id}`, { label: "Work" })
+      expect(response.status).toBe(200)
+      expect(response.json).toMatchObject({ id, label: "Work", priority: 1, status: "active" })
+      expect(yield* home.accounts).toEqual([
+        expect.objectContaining({ id, label: "Work", priority: 1, enabled: true }),
+      ])
+    }),
+  )
 
-        const up = yield* home.request("PATCH", `/api/accounts/${work.account?.id}`, {
-          priority: 1,
+  it.effect("moving an account to a priority shifts the others in its pool", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      yield* home.signIn(alice)
+      yield* home.signIn(bob)
+      const work = yield* home.signIn(aliceAtWork, { provider: "claude", label: "Work" })
+      const order = Effect.map(home.accounts, (accounts) =>
+        accounts.map(({ label, priority }) => `${priority} ${label}`),
+      )
+
+      const up = yield* home.request("PATCH", `/api/accounts/${work.account?.id}`, {
+        priority: 1,
+      })
+      expect(up).toMatchObject({ status: 200, json: { label: "Work", priority: 1 } })
+      expect(yield* order).toEqual(["1 Work", "2 alice", "3 bob"])
+
+      const alices = (yield* home.accounts).find((account) => account.label === "alice")
+      yield* home.request("PATCH", `/api/accounts/${alices?.id}`, { priority: 3 })
+      expect(yield* order).toEqual(["1 Work", "2 bob", "3 alice"])
+    }),
+  )
+
+  it.effect("refuses a priority outside its pool", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      yield* home.signIn(alice)
+      const login = yield* home.signIn(bob)
+      for (const priority of [0, 3, 1.5]) {
+        const response = yield* home.request("PATCH", `/api/accounts/${login.account?.id}`, {
+          priority,
         })
-        expect(up).toMatchObject({ status: 200, json: { label: "Work", priority: 1 } })
-        expect(yield* order).toEqual(["1 Work", "2 alice", "3 bob"])
-
-        const alices = (yield* home.accounts).find((account) => account.label === "alice")
-        yield* home.request("PATCH", `/api/accounts/${alices?.id}`, { priority: 3 })
-        expect(yield* order).toEqual(["1 Work", "2 bob", "3 alice"])
-      }),
-    )
-
-    it.effect("refuses a priority outside its pool", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        yield* home.signIn(alice)
-        const login = yield* home.signIn(bob)
-        for (const priority of [0, 3, 1.5]) {
-          const response = yield* home.request("PATCH", `/api/accounts/${login.account?.id}`, {
-            priority,
-          })
-          expect(response.status).toBe(400)
-        }
-        const outside = yield* home.request("PATCH", `/api/accounts/${login.account?.id}`, {
-          priority: 3,
-        })
-        expect(outside.json).toEqual({
-          error: "The Claude pool has 2 accounts, so a priority is 1 or 2.",
-        })
-        expect((yield* home.accounts).map(({ label, priority }) => `${priority} ${label}`)).toEqual(
-          ["1 alice", "2 bob"],
-        )
-      }),
-    )
-
-    it.effect("removing an account deletes its file, and the accounts below move up", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        yield* home.signIn(alice)
-        const removed = yield* home.signIn(bob)
-        yield* home.signIn(aliceAtWork)
-        const id = removed.account?.id ?? ""
-
-        const response = yield* home.request("DELETE", `/api/accounts/${id}`)
-        expect(response).toMatchObject({ status: 200, json: { id, email: "bob@example.com" } })
-        expect((yield* home.accountFiles).map((file) => file.name)).not.toContain(`${id}.json`)
-        expect(yield* home.accountFiles).toHaveLength(2)
-        expect((yield* home.accounts).map(({ label, priority }) => `${priority} ${label}`)).toEqual(
-          ["1 alice", "2 alice 2"],
-        )
-      }),
-    )
-
-    it.effect("answers 404 for an account it does not hold", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        for (const method of ["PATCH", "DELETE"] as const) {
-          const response = yield* home.request(method, "/api/accounts/nope", { label: "x" })
-          expect(response).toEqual({ status: 404, json: { error: "No account nope." } })
-        }
-      }),
-    )
-
-    it.effect("says which account gets each pool's new sessions", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        yield* home.seedAccount(alice, {
-          label: "Off",
-          priority: 1,
-          enabled: false,
-          needsSignIn: false,
-        })
-        yield* home.seedAccount(bob, {
-          label: "Signed out",
-          priority: 2,
-          enabled: true,
-          needsSignIn: true,
-        })
-        const pools = Effect.map(
-          home.request("GET", "/api/accounts"),
-          ({ json }) => Schema.decodeUnknownSync(AccountList)(json).pools,
-        )
-        expect(yield* pools).toEqual([{ provider: "claude", newSessionsAccountId: null }])
-
-        const work = yield* home.signIn(aliceAtWork)
-        expect(yield* pools).toEqual([
-          { provider: "claude", newSessionsAccountId: work.account?.id },
-        ])
-      }),
-    )
-
-    it.effect("answers 404 for a login it does not know", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        const response = yield* home.request("GET", "/api/logins/nope")
-        expect(response.status).toBe(404)
-      }),
-    )
-
-    it.effect("refuses to start a login for a provider it does not know", () =>
-      Effect.gen(function* () {
-        const home = yield* makeHome(yield* fakeClaude)
-        const response = yield* home.request("POST", "/api/logins", { provider: "gemini" })
         expect(response.status).toBe(400)
-      }),
-    )
-  },
-)
+      }
+      const outside = yield* home.request("PATCH", `/api/accounts/${login.account?.id}`, {
+        priority: 3,
+      })
+      expect(outside.json).toEqual({
+        error: "The Claude pool has 2 accounts, so a priority is 1 or 2.",
+      })
+      expect((yield* home.accounts).map(({ label, priority }) => `${priority} ${label}`)).toEqual([
+        "1 alice",
+        "2 bob",
+      ])
+    }),
+  )
+
+  it.effect("removing an account deletes its file, and the accounts below move up", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      yield* home.signIn(alice)
+      const removed = yield* home.signIn(bob)
+      yield* home.signIn(aliceAtWork)
+      const id = removed.account?.id ?? ""
+
+      const response = yield* home.request("DELETE", `/api/accounts/${id}`)
+      expect(response).toMatchObject({ status: 200, json: { id, email: "bob@example.com" } })
+      expect((yield* home.accountFiles).map((file) => file.name)).not.toContain(`${id}.json`)
+      expect(yield* home.accountFiles).toHaveLength(2)
+      expect((yield* home.accounts).map(({ label, priority }) => `${priority} ${label}`)).toEqual([
+        "1 alice",
+        "2 alice 2",
+      ])
+    }),
+  )
+
+  it.effect("answers 404 for an account it does not hold", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      for (const method of ["PATCH", "DELETE"] as const) {
+        const response = yield* home.request(method, "/api/accounts/nope", { label: "x" })
+        expect(response).toEqual({ status: 404, json: { error: "No account nope." } })
+      }
+    }),
+  )
+
+  it.effect("says which account gets each pool's new sessions", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      yield* home.seedAccount(alice, {
+        label: "Off",
+        priority: 1,
+        enabled: false,
+        needsSignIn: false,
+      })
+      yield* home.seedAccount(bob, {
+        label: "Signed out",
+        priority: 2,
+        enabled: true,
+        needsSignIn: true,
+      })
+      const pools = Effect.map(
+        home.request("GET", "/api/accounts"),
+        ({ json }) => Schema.decodeUnknownSync(AccountList)(json).pools,
+      )
+      expect(yield* pools).toEqual([{ provider: "claude", newSessionsAccountId: null }])
+
+      const work = yield* home.signIn(aliceAtWork)
+      expect(yield* pools).toEqual([{ provider: "claude", newSessionsAccountId: work.account?.id }])
+    }),
+  )
+
+  it.effect("answers 404 for a login it does not know", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      const response = yield* home.request("GET", "/api/logins/nope")
+      expect(response.status).toBe(404)
+    }),
+  )
+
+  it.effect("refuses to start a login for a provider it does not know", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      const response = yield* home.request("POST", "/api/logins", { provider: "gemini" })
+      expect(response.status).toBe(400)
+    }),
+  )
+})

@@ -24,6 +24,7 @@ import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
 import { carol, dave, fakeCodex } from "../support/fake-codex.ts"
+import { noLaunchd } from "../support/no-launchd.ts"
 
 // `accounts` and `accounts add`, driven in-process through the real command
 // tree against an in-process daemon (`daemon run`) whose Claude logins go to a
@@ -216,6 +217,7 @@ layer(
     BunServices.layer,
     RuntimeInfo.layerProcess,
     Processes.layerProcess,
+    noLaunchd,
     FetchHttpClient.layer,
   ),
 )("agent-proxy accounts", (it) => {

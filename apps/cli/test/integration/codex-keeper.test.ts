@@ -7,6 +7,7 @@ import { TestClock } from "effect/testing"
 import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
+import { RuntimeInfo } from "../../src/runtime-info.ts"
 import { fakeClaude } from "../support/fake-claude.ts"
 import { carol, type FakeCodex, fakeCodex } from "../support/fake-codex.ts"
 
@@ -120,161 +121,165 @@ const makeHome = (codex: FakeCodex) =>
 const upstreamTokens = (codex: FakeCodex) =>
   codex.apiRequests().map((request) => request.headers["authorization"])
 
-layer(Layer.mergeAll(BunServices.layer, Processes.layerProcess, FetchHttpClient.layer))(
-  "the credential keeper with Codex accounts",
-  (it) => {
-    it.effect("refreshes a Codex token a day before it expires, and not before", () =>
-      Effect.gen(function* () {
-        const codex = yield* fakeOpenAi
-        const home = yield* makeHome(codex)
-        yield* home.signIn
-
-        yield* TestClock.adjust("59 minutes")
-        yield* Effect.promise(() => Bun.sleep(200))
-        expect(codex.refreshRequests()).toEqual([])
-
-        yield* TestClock.adjust("1 minute")
-        yield* within3s("the refresh", codex.refreshesArrived(1))
-
-        expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
-        expect((yield* home.sendResponse).status).toBe(200)
-        expect(upstreamTokens(codex)).toEqual([`Bearer ${codex.issuedAccessTokens()[1]}`])
-        expect(yield* home.storedCredentials).toMatchObject({ refreshToken: "rt_fake_2" })
-      }),
-    )
-
-    it.effect("a token answer without expires_in takes the expiry from the access token", () =>
-      Effect.gen(function* () {
-        const codex = yield* fakeOpenAi
-        codex.omitExpiresIn()
-        const home = yield* makeHome(codex)
-        yield* home.signIn
-        const [accessToken] = codex.issuedAccessTokens()
-        const exp: number = JSON.parse(
-          Buffer.from(accessToken?.split(".")[1] ?? "", "base64url").toString(),
-        ).exp
-
-        expect(yield* home.storedCredentials).toMatchObject({
-          accessToken,
-          expiresAt: new Date(exp * 1000).toISOString(),
-        })
-      }),
-    )
-
-    for (const [status, refusal] of [
-      [400, { error: "invalid_grant", error_description: "Refresh token not found or invalid" }],
-      [
-        401,
-        {
-          error: {
-            message: "Your refresh token has already been used to generate a new access token.",
-            type: "invalid_request_error",
-            code: "refresh_token_reused",
-          },
-        },
-      ],
-      [
-        401,
-        {
-          error: {
-            message: "Your refresh token was revoked.",
-            type: "invalid_request_error",
-            code: "refresh_token_invalidated",
-          },
-        },
-      ],
-    ] as const) {
-      it.effect(
-        `a Codex refresh refused with HTTP ${status} ${JSON.stringify(refusal)} flags the account Needs sign-in`,
-        () =>
-          Effect.gen(function* () {
-            const codex = yield* fakeOpenAi
-            const home = yield* makeHome(codex)
-            yield* home.signIn
-            codex.refuseNextRefresh(status, refusal)
-
-            yield* untilRefreshDue
-            yield* within3s("the refresh", codex.refreshesArrived(1))
-            yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-
-            const response = yield* home.sendResponse
-            expect(response.status).toBe(400)
-            expect(JSON.parse(response.text).error.message).toBe(
-              "agent-proxy: no Codex account available, every account needs sign-in or is disabled. Run `agent-proxy accounts`.",
-            )
-            expect(codex.apiRequests()).toEqual([])
-          }),
-      )
-    }
-
-    for (const status of [500, 502, 504]) {
-      it.effect(
-        `a Codex refresh answered with HTTP ${status} is never sent again: the account needs sign-in`,
-        () =>
-          Effect.gen(function* () {
-            const codex = yield* fakeOpenAi
-            const home = yield* makeHome(codex)
-            yield* home.signIn
-            codex.refuseNextRefresh(status, { error: "bad_gateway" })
-
-            yield* untilRefreshDue
-            yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-            yield* TestClock.adjust("2 hours")
-            expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
-          }),
-      )
-    }
-
-    it.effect("a Codex refresh answered with a redirect is never sent again, there or here", () =>
-      Effect.gen(function* () {
-        const codex = yield* fakeOpenAi
-        const home = yield* makeHome(codex)
-        yield* home.signIn
-        // Back to the token endpoint itself: following it would send the token twice.
-        codex.redirectNextRefresh(codex.endpoints.tokenUrl)
-
-        yield* untilRefreshDue
-        yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-        yield* TestClock.adjust("2 hours")
-        expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
-      }),
-    )
-
-    it.effect("a Codex refresh whose connection drops after sending is never retried", () =>
-      Effect.gen(function* () {
-        const codex = yield* fakeOpenAi
-        const home = yield* makeHome(codex)
-        yield* home.signIn
-        codex.dropNextRefresh()
-
-        yield* untilRefreshDue
-        yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-        yield* TestClock.adjust("2 hours")
-        expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
-      }),
-    )
-
-    for (const status of [429, 503]) {
-      it.effect(
-        `a Codex refresh answered with HTTP ${status} leaves the account active and is tried again later`,
-        () =>
-          Effect.gen(function* () {
-            const codex = yield* fakeOpenAi
-            const home = yield* makeHome(codex)
-            yield* home.signIn
-            codex.refuseNextRefresh(status, { error: "temporarily_unavailable" })
-
-            yield* untilRefreshDue
-            yield* within3s("the first refresh", codex.refreshesArrived(1))
-            expect(yield* home.statuses).toEqual(["active"])
-
-            yield* TestClock.adjust("5 minutes")
-            yield* within3s("the second refresh", codex.refreshesArrived(2))
-            expect(codex.refreshRequests()).toEqual(["rt_fake_1", "rt_fake_1"])
-            expect((yield* home.sendResponse).status).toBe(200)
-            expect(upstreamTokens(codex)).toEqual([`Bearer ${codex.issuedAccessTokens()[1]}`])
-          }),
-      )
-    }
-  },
+const services = Layer.mergeAll(
+  BunServices.layer,
+  RuntimeInfo.layerProcess,
+  Processes.layerProcess,
+  FetchHttpClient.layer,
 )
+
+layer(services)("the credential keeper with Codex accounts", (it) => {
+  it.effect("refreshes a Codex token a day before it expires, and not before", () =>
+    Effect.gen(function* () {
+      const codex = yield* fakeOpenAi
+      const home = yield* makeHome(codex)
+      yield* home.signIn
+
+      yield* TestClock.adjust("59 minutes")
+      yield* Effect.promise(() => Bun.sleep(200))
+      expect(codex.refreshRequests()).toEqual([])
+
+      yield* TestClock.adjust("1 minute")
+      yield* within3s("the refresh", codex.refreshesArrived(1))
+
+      expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
+      expect((yield* home.sendResponse).status).toBe(200)
+      expect(upstreamTokens(codex)).toEqual([`Bearer ${codex.issuedAccessTokens()[1]}`])
+      expect(yield* home.storedCredentials).toMatchObject({ refreshToken: "rt_fake_2" })
+    }),
+  )
+
+  it.effect("a token answer without expires_in takes the expiry from the access token", () =>
+    Effect.gen(function* () {
+      const codex = yield* fakeOpenAi
+      codex.omitExpiresIn()
+      const home = yield* makeHome(codex)
+      yield* home.signIn
+      const [accessToken] = codex.issuedAccessTokens()
+      const exp: number = JSON.parse(
+        Buffer.from(accessToken?.split(".")[1] ?? "", "base64url").toString(),
+      ).exp
+
+      expect(yield* home.storedCredentials).toMatchObject({
+        accessToken,
+        expiresAt: new Date(exp * 1000).toISOString(),
+      })
+    }),
+  )
+
+  for (const [status, refusal] of [
+    [400, { error: "invalid_grant", error_description: "Refresh token not found or invalid" }],
+    [
+      401,
+      {
+        error: {
+          message: "Your refresh token has already been used to generate a new access token.",
+          type: "invalid_request_error",
+          code: "refresh_token_reused",
+        },
+      },
+    ],
+    [
+      401,
+      {
+        error: {
+          message: "Your refresh token was revoked.",
+          type: "invalid_request_error",
+          code: "refresh_token_invalidated",
+        },
+      },
+    ],
+  ] as const) {
+    it.effect(
+      `a Codex refresh refused with HTTP ${status} ${JSON.stringify(refusal)} flags the account Needs sign-in`,
+      () =>
+        Effect.gen(function* () {
+          const codex = yield* fakeOpenAi
+          const home = yield* makeHome(codex)
+          yield* home.signIn
+          codex.refuseNextRefresh(status, refusal)
+
+          yield* untilRefreshDue
+          yield* within3s("the refresh", codex.refreshesArrived(1))
+          yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+
+          const response = yield* home.sendResponse
+          expect(response.status).toBe(400)
+          expect(JSON.parse(response.text).error.message).toBe(
+            "agent-proxy: no Codex account available, every account needs sign-in or is disabled. Run `agent-proxy accounts`.",
+          )
+          expect(codex.apiRequests()).toEqual([])
+        }),
+    )
+  }
+
+  for (const status of [500, 502, 504]) {
+    it.effect(
+      `a Codex refresh answered with HTTP ${status} is never sent again: the account needs sign-in`,
+      () =>
+        Effect.gen(function* () {
+          const codex = yield* fakeOpenAi
+          const home = yield* makeHome(codex)
+          yield* home.signIn
+          codex.refuseNextRefresh(status, { error: "bad_gateway" })
+
+          yield* untilRefreshDue
+          yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+          yield* TestClock.adjust("2 hours")
+          expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
+        }),
+    )
+  }
+
+  it.effect("a Codex refresh answered with a redirect is never sent again, there or here", () =>
+    Effect.gen(function* () {
+      const codex = yield* fakeOpenAi
+      const home = yield* makeHome(codex)
+      yield* home.signIn
+      // Back to the token endpoint itself: following it would send the token twice.
+      codex.redirectNextRefresh(codex.endpoints.tokenUrl)
+
+      yield* untilRefreshDue
+      yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+      yield* TestClock.adjust("2 hours")
+      expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
+    }),
+  )
+
+  it.effect("a Codex refresh whose connection drops after sending is never retried", () =>
+    Effect.gen(function* () {
+      const codex = yield* fakeOpenAi
+      const home = yield* makeHome(codex)
+      yield* home.signIn
+      codex.dropNextRefresh()
+
+      yield* untilRefreshDue
+      yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+      yield* TestClock.adjust("2 hours")
+      expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
+    }),
+  )
+
+  for (const status of [429, 503]) {
+    it.effect(
+      `a Codex refresh answered with HTTP ${status} leaves the account active and is tried again later`,
+      () =>
+        Effect.gen(function* () {
+          const codex = yield* fakeOpenAi
+          const home = yield* makeHome(codex)
+          yield* home.signIn
+          codex.refuseNextRefresh(status, { error: "temporarily_unavailable" })
+
+          yield* untilRefreshDue
+          yield* within3s("the first refresh", codex.refreshesArrived(1))
+          expect(yield* home.statuses).toEqual(["active"])
+
+          yield* TestClock.adjust("5 minutes")
+          yield* within3s("the second refresh", codex.refreshesArrived(2))
+          expect(codex.refreshRequests()).toEqual(["rt_fake_1", "rt_fake_1"])
+          expect((yield* home.sendResponse).status).toBe(200)
+          expect(upstreamTokens(codex)).toEqual([`Bearer ${codex.issuedAccessTokens()[1]}`])
+        }),
+    )
+  }
+})

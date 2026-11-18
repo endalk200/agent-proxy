@@ -8,6 +8,7 @@ import { FetchHttpClient, HttpClient } from "effect/http"
 import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
+import { RuntimeInfo } from "../../src/runtime-info.ts"
 
 // The daemon's HTTP surface, in-process: a real listener on loopback, with
 // HOME and the XDG directories pointing into a temporary directory.
@@ -62,6 +63,7 @@ const get = (url: string) =>
 layer(
   Layer.mergeAll(
     BunServices.layer,
+    RuntimeInfo.layerProcess,
     Processes.layerProcess,
     FetchHttpClient.layer,
     ProviderEndpoints.layer,

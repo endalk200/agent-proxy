@@ -13,6 +13,7 @@ import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 import { alice, type ClaudeUser, fakeClaude, limitHeaders } from "../support/fake-claude.ts"
 import { fakeCodex } from "../support/fake-codex.ts"
+import { noLaunchd } from "../support/no-launchd.ts"
 
 // The daemon's event stream of account changes, in-process: a real daemon on
 // loopback in a throwaway home, fake Claude and Codex backends, and Effect's
@@ -260,6 +261,7 @@ layer(
     BunServices.layer,
     RuntimeInfo.layerProcess,
     Processes.layerProcess,
+    noLaunchd,
     FetchHttpClient.layer,
     Layer.succeed(Browser, Browser.of({ open: () => Effect.die("no browser in this test") })),
   ),
