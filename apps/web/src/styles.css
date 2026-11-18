@@ -1260,7 +1260,6 @@ a.linkbtn {
 /* ------------------------------------------------------------- first run */
 
 .steps {
-  max-width: 720px;
   margin: 0;
   padding: 0;
   border: 1px solid var(--border);
@@ -1301,6 +1300,7 @@ a.linkbtn {
   font-weight: 600;
 }
 .step-body > p {
+  max-width: 620px;
   color: var(--muted);
 }
 .step-body > p code {
