@@ -93,7 +93,8 @@ const isZombie = (pid: number) => {
   }
 }
 
-const isAlive = (pid: number) =>
+/** True while a process with `pid` exists and has not exited (a zombie counts as exited). */
+export const isAlive = (pid: number) =>
   signal(pid, 0).pipe(
     Effect.as(true),
     Effect.orElseSucceed(() => false),

@@ -1,5 +1,8 @@
 import { Config, Effect, FileSystem, Path } from "effect"
 
+import * as Daemon from "./Daemon.ts"
+import { defaultRepo } from "./Repo.ts"
+
 /**
  * An isolated environment for running agent-proxy.
  *
@@ -106,8 +109,14 @@ export const destroy = Effect.fn("Sandbox.destroy")(function* (
   })
 })
 
-/** A sandbox that is created now and destroyed, artifacts included, when the scope closes. */
+/**
+ * A sandbox that is created now and destroyed, artifacts included, when the
+ * scope closes, after stopping any daemon the test started in it (#21).
+ */
 export const scoped = (dir: string) =>
   Effect.acquireRelease(create(dir), (sandbox) =>
-    destroy(sandbox, { keepArtifacts: false }).pipe(Effect.orDie),
+    Daemon.stopForTest(defaultRepo, sandbox).pipe(
+      Effect.andThen(destroy(sandbox, { keepArtifacts: false })),
+      Effect.orDie,
+    ),
   )

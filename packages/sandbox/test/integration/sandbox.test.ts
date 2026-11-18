@@ -6,6 +6,7 @@ import { TestClock } from "effect/testing"
 
 import { runCli } from "../../src/Cli.ts"
 import * as Daemon from "../../src/Daemon.ts"
+import * as Down from "../../src/Down.ts"
 import * as Processes from "../../src/Processes.ts"
 import { defaultRepo, repoPaths } from "../../src/Repo.ts"
 import * as Runs from "../../src/Runs.ts"
@@ -52,7 +53,7 @@ layer(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))("sandbox", (it) 
 
   it.effect("runs the real CLI isolated: it resolves config inside the sandbox", () =>
     Effect.gen(function* () {
-      const sandbox = yield* Sandbox.create(`${yield* tempDir}/box`)
+      const sandbox = yield* Sandbox.scoped(`${yield* tempDir}/box`)
       const result = yield* runCli(sandbox, defaultRepo.cliSource, ["info", "--json"], {
         cwd: defaultRepo.root,
       })
@@ -110,19 +111,164 @@ layer(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))("sandbox", (it) 
       TestClock.withLive(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem
-          const sandbox = yield* Sandbox.create(`${yield* tempDir}/box`)
+          const sandbox = yield* Sandbox.scoped(`${yield* tempDir}/box`)
           const stateFile = `${sandbox.stateHome}/agent-proxy/daemon.json`
-          const started = yield* Effect.acquireRelease(
-            runCli(sandbox, defaultRepo.cliSource, ["daemon", "start"], { cwd: defaultRepo.root }),
-            () => Daemon.stop(defaultRepo, sandbox).pipe(Effect.ignore),
-          )
+          const started = yield* runCli(sandbox, defaultRepo.cliSource, ["daemon", "start"], {
+            cwd: defaultRepo.root,
+          })
           expect(started.exitCode).toBe(0)
           expect(yield* fs.exists(stateFile)).toBe(true)
-          expect(yield* Daemon.stop(defaultRepo, sandbox)).toBe("stopped")
+          expect(yield* Daemon.stop(defaultRepo, sandbox)).toEqual({ status: "stopped" })
           expect(yield* fs.exists(stateFile)).toBe(false)
-          expect(yield* Daemon.stop(defaultRepo, sandbox)).toBe("not-running")
+          expect(yield* Daemon.stop(defaultRepo, sandbox)).toEqual({ status: "not-running" })
+        }),
+      ),
+    60_000,
+  )
+
+  it.effect(
+    "a scoped sandbox stops the daemon its test started, even one the test never stopped",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const pid = yield* Effect.scoped(
+            Effect.gen(function* () {
+              const sandbox = yield* Sandbox.scoped(`${yield* tempDir}/box`)
+              yield* runCli(sandbox, defaultRepo.cliSource, ["daemon", "start"], {
+                cwd: defaultRepo.root,
+              })
+              return yield* daemonPid(sandbox)
+            }),
+          )
+          expect(yield* Processes.isAlive(pid)).toBe(false)
+        }),
+      ),
+    60_000,
+  )
+
+  it.effect(
+    "verify down keeps a run up, state and all, while its daemon is alive but does not answer (#21)",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const root = yield* tempDir
+          const repo = { ...defaultRepo, verifyDir: `${root}/.verify` }
+          const run = yield* Runs.up(repo)
+          const started = yield* runCli(run.sandbox, repo.cliSource, ["daemon", "start"], {
+            cwd: repo.root,
+          })
+          expect(started.exitCode).toBe(0)
+          const pid = yield* daemonPid(run.sandbox)
+          // Paused, as a wedged daemon is: alive, and answering nothing.
+          yield* Effect.acquireRelease(
+            Effect.sync(() => process.kill(pid, "SIGSTOP")),
+            () =>
+              Effect.sync(() => {
+                try {
+                  process.kill(pid, "SIGCONT")
+                } catch {
+                  // Stopped by the test already.
+                }
+              }).pipe(Effect.andThen(Daemon.stopForTest(repo, run.sandbox))),
+          )
+
+          expect(yield* Down.tearDown(repo, run)).toStrictEqual(Option.some(pid))
+          const kept = yield* Runs.resolve(repo, Option.some(run.manifest.id))
+          expect(kept.manifest.status).toBe("up")
+          expect(yield* fs.exists(`${run.sandbox.stateHome}/agent-proxy/daemon.json`)).toBe(true)
+
+          // Running again, it stops it and the run goes down.
+          process.kill(pid, "SIGCONT")
+          expect(yield* Down.tearDown(repo, kept)).toStrictEqual(Option.none())
+          expect(yield* Processes.isAlive(pid)).toBe(false)
+          const down = yield* Runs.resolve(repo, Option.some(run.manifest.id))
+          expect(down.manifest.status).toBe("down")
+        }),
+      ),
+    60_000,
+  )
+
+  it.effect(
+    "verify down tears down a run whose daemon died without cleaning up",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const root = yield* tempDir
+          const repo = { ...defaultRepo, verifyDir: `${root}/.verify` }
+          const run = yield* Runs.up(repo)
+          yield* fs.makeDirectory(`${run.sandbox.stateHome}/agent-proxy`, { recursive: true })
+          // Port 9 (discard) has no listener, and no process has pid 999999.
+          yield* fs.writeFileString(
+            `${run.sandbox.stateHome}/agent-proxy/daemon.json`,
+            JSON.stringify({ pid: 999_999, port: 9, address: "http://127.0.0.1:9" }),
+          )
+          expect(yield* Down.tearDown(repo, run)).toStrictEqual(Option.none())
+          expect((yield* Runs.resolve(repo, Option.some(run.manifest.id))).manifest.status).toBe(
+            "down",
+          )
+        }),
+      ),
+    60_000,
+  )
+
+  it.effect(
+    "never signals a process a stale state file names, unless a daemon in the sandbox holds the lock",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const sandbox = yield* Sandbox.create(`${yield* tempDir}/box`)
+          // An unrelated process, as a reused pid would be.
+          const bystander = yield* Effect.acquireRelease(
+            Effect.sync(() => Bun.spawn(["sleep", "30"])),
+            (child) => Effect.sync(() => child.kill("SIGKILL")),
+          )
+          yield* fs.makeDirectory(`${sandbox.stateHome}/agent-proxy`, { recursive: true })
+          for (const pid of [bystander.pid, -1]) {
+            yield* fs.writeFileString(
+              `${sandbox.stateHome}/agent-proxy/daemon.json`,
+              JSON.stringify({ pid, port: 9, address: "http://127.0.0.1:9" }),
+            )
+            expect(yield* Daemon.stop(defaultRepo, sandbox)).toEqual({ status: "not-running" })
+            yield* Daemon.stopForTest(defaultRepo, sandbox)
+            expect(yield* Processes.isAlive(bystander.pid)).toBe(true)
+          }
+        }),
+      ),
+    60_000,
+  )
+
+  it.effect(
+    "verify down keeps a run whose state file cannot be read while its daemon runs (#21)",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const sandbox = yield* Sandbox.scoped(`${yield* tempDir}/box`)
+          yield* runCli(sandbox, defaultRepo.cliSource, ["daemon", "start"], {
+            cwd: defaultRepo.root,
+          })
+          const pid = yield* daemonPid(sandbox)
+          yield* fs.writeFileString(`${sandbox.stateHome}/agent-proxy/daemon.json`, "{")
+          expect(yield* Daemon.stop(defaultRepo, sandbox)).toEqual({
+            status: "still-running",
+            pid,
+          })
+          // The scoped sandbox still stops it on close: the lock names it.
         }),
       ),
     60_000,
   )
 })
+
+/** The pid the sandbox's daemon recorded in its state file. */
+const daemonPid = (sandbox: Sandbox.Sandbox) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const state = yield* fs.readFileString(`${sandbox.stateHome}/agent-proxy/daemon.json`)
+    return (yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Struct({ pid: Schema.Int })))(
+      state,
+    )).pid
+  })
