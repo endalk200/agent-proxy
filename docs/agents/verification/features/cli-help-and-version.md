@@ -6,7 +6,7 @@ Every agent-proxy command explains itself with `--help`, the CLI reports its ver
 
 - `help-root` lists subcommands and global flags.
 - `help-command` describes one subcommand's flags.
-- `version` prints `agent-proxy v<version>`.
+- `version` prints `agent-proxy v<version> (<build>)`: `(source)` from source, the commit the binary was built from with `--built` (`(<commit>-dirty)` when the tree had uncommitted changes).
 - `completions` prints a completion script for a named shell.
 - `unknown-subcommand` rejects a mistyped subcommand.
 
@@ -23,11 +23,11 @@ Preconditions:
 
 - `verify doctor` is all `ok`.
 
-- **Root help.** Run `verify cli -- --help`. Exit `0`; stdout has `USAGE`, `GLOBAL FLAGS`, and a `SUBCOMMANDS` section listing `daemon` and `info`.
+- **Root help.** Run `verify cli -- --help`. Exit `0`; stdout has `USAGE`, `GLOBAL FLAGS`, and a `SUBCOMMANDS` section listing `connect`, `daemon`, `disconnect`, `info` and `uninstall`.
 - **Short flag.** Run `verify cli -- -h`. Same output as root help.
 - **No subcommand.** Run `verify cli`. Exit `0`; same output as root help.
 - **Command help.** Run `verify cli -- info --help`. Exit `0`; stdout has `USAGE` with `agent-proxy info` and a `FLAGS` section listing `--json`.
-- **Version.** Run `verify cli -- --version` and `verify cli -- -v`. Exit `0`; stdout matches `agent-proxy v<major>.<minor>.<patch>`.
+- **Version.** Run `verify cli -- --version` and `verify cli -- -v`. Exit `0`; stdout matches `agent-proxy v<major>.<minor>.<patch> (source)`. After `bun run build`, `verify cli --built -- --version` prints `agent-proxy v<major>.<minor>.<patch> (<12 hex digits>)`, with `-dirty` when the checkout had uncommitted changes.
 - **Completions.** Run `verify cli -- --completions zsh`. Exit `0`; stdout is a zsh completion script that mentions `agent-proxy` and `info`.
 - **Unknown subcommand.** Run `verify cli -- bogus`. Exit `1`; stderr contains `Unknown subcommand "bogus"`.
 

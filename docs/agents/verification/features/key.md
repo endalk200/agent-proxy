@@ -1,11 +1,11 @@
 # Proxy key
 
-`agent-proxy key` prints the proxy key, the secret every proxy request must carry (ADR-0005), and nothing else on stdout, so a client can run it to fetch the key: Claude Code through `apiKeyHelper`, Codex through its `auth` command. opencode reads the key file instead, with `{file:…}`. `agent-proxy key --rotate` replaces the key; the old key is refused from the next request on, and Claude Code, which runs `apiKeyHelper` again after a 401, picks up the new one by itself. opencode reads the key file only when it loads its config, so it needs a restart or `opencode reload`. The daemon generates the key on its first run and keeps it, alone, in `$XDG_DATA_HOME/agent-proxy/key`, mode 0600. Both commands ask the running daemon and answer in well under the 5 seconds Codex gives its auth command.
+`agent-proxy key` prints the proxy key, the secret every proxy request must carry (ADR-0005), and nothing else on stdout, so a client can run it to fetch the key: Claude Code through `apiKeyHelper`, Codex through its `auth` command. opencode reads the key file instead, with `{file:…}`. `agent-proxy key --rotate` replaces the key; the old key is refused from the next request on, and Claude Code, which runs `apiKeyHelper` again after a 401, picks up the new one by itself. Codex runs its `auth` command once per process, and opencode reads the key file only when it loads its config, so both need a restart (`opencode reload` for opencode); the message says which. The daemon generates the key on its first run and keeps it, alone, in `$XDG_DATA_HOME/agent-proxy/key`, mode 0600. Both commands ask the running daemon and answer in well under the 5 seconds Codex gives its auth command.
 
 ## Sub-features
 
 - `key-print` prints the key on stdout, the same key every time, until it is rotated.
-- `key-rotate` (`--rotate`) prints a new key on stdout and, on stderr, `Rotated the proxy key; the old key no longer works. Clients that run \`agent-proxy key\` pick up the new one on their next request. opencode reads the key file only when it starts: restart it, or run \`opencode reload\`.`
+- `key-rotate` (`--rotate`) prints a new key on stdout and, on stderr, `Rotated the proxy key; the old key no longer works. Claude Code picks up the new one by itself, on its next request. Codex and opencode read the key only when they start: restart Codex, and restart opencode or run \`opencode reload\`.`
 - `key-old-refused` a proxy request with a rotated-out key gets the proxy's `wrong proxy key` 401 at once.
 - `key-file` keeps the key alone in a 0600 `key` file in the 0700 data directory, kept across daemon restarts.
 - `key-not-running` both forms fail with exit `1` and the daemon-down hint naming `agent-proxy daemon start`, and start nothing.

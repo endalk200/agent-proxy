@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | status`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code, Codex and opencode at the daemon (`agent-proxy connect claude-code | codex | opencode`), and reports its setup (`info`). The daemon serves Claude Code from your Claude accounts, Codex from your Codex (ChatGPT) accounts, opencode from both, and a dashboard of your accounts that updates live at its own address (`http://127.0.0.1:8318/` by default).
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | restart | status`), supervises it with launchd on macOS (`daemon install | uninstall`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code, Codex and opencode at the daemon and back (`agent-proxy connect | disconnect claude-code | codex | opencode`), reports its setup (`info`), and removes itself (`uninstall`). The daemon serves Claude Code from your Claude accounts, Codex from your Codex (ChatGPT) accounts, opencode from both, and a dashboard of your accounts that updates live at its own address (`http://127.0.0.1:8318/` by default).
 
 ## Requirements
 
@@ -17,31 +17,47 @@ bun apps/cli/src/bin.ts info
 
 `bun install` also runs `effect-tsgo patch --oxlint`, which adds the Effect language service rules to the installed TypeScript and Oxlint.
 
+## Installing
+
+agent-proxy installs from this checkout as one self-contained binary, `~/.local/bin/agent-proxy`, with the dashboard built in; running it needs no Bun (`docs/adr/0008-*`).
+
+```sh
+bun install
+bun run install-local          # build, install ~/.local/bin/agent-proxy, restart a running daemon
+agent-proxy daemon install     # macOS: start the daemon at login, and again after a crash
+agent-proxy connect claude-code
+```
+
+To update, `git pull` and run `bun run install-local` again. It replaces the binary atomically and restarts the daemon if one was running, so the new build serves at once; `--no-restart` leaves a running daemon on the old build. It never starts a daemon that was not running. `agent-proxy --version`, `info`, `daemon status` and the dashboard name the commit the binary was built from, with `-dirty` when the checkout had uncommitted changes.
+
+`agent-proxy uninstall` undoes it all: it shows what it would disconnect, asks once, then disconnects every connected client, removes the launch agent, stops the daemon and deletes the binary. Your accounts, proxy key, config and logs stay, and it prints where they are and the command that removes them.
+
 ## Commands
 
 Run from the repository root:
 
-| Command             | What it does                                                    |
-| ------------------- | --------------------------------------------------------------- |
-| `bun run dev`       | Start every app in watch mode                                   |
-| `bun run build`     | Build the web client, then the CLI bundle with it in `dist/web` |
-| `bun run format`    | Format with Oxfmt (`format:check` to verify only)               |
-| `bun run lint`      | Type-aware Oxlint with Effect rules (`lint:fix` to apply fixes) |
-| `bun run typecheck` | Type-check every workspace with TypeScript 7                    |
-| `bun run test`      | Unit and integration tests                                      |
-| `bun run test:e2e`  | Build, then run CLI and dashboard end-to-end tests              |
-| `bun run check`     | Everything CI runs except end-to-end tests                      |
+| Command                 | What it does                                                                           |
+| ----------------------- | -------------------------------------------------------------------------------------- |
+| `bun run dev`           | Start every app in watch mode                                                          |
+| `bun run build`         | Build the web client, then the CLI binary `apps/cli/dist/agent-proxy` with it embedded |
+| `bun run install-local` | Build, and install the binary as `~/.local/bin/agent-proxy` (`--no-restart`)           |
+| `bun run format`        | Format with Oxfmt (`format:check` to verify only)                                      |
+| `bun run lint`          | Type-aware Oxlint with Effect rules (`lint:fix` to apply fixes)                        |
+| `bun run typecheck`     | Type-check every workspace with TypeScript 7                                           |
+| `bun run test`          | Unit and integration tests                                                             |
+| `bun run test:e2e`      | Build, then run CLI and dashboard end-to-end tests                                     |
+| `bun run check`         | Everything CI runs except end-to-end tests                                             |
 
 The first end-to-end run needs a browser: `cd e2e && bun x playwright install chromium`.
 
 ## Layout
 
-| Path        | Contents                                                              |
-| ----------- | --------------------------------------------------------------------- |
-| `apps/cli`  | `@agent-proxy/cli`: the `agent-proxy` CLI and daemon, built on Effect |
-| `apps/web`  | `@agent-proxy/web`: the browser client (Vite and React)               |
-| `packages/` | Shared internal packages, added as features need them                 |
-| `e2e`       | End-to-end tests against the built CLI and web client                 |
+| Path        | Contents                                                               |
+| ----------- | ---------------------------------------------------------------------- |
+| `apps/cli`  | `@agent-proxy/cli`: the `agent-proxy` CLI and daemon, built on Effect  |
+| `apps/web`  | `@agent-proxy/web`: the browser client (Vite and React)                |
+| `packages/` | Shared internal packages, added as features need them                  |
+| `e2e`       | End-to-end tests against the compiled CLI and the web client it serves |
 
 ## Tests
 
@@ -72,12 +88,15 @@ Agents follow the same flow through the runbook in `docs/agents/verification/REA
 
 ```sh
 agent-proxy daemon start     # run it in the background; returns once it is ready
-agent-proxy daemon status    # pid, address, and uptime (--json for scripts)
+agent-proxy daemon status    # pid, address, uptime, build and logs; or why it is down (--json for scripts)
 agent-proxy daemon stop      # SIGTERM, then wait for it to exit
+agent-proxy daemon restart   # stop it, if it runs, and start it again
 agent-proxy daemon run       # or run it in the foreground
 ```
 
-The daemon keeps its lock, state file (`daemon.json`, with its pid and the port it bound), and logs (`daemon.log`, one JSON object per line) in `$XDG_STATE_HOME/agent-proxy/`, by default `~/.local/state/agent-proxy/`. One daemon runs per state directory. `--log-level debug` sets how much it logs.
+The daemon keeps its lock, state file (`daemon.json`, with its pid and the port it bound), and logs in `$XDG_STATE_HOME/agent-proxy/`, by default `~/.local/state/agent-proxy/`. One daemon runs per state directory. `--log-level debug` sets how much it logs. `daemon.log` holds one JSON object per line, and at 10 MB becomes `daemon.log.1`, replacing the one before. Whatever the daemon prints itself, such as a crash before its logger starts, goes to `daemon.stderr.log`. When the daemon is not running, `daemon status` exits 1 and still says where the logs are, how the launch agent stands, and the last error the daemon logged.
+
+On macOS, `agent-proxy daemon install` registers a launch agent, `~/Library/LaunchAgents/dev.endalk200.agent-proxy.plist`, that runs the installed binary's `daemon run` when you log in and again if it crashes, with the config, state and data directories of the shell you ran it in. A clean `daemon stop` stays stopped until the next `daemon start` or login, and `start` and `restart` go through launchd. Run `install` again after moving the binary; `agent-proxy daemon uninstall` stops the daemon and removes the agent. It runs only as the installed binary, with `HOME` your real home, so a verify sandbox can never register one, and Linux is not supported yet.
 
 ## Accounts
 
@@ -112,7 +131,7 @@ Every request to the proxy carries the proxy key, even on this machine. The daem
 
 ```sh
 agent-proxy key            # print the key
-agent-proxy key --rotate   # replace it; the old key stops working at once
+agent-proxy key --rotate   # replace it; the old key stops working at once (restart Codex and opencode)
 ```
 
 Point Claude Code at the daemon:
@@ -127,11 +146,13 @@ agent-proxy connect claude-code --print  # print the settings only; change nothi
 ```json
 {
   "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:8318" },
-  "apiKeyHelper": "agent-proxy key"
+  "apiKeyHelper": "/Users/you/.local/bin/agent-proxy key"
 }
 ```
 
-It shows the change as a diff and writes only when you answer `y`. The old file goes to `settings.json.bak` beside it. A missing file is created; a file that is not valid JSON is refused and left alone. A `settings.json` linked from a dotfiles repo stays a link, and the file it points to is the one changed; a link whose target is missing is refused. The file holds no secret: Claude Code fetches the key by running `agent-proxy key`. Running `connect` again when nothing would change says so and writes nothing.
+The installed binary writes its own absolute path, since Claude Code started from the Dock may not have `~/.local/bin` on its `PATH`; run from source, it writes the bare `agent-proxy key`. It shows the change as a diff and writes only when you answer `y`. The old file goes to `settings.json.bak` beside it. A missing file is created; a file that is not valid JSON is refused and left alone. A `settings.json` linked from a dotfiles repo stays a link, and the file it points to is the one changed; a link whose target is missing is refused. The file holds no secret: Claude Code fetches the key by running `agent-proxy key`. Running `connect` again when nothing would change says so and writes nothing.
+
+`agent-proxy disconnect claude-code` points it back: it removes those two settings, and only while they still hold what `connect` wrote, showing the diff and asking first. A setting you changed since stays, and it says so; every other setting stays as it was. When `connect` had replaced a key helper of yours, `disconnect` points at the `.bak` that holds it. `disconnect codex` and `disconnect opencode` do the same for their files.
 
 The address is the running daemon's. When the daemon is not running, `connect` uses the `listen` address in the config file, and fails if that is port 0, any free port, which is known only once the daemon runs.
 
@@ -158,7 +179,9 @@ wire_api = "responses"
 auth = { command = "agent-proxy", args = ["key"] }
 ```
 
-The rest of the file stays byte for byte, comments included. A `model_provider` naming another provider is replaced in place, and an existing `[model_providers.agent-proxy]` table is replaced whole; the diff shows both. It asks, backs up and writes as `connect claude-code` does, keeps a linked file a link, and refuses a file that is not valid TOML. A file it cannot change without changing its meaning (the provider in dotted keys, a subtable of it, a multi-line string with a line that starts with `[`) is refused and left alone; add the `--print` settings by hand, with `model_provider` above the first table. The file holds no secret: Codex fetches the key by running `agent-proxy key`.
+The rest of the file stays byte for byte, comments included. A `model_provider` naming another provider is replaced in place, and an existing `[model_providers.agent-proxy]` table is replaced whole; the diff shows both. It asks, backs up and writes as `connect claude-code` does, keeps a linked file a link, and refuses a file that is not valid TOML. A file it cannot change without changing its meaning (the provider in dotted keys, a subtable of it, a multi-line string with a line that starts with `[`) is refused and left alone; add the `--print` settings by hand, with `model_provider` above the first table. The file holds no secret: Codex fetches the key by running `agent-proxy key` (the installed binary writes its absolute path in `command`). Codex runs it once per process, so restart Codex after `key --rotate`.
+
+Codex profiles are never edited, but a `[profiles.<name>]` that sets its own `model_provider` wins over the root one, so `connect codex` warns about it: the active profile (`profile = "<name>"`) by name and line, and any other that `codex --profile <name>` could pick.
 
 Leave `supports_websockets` unset. The daemon serves `POST /responses` (streamed), `GET /models` and `POST /alpha/search` under `/backend-api/codex` from `chatgpt.com`, as one of your Codex accounts, chosen as [Sessions and limits](#sessions-and-limits) describes: it puts that account's token in `Authorization` and its ChatGPT workspace in `chatgpt-account-id`, and passes everything else through, the `x-codex-*` limit headers included. It refuses a WebSocket upgrade with 426, and Codex falls back to HTTP. When the backend rejects the account's token, the daemon refreshes it once and retries on the same account.
 
