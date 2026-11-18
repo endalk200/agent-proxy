@@ -17,9 +17,11 @@ import { TestClock } from "effect/testing"
 
 import { Browser } from "../../src/browser.ts"
 import { runCli } from "../../src/cli.ts"
+import { acquireLock } from "../../src/daemon/state.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
+import { noLaunchd } from "../support/no-launchd.ts"
 
 // `connect claude-code`, `connect codex` and `connect opencode`, driven in-process through the
 // real command tree, on a temporary HOME, against an in-process daemon
@@ -35,6 +37,8 @@ const makeHome = (
       | ((home: string) => Readonly<Record<string, string>>)
     /** Variables left out of the environment, such as `XDG_DATA_HOME` to use its default. */
     readonly unset?: ReadonlyArray<string>
+    /** Runs as the compiled binary at this path (relative to HOME, or absolute), rather than from source. */
+    readonly binary?: string
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -66,6 +70,7 @@ const makeHome = (
     const output: Array<string> = []
     const errors: Array<string> = []
     const typed = yield* Queue.unbounded<string, Terminal.QuitError>()
+    const binary = options.binary
 
     /** A terminal whose typed lines come from `typed`, and whose prompts collect in `output`. */
     const terminal = Terminal.make({
@@ -97,6 +102,16 @@ const makeHome = (
           Effect.provideService(Console.Console, console),
           Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
           Effect.provideService(Terminal.Terminal, terminal),
+          binary === undefined
+            ? (effect) => effect
+            : Effect.updateService(RuntimeInfo, (runtime) => ({
+                ...runtime,
+                binary: Option.some({
+                  path: binary.startsWith("/") ? binary : `${home}/${binary}`,
+                  commit: "abc1234",
+                  dirty: false,
+                }),
+              })),
         )
         return output.slice(start).join("")
       })
@@ -123,14 +138,30 @@ const makeHome = (
         : ""
     })
 
-    /** Waits until the CLI has asked the owner something, and returns all it printed so far. */
-    const asked = Effect.sync(() => output.join("")).pipe(
-      Effect.repeat({
-        schedule: Schedule.spaced("20 millis"),
-        until: (text) => text.includes("[y/N]"),
-        times: 250,
-      }),
-    )
+    /** How many of the CLI's questions the test has waited for. */
+    let questions = 0
+    /**
+     * Waits until the CLI asks the owner something it has not waited for yet,
+     * and returns all it printed since the question before.
+     */
+    const asked = Effect.suspend(() => {
+      const since = output
+        .join("")
+        .split("[y/N]")
+        .slice(0, questions + 1)
+        .join("[y/N]").length
+      return Effect.sync(() => output.join("")).pipe(
+        Effect.repeat({
+          schedule: Schedule.spaced("20 millis"),
+          until: (text) => text.split("[y/N]").length > questions + 1,
+          times: 250,
+        }),
+        Effect.map((text) => {
+          questions++
+          return text.slice(since)
+        }),
+      )
+    })
 
     /** A file's content, or `None` when it does not exist. */
     const read = (file: string) =>
@@ -189,6 +220,7 @@ const makeHome = (
     return {
       cli,
       fails,
+      answering,
       runDaemon,
       asked,
       read,
@@ -220,6 +252,7 @@ const services = Layer.mergeAll(
   BunServices.layer,
   RuntimeInfo.layerProcess,
   Processes.layerProcess,
+  noLaunchd,
   FetchHttpClient.layer,
   ProviderEndpoints.layer,
   Layer.succeed(Browser, Browser.of({ open: () => Effect.die("no browser in this test") })),
@@ -1270,6 +1303,598 @@ layer(services)("agent-proxy connect opencode", (it) => {
         yield* fs.remove(`${dotfiles}/opencode.json`)
         expect(yield* home.fails(["connect", "opencode"])).toContain("which does not exist")
         expect((yield* fs.lstat(home.opencodeConfig)).type).toBe("SymbolicLink")
+      }),
+    ),
+  )
+})
+
+layer(services)("agent-proxy connect, from the installed binary", (it) => {
+  it.effect("writes the binary's absolute path as the key command for Claude Code and Codex", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome({ binary: ".local/bin/agent-proxy" })
+        const address = yield* home.runDaemon
+        const binary = `${home.home}/.local/bin/agent-proxy`
+
+        yield* home.connect("y")
+        yield* home.connectCodex("y")
+
+        expect(JSON.parse(Option.getOrThrow(yield* home.read(home.settings)))).toEqual({
+          env: { ANTHROPIC_BASE_URL: address },
+          apiKeyHelper: `${binary} key`,
+        })
+        expect(Option.getOrThrow(yield* home.read(home.codexConfig))).toContain(
+          `auth = { command = "${binary}", args = ["key"] }`,
+        )
+        // Connected again from the same binary, nothing changes.
+        expect(yield* home.cli(["connect", "claude-code"])).toContain("is already connected")
+      }),
+    ),
+  )
+
+  it.effect("quotes a binary path the shell would split, for Claude Code's key helper", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome({ binary: "my tools/agent-proxy" })
+        yield* home.runDaemon
+        yield* home.connect("y")
+        expect(JSON.parse(Option.getOrThrow(yield* home.read(home.settings)))).toMatchObject({
+          apiKeyHelper: `'${home.home}/my tools/agent-proxy' key`,
+        })
+      }),
+    ),
+  )
+})
+
+layer(services)("agent-proxy disconnect claude-code", (it) => {
+  it.effect(
+    "removes a key helper connect quoted, for a binary path with a space or an apostrophe",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome({ binary: "O'Brien tools/agent-proxy" })
+          yield* home.runDaemon
+          yield* home.writeSettings('{ "model": "opus" }\n')
+          yield* home.connect("y")
+          expect(JSON.parse(Option.getOrThrow(yield* home.read(home.settings)))).toMatchObject({
+            apiKeyHelper: `'${home.home}/O'\\''Brien tools/agent-proxy' key`,
+          })
+          yield* home.answering(["disconnect", "claude-code"], "y")
+          expect(JSON.parse(Option.getOrThrow(yield* home.read(home.settings)))).toEqual({
+            model: "opus",
+          })
+        }),
+      ),
+  )
+
+  it.effect("removes what connect wrote, keeping every other setting and the layout", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        yield* home.writeSettings('{ "model": "opus", "env": { "DISABLE_TELEMETRY": "1" } }\n')
+        yield* home.connect("y")
+        const connected = Option.getOrThrow(yield* home.read(home.settings))
+
+        const run = yield* Effect.forkChild(home.cli(["disconnect", "claude-code"]))
+        const shown = yield* home.asked
+        expect(shown).toContain(
+          "Disconnecting Claude Code from the proxy changes ~/.claude/settings.json:",
+        )
+        expect(shown).toContain('-  "apiKeyHelper": "agent-proxy key"')
+        expect(shown).toContain("Write ~/.claude/settings.json? [y/N]")
+        expect(Option.getOrNull(yield* home.read(home.settings))).toBe(connected)
+        yield* Queue.offer(home.typed, "y")
+        const output = yield* Fiber.join(run)
+
+        expect(Option.getOrNull(yield* home.read(home.settings))).toBe(`{
+  "model": "opus",
+  "env": {
+    "DISABLE_TELEMETRY": "1"
+  }
+}
+`)
+        expect(output).toContain("Disconnected Claude Code from the proxy.")
+        // The backup connect took of the owner's file stays.
+        expect(Option.getOrNull(yield* home.read(home.backup))).toBe(
+          '{ "model": "opus", "env": { "DISABLE_TELEMETRY": "1" } }\n',
+        )
+      }),
+    ),
+  )
+
+  it.effect("removes an env it emptied, and the absolute key helper the binary wrote", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.writeSettings(
+          '{\n  "env": { "ANTHROPIC_BASE_URL": "http://localhost:9000" },\n  "apiKeyHelper": "/Users/me/.local/bin/agent-proxy key",\n  "model": "opus"\n}\n',
+        )
+        yield* home.answering(["disconnect", "claude-code"], "y")
+        expect(Option.getOrNull(yield* home.read(home.settings))).toBe('{\n  "model": "opus"\n}\n')
+      }),
+    ),
+  )
+
+  it.effect("leaves a setting changed by hand alone, and names it", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+        yield* home.writeSettings(
+          `{\n  "env": { "ANTHROPIC_BASE_URL": "${address}" },\n  "apiKeyHelper": "op read op://dev/anthropic/key"\n}\n`,
+        )
+        const output = yield* home.answering(["disconnect", "claude-code"], "y")
+        expect(JSON.parse(Option.getOrThrow(yield* home.read(home.settings)))).toEqual({
+          apiKeyHelper: "op read op://dev/anthropic/key",
+        })
+        expect(output).toContain(
+          'Kept, since connect did not write it, or it was changed since: apiKeyHelper ("op read op://dev/anthropic/key").',
+        )
+      }),
+    ),
+  )
+
+  it.effect("points at the .bak when connect had replaced a key helper of the owner's", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        const before = '{ "apiKeyHelper": "op read op://dev/anthropic/key" }\n'
+        yield* home.writeSettings(before)
+        yield* home.connect("y")
+
+        const output = yield* home.answering(["disconnect", "claude-code"], "y")
+        expect(output).toContain(
+          "connect had replaced your apiKeyHelper; the earlier value is in ~/.claude/settings.json.bak, to restore by hand.",
+        )
+        expect(Option.getOrNull(yield* home.read(home.backup))).toBe(before)
+      }),
+    ),
+  )
+
+  it.effect("says so, and changes nothing, when Claude Code is not connected", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        expect(yield* home.cli(["disconnect", "claude-code"])).toBe(
+          "Claude Code is not connected to the proxy; ~/.claude/settings.json does not exist.\n",
+        )
+        yield* home.runDaemon
+        yield* home.writeSettings('{ "model": "opus" }\n')
+        yield* home.connect("y")
+        yield* home.answering(["disconnect", "claude-code"], "y")
+        const settings = yield* home.read(home.settings)
+        expect(yield* home.cli(["disconnect", "claude-code"])).toBe(
+          "Claude Code is not connected to the proxy; ~/.claude/settings.json is unchanged.\n",
+        )
+        expect(yield* home.read(home.settings)).toStrictEqual(settings)
+      }),
+    ),
+  )
+
+  it.effect("writes nothing when the owner does not confirm", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        yield* home.connect("y")
+        const connected = yield* home.read(home.settings)
+        const run = yield* Effect.forkChild(home.fails(["disconnect", "claude-code"]))
+        yield* home.asked
+        yield* Queue.offer(home.typed, "n")
+        expect(yield* Fiber.join(run)).toBe(
+          "Nothing written; ~/.claude/settings.json is unchanged.",
+        )
+        expect(yield* home.read(home.settings)).toStrictEqual(connected)
+      }),
+    ),
+  )
+
+  it.effect("writes through a settings file linked from a dotfiles repo, keeping the link", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        const real = `${home.root}/dotfiles/claude-settings.json`
+        yield* fs.makeDirectory(`${home.root}/dotfiles`)
+        yield* fs.writeFileString(real, '{ "model": "opus" }\n')
+        yield* fs.makeDirectory(`${home.home}/.claude`)
+        yield* fs.symlink(real, home.settings)
+        yield* home.connect("y")
+
+        yield* home.answering(["disconnect", "claude-code"], "y")
+        expect((yield* fs.lstat(home.settings)).type).toBe("SymbolicLink")
+        expect(JSON.parse(yield* fs.readFileString(real))).toEqual({ model: "opus" })
+      }),
+    ),
+  )
+})
+
+layer(services)("agent-proxy disconnect codex", (it) => {
+  it.effect(
+    "removes model_provider and the provider table, restoring the file connect changed",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome()
+          yield* home.runDaemon
+          const before = `# Codex settings, kept in dotfiles.
+model = "gpt-5.5"   # the default model
+approval_policy = "on-request"
+
+# Project trust
+[projects."/Users/me/src"]
+trust_level = "trusted"
+`
+          yield* home.writeCodexConfig(before)
+          yield* home.connectCodex("y")
+
+          const output = yield* home.answering(["disconnect", "codex"], "y")
+          expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(before)
+          expect(output).toContain('-model_provider = "agent-proxy"')
+          expect(output).toContain("-[model_providers.agent-proxy]")
+          expect(output).toContain("Disconnected Codex from the proxy.")
+        }),
+      ),
+  )
+
+  it.effect("round-trips a file with an empty [model_providers] table of the owner's", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        yield* home.writeCodexConfig('model = "gpt-6-luna"\n\n[model_providers]\n')
+        yield* home.connectCodex("y")
+        yield* home.answering(["disconnect", "codex"], "y")
+        expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(
+          'model = "gpt-6-luna"\n\n[model_providers]\n',
+        )
+      }),
+    ),
+  )
+
+  it.effect("empties a file that held only what connect wrote", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        yield* home.connectCodex("y")
+        yield* home.answering(["disconnect", "codex"], "y")
+        expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe("")
+      }),
+    ),
+  )
+
+  it.effect("keeps a model_provider the owner set back by hand, naming it, and the .bak hint", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        yield* home.writeCodexConfig('model_provider = "openai"\n')
+        yield* home.connectCodex("y")
+        const connected = Option.getOrThrow(yield* home.read(home.codexConfig))
+        yield* home.writeCodexConfig(
+          connected.replace('model_provider = "agent-proxy"', 'model_provider = "ollama"'),
+        )
+
+        const output = yield* home.answering(["disconnect", "codex"], "y")
+        expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(
+          'model_provider = "ollama"\n',
+        )
+        expect(output).toContain(
+          'Kept, since connect did not write it, or it was changed since: model_provider ("ollama").',
+        )
+      }),
+    ),
+  )
+
+  it.effect("refuses a provider it cannot remove safely, and leaves the file as it was", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        const before =
+          'model_provider = "agent-proxy"\nmodel_providers.agent-proxy.name = "OpenAI"\n'
+        yield* home.writeCodexConfig(before)
+        expect(yield* home.fails(["disconnect", "codex"])).toBe(
+          '~/.codex/config.toml sets model_provider or the agent-proxy provider in a way disconnect cannot change safely, so it was left unchanged. Remove the root model_provider = "agent-proxy" and the [model_providers.agent-proxy] table by hand.',
+        )
+        expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe(before)
+      }),
+    ),
+  )
+
+  it.effect("warns about a profile that still names the agent-proxy provider", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        yield* home.writeCodexConfig(
+          '[profiles.fast]\nmodel = "gpt-6-luna"\nmodel_provider = "agent-proxy"\n',
+        )
+        yield* home.connectCodex("y")
+        const output = yield* home.answering(["disconnect", "codex"], "y")
+        expect(output).toContain(
+          'Codex profile fast still sets model_provider = "agent-proxy" (~/.codex/config.toml, line 3), a provider that no longer exists, so Codex fails with --profile fast. Change that line to the provider you use, or delete it.',
+        )
+      }),
+    ),
+  )
+})
+
+layer(services)("agent-proxy connect codex, with profiles (#22)", (it) => {
+  const profiles = `profile = "work"
+
+[profiles.work]
+model = "gpt-6-luna"
+model_provider = "openai"
+
+[profiles.local]
+model_provider = "ollama"
+
+[profiles.plain]
+model = "gpt-6-astra"
+`
+
+  it.effect(
+    "warns that the active profile's model_provider bypasses the proxy, naming its line",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome()
+          yield* home.runDaemon
+          yield* home.writeCodexConfig(profiles)
+          const output = yield* home.connectCodex("y")
+          expect(output).toContain(
+            `Warning: Codex's active profile, work, sets model_provider = "openai" (~/.codex/config.toml, line 6), which wins over the root one, so Codex does not use the proxy. To use it, change that line to model_provider = "agent-proxy", or delete it.`,
+          )
+          expect(output).toContain(
+            `These Codex profiles set their own model_provider, so codex --profile <name> bypasses the proxy: local ("ollama", ~/.codex/config.toml, line 9).`,
+          )
+          // Profiles are never edited.
+          expect(Option.getOrThrow(yield* home.read(home.codexConfig))).toContain(
+            '[profiles.work]\nmodel = "gpt-6-luna"\nmodel_provider = "openai"\n',
+          )
+          // Run again, it still warns, though there is nothing to change.
+          expect(yield* home.cli(["connect", "codex"])).toContain(
+            "Warning: Codex's active profile, work,",
+          )
+        }),
+      ),
+  )
+
+  it.effect("--print carries the same warning", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        yield* home.writeCodexConfig(profiles)
+        yield* home.cli(["connect", "codex", "--print"])
+        expect(home.errors.join("")).toContain("Warning: Codex's active profile, work,")
+      }),
+    ),
+  )
+
+  it.effect("says nothing about profiles that leave model_provider alone", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        yield* home.writeCodexConfig(
+          'profile = "plain"\n\n[profiles.plain]\nmodel = "gpt-6-astra"\n',
+        )
+        const output = yield* home.connectCodex("y")
+        expect(output).not.toContain("Warning")
+        expect(output).not.toContain("Codex profiles")
+      }),
+    ),
+  )
+})
+
+layer(services)("agent-proxy disconnect opencode", (it) => {
+  it.effect("removes both providers, restoring the file connect changed", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        const before = `{
+  // opencode, by hand
+  "model": "claude-agent/opus",
+  "providers": {
+    "ollama": { "name": "Ollama" }
+  }
+}
+`
+        yield* home.writeOpencodeConfig(before)
+        yield* home.connectOpencode("y")
+        yield* home.answering(["disconnect", "opencode"], "y")
+        const after = Option.getOrThrow(yield* home.read(home.opencodeConfig))
+        expect(after).toContain("// opencode, by hand")
+        expect(after.replaceAll(/\s+/g, "")).toBe(before.replaceAll(/\s+/g, ""))
+      }),
+    ),
+  )
+
+  it.effect("keeps the comments of the settings it leaves, byte for byte", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        const address = yield* home.runDaemon
+        const keyFile = `${home.root}/data/agent-proxy/key`
+        yield* home.writeOpencodeConfig(`{
+  "providers": {
+    "claude-agent": {
+      "settings": {
+        "apiKey": "{file:${keyFile}}",
+        "baseURL": "${address}",
+        // Keep this timeout; requests stream for minutes.
+        "headerTimeout": 30000
+      }
+    }
+  }
+}
+`)
+        yield* home.answering(["disconnect", "opencode"], "y")
+        expect(Option.getOrNull(yield* home.read(home.opencodeConfig))).toBe(`{
+  "providers": {
+    "claude-agent": {
+      "settings": {
+        // Keep this timeout; requests stream for minutes.
+        "headerTimeout": 30000
+      }
+    }
+  }
+}
+`)
+      }),
+    ),
+  )
+
+  it.effect("keeps claude-agent's settings when its key no longer reads the proxy key file", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.runDaemon
+        yield* home.connectOpencode("y")
+        const connected = Option.getOrThrow(yield* home.read(home.opencodeConfig))
+        const keyFile = `${home.root}/data/agent-proxy/key`
+        yield* home.writeOpencodeConfig(connected.replace(`"{file:${keyFile}}"`, '"sk-ant-owner"'))
+        const output = yield* home.answering(["disconnect", "opencode"], "y")
+        const after: unknown = JSON.parse(Option.getOrThrow(yield* home.read(home.opencodeConfig)))
+        expect(after).toMatchObject({
+          providers: { "claude-agent": { settings: { apiKey: "sk-ant-owner" } } },
+        })
+        expect(JSON.stringify(after)).not.toContain("agent-proxy-codex")
+        expect(output).toContain(
+          "Kept, since connect did not write it, or it was changed since: providers.claude-agent.settings.baseURL and apiKey (its apiKey does not read the proxy key file).",
+        )
+      }),
+    ),
+  )
+})
+
+layer(services)("agent-proxy uninstall", (it) => {
+  it.effect("refuses when run from source, since there is no binary to delete", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        expect(yield* home.fails(["uninstall"])).toBe(
+          "`uninstall` removes the installed binary, and this is running from source, so there is none to remove. Run it as the installed `agent-proxy`.",
+        )
+      }),
+    ),
+  )
+
+  it.effect(
+    "shows every client change, asks once, then disconnects, deletes the binary, and keeps the data",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          // A fixed port, so connect needs no daemon, and none runs to stop.
+          const home = yield* makeHome({
+            listen: "127.0.0.1:8318",
+            binary: ".local/bin/agent-proxy",
+          })
+          const binary = `${home.home}/.local/bin/agent-proxy`
+          yield* fs.makeDirectory(`${home.home}/.local/bin`, { recursive: true })
+          yield* fs.writeFileString(binary, "#!/bin/sh\n")
+          yield* home.writeSettings('{ "model": "opus" }\n')
+          yield* home.connect("y")
+          yield* home.connectCodex("y")
+
+          const run = yield* Effect.forkChild(home.cli(["uninstall"]))
+          const shown = yield* home.asked
+          expect(shown).toContain("Disconnecting Claude Code from the proxy changes")
+          expect(shown).toContain("Disconnecting Codex from the proxy changes")
+          expect(shown).not.toContain("Disconnecting opencode")
+          expect(shown).toContain(`- deletes ${binary}`)
+          expect(shown.match(/\[y\/N\]/g)).toHaveLength(1)
+          expect(yield* fs.exists(binary)).toBe(true)
+          yield* Queue.offer(home.typed, "y")
+          const output = yield* Fiber.join(run)
+
+          expect(JSON.parse(Option.getOrThrow(yield* home.read(home.settings)))).toEqual({
+            model: "opus",
+          })
+          expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe("")
+          expect(yield* fs.exists(binary)).toBe(false)
+          expect(output).toContain(`Deleted ${binary}.`)
+          expect(output).toContain(`accounts and the proxy key  ${home.root}/data/agent-proxy`)
+          expect(output).toContain(`logs                        ${home.root}/state/agent-proxy`)
+          expect(output).toContain(
+            `config                      ${home.root}/config/agent-proxy/config.toml`,
+          )
+          expect(output).toContain(
+            `Remove them with: rm -rf '${home.root}/data/agent-proxy' '${home.root}/state/agent-proxy' '${home.root}/config/agent-proxy/config.toml'`,
+          )
+        }),
+      ),
+  )
+
+  it.effect(
+    "refuses, in a sandbox, to delete a binary outside it, such as the real install on PATH",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const outside = `${yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-real-bin-" })}/agent-proxy`
+          yield* fs.writeFileString(outside, "#!/bin/sh\n")
+          // This test's HOME is a temporary directory, not the account's real home.
+          const home = yield* makeHome({ listen: "127.0.0.1:8318", binary: outside })
+          yield* home.connect("y")
+          const connected = yield* home.read(home.settings)
+
+          expect(yield* home.fails(["uninstall"])).toMatch(
+            new RegExp(
+              `^\\\`uninstall\\\` refuses to delete ${outside.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")}, which is not under HOME`,
+            ),
+          )
+          expect(yield* fs.exists(outside)).toBe(true)
+          expect(yield* home.read(home.settings)).toStrictEqual(connected)
+        }),
+      ),
+  )
+
+  it.effect(
+    "stops before changing anything while a daemon holds the lock but does not answer",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const home = yield* makeHome({ listen: "127.0.0.1:8318", binary: "agent-proxy" })
+          yield* fs.writeFileString(`${home.home}/agent-proxy`, "#!/bin/sh\n")
+          yield* home.connect("y")
+          const connected = yield* home.read(home.settings)
+          // A paused daemon: it holds the state directory's lock, and answers nothing.
+          const stateDir = `${home.root}/state/agent-proxy`
+          yield* fs.makeDirectory(stateDir, { recursive: true })
+          yield* acquireLock(stateDir, 4242)
+
+          expect(yield* home.fails(["uninstall"])).toBe(
+            "The daemon (pid 4242) holds its lock but does not answer, so uninstall changed nothing. Stop it with `kill 4242`, then run this again.",
+          )
+          expect(yield* fs.exists(`${home.home}/agent-proxy`)).toBe(true)
+          expect(yield* home.read(home.settings)).toStrictEqual(connected)
+        }),
+      ),
+  )
+
+  it.effect("changes nothing when the owner does not confirm", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome({ listen: "127.0.0.1:8318", binary: "agent-proxy" })
+        yield* fs.writeFileString(`${home.home}/agent-proxy`, "#!/bin/sh\n")
+        yield* home.connect("y")
+        const connected = yield* home.read(home.settings)
+        const run = yield* Effect.forkChild(home.fails(["uninstall"]))
+        yield* home.asked
+        yield* Queue.offer(home.typed, "n")
+        expect(yield* Fiber.join(run)).toBe("Nothing changed; agent-proxy is still installed.")
+        expect(yield* home.read(home.settings)).toStrictEqual(connected)
+        expect(yield* fs.exists(`${home.home}/agent-proxy`)).toBe(true)
       }),
     ),
   )
