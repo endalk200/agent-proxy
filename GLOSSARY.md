@@ -47,3 +47,25 @@ _Avoid_: Thread, conversation, chat
 **Proxy key**:
 The secret a client presents to the proxy to be served. It is not any provider's credential.
 _Avoid_: API key, token, client key
+
+### Running it
+
+**Daemon**:
+The one long-running agent-proxy process on a machine, which serves the proxy, the daemon API and the dashboard. The CLI reaches it only over HTTP.
+_Avoid_: Server, service, backend
+
+**Install**:
+The compiled `agent-proxy` binary at `~/.local/bin/agent-proxy`, built from a checkout by `bun run install-local`, with the dashboard embedded (ADR-0008).
+_Avoid_: Package, release, deployment
+
+**Build**:
+What a binary was compiled from: its git commit, marked `-dirty` when the tree had uncommitted changes, or `source` for a run from the checkout.
+_Avoid_: Version (that is the package version), revision
+
+**Launch agent**:
+The launchd job, `dev.endalk200.agent-proxy`, that `daemon install` registers on macOS. A daemon it runs is **supervised**: restarted after a crash, not after a clean stop.
+_Avoid_: Service, plist, LaunchDaemon
+
+**Connect** / **Disconnect**:
+Pointing a client at the proxy through the client's own config file, and removing exactly what connect wrote there.
+_Avoid_: Configure, setup, link
