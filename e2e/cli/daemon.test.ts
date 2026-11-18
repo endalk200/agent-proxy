@@ -1,3 +1,5 @@
+import { dirname, join } from "node:path"
+
 import { defaultRepo, runCli, Sandbox } from "@agent-proxy/sandbox"
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
@@ -8,9 +10,10 @@ import { TestClock } from "effect/testing"
 
 import { isAlive } from "../support/process.ts"
 
-// The daemon's lifecycle, black-box: the built binary in a sandbox whose
+// The daemon's lifecycle, black-box: the compiled binary in a sandbox whose
 // config binds any free port. Only commands, their output, the state file,
-// and HTTP are observed. Every test stops its daemon, even when it fails.
+// and HTTP are observed. Every test's sandbox stops its daemon, even when the
+// test fails.
 
 const StateFile = Schema.fromJsonString(
   Schema.Struct({ pid: Schema.Int, port: Schema.Int, address: Schema.String }),
@@ -35,8 +38,6 @@ const sandboxed = Effect.gen(function* () {
   const sandbox = yield* Sandbox.scoped(`${root}/sandbox`)
   const agentProxy = (args: ReadonlyArray<string>) =>
     runCli(sandbox, defaultRepo.cliBuilt, args, { cwd: root })
-  // Registered after the sandbox, so it runs before the sandbox is removed.
-  yield* Effect.addFinalizer(() => agentProxy(["daemon", "stop"]).pipe(Effect.ignore))
   const stateFile = `${sandbox.stateHome}/agent-proxy/daemon.json`
   return { sandbox, root, agentProxy, stateFile }
 })
@@ -45,6 +46,16 @@ const healthz = (address: string) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient
     return (yield* client.get(`${address}/healthz`)).status
+  })
+
+const get = (url: string) =>
+  Effect.gen(function* () {
+    const response = yield* (yield* HttpClient.HttpClient).get(url)
+    return {
+      status: response.status,
+      contentType: response.headers["content-type"] ?? "",
+      body: yield* response.text,
+    }
   })
 
 layer(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))(
@@ -124,7 +135,7 @@ layer(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))(
             const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
             const { sandbox, root, stateFile } = yield* sandboxed
             const daemon = yield* spawner.spawn(
-              ChildProcess.make("bun", [defaultRepo.cliBuilt, "daemon", "run"], {
+              ChildProcess.make(defaultRepo.cliBuilt, ["daemon", "run"], {
                 cwd: root,
                 env: sandbox.env,
                 extendEnv: false,
@@ -147,6 +158,62 @@ layer(Layer.mergeAll(BunServices.layer, FetchHttpClient.layer))(
           }),
         ),
       60_000,
+    )
+
+    it.effect(
+      "serves the dashboard embedded in the binary, which has no build beside it",
+      () =>
+        TestClock.withLive(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem
+            const { agentProxy, stateFile } = yield* sandboxed
+            expect(yield* fs.exists(join(dirname(defaultRepo.cliBuilt), "web"))).toBe(false)
+            expect((yield* agentProxy(["daemon", "start"])).exitCode).toBe(0)
+            const state = yield* Schema.decodeEffect(StateFile)(yield* fs.readFileString(stateFile))
+
+            const page = yield* get(`${state.address}/`)
+            expect(page.status).toBe(200)
+            expect(page.contentType).toMatch(/^text\/html/)
+            const script = /src="\/(assets\/[^"]+\.js)"/.exec(page.body)?.[1]
+            expect(script).toBeDefined()
+            const asset = yield* get(`${state.address}/${script}`)
+            expect(asset.status).toBe(200)
+            expect(asset.contentType).toMatch(/^text\/javascript/)
+          }),
+        ),
+      60_000,
+    )
+
+    it.effect(
+      "names the build it runs, by its commit",
+      () =>
+        TestClock.withLive(
+          Effect.gen(function* () {
+            const { agentProxy } = yield* sandboxed
+            expect((yield* agentProxy(["daemon", "start"])).exitCode).toBe(0)
+            const status = yield* agentProxy(["daemon", "status", "--json"])
+            expect(JSON.parse(status.stdout)).toMatchObject({
+              build: expect.stringMatching(/^[0-9a-f]{7,}(-dirty)?$/),
+            })
+            expect((yield* agentProxy(["daemon", "status"])).stdout).toMatch(
+              /version {2}\d+\.\d+\.\d+ \([0-9a-f]{7,}(-dirty)?\)/,
+            )
+          }),
+        ),
+      60_000,
+    )
+
+    it.effect("daemon install refuses inside the sandbox, and writes no launch agent", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const { sandbox, agentProxy } = yield* sandboxed
+        const result = yield* agentProxy(["daemon", "install"])
+        expect(result.exitCode).toBe(1)
+        expect(result.stderr).toContain(
+          `\`daemon install\` refuses to run while HOME (${sandbox.home}) is not your home directory`,
+        )
+        expect(yield* fs.exists(`${sandbox.home}/Library`)).toBe(false)
+      }),
     )
 
     it.effect("start fails on a malformed config, naming its line", () =>
