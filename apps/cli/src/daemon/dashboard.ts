@@ -1,6 +1,4 @@
-import { fileURLToPath } from "node:url"
-
-import { Context, Effect, FileSystem, Path } from "effect"
+import { Context, Effect, FileSystem, Option, Path } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
 import type { LocalOnly } from "./http.ts"
@@ -8,19 +6,21 @@ import type { LocalOnly } from "./http.ts"
 /**
  * The built dashboard, served at `/` on the daemon's one listener.
  *
- * `bun run build` builds the web client into `apps/web/dist` and copies it
- * into the CLI bundle as `apps/cli/dist/web`, beside `bin.js`. The bundled
- * daemon finds it there; a daemon run from source finds `apps/web/dist`.
+ * `bun run build` builds the web client into `apps/web/dist` and embeds it in
+ * the compiled binary (ADR-0008), whose entry point hands the daemon the
+ * embedded files. A daemon run from source is pointed at `apps/web/dist`.
  */
 
-/** Where the daemon looks for the build, first one holding an `index.html` wins. */
-export const DashboardDirs = Context.Reference<ReadonlyArray<string>>("agent-proxy/DashboardDirs", {
-  defaultValue: () => [
-    // Bundled: this module is inside `dist/bin.js`.
-    fileURLToPath(new URL("web", import.meta.url)),
-    // Source: this module is `apps/cli/src/daemon/dashboard.ts`.
-    fileURLToPath(new URL("../../../web/dist", import.meta.url)),
-  ],
+/** Where the daemon finds the build. */
+export type DashboardSource =
+  /** Directories to look in, first one holding an `index.html` wins. */
+  | { readonly _tag: "Directories"; readonly dirs: ReadonlyArray<string> }
+  /** Files embedded in the binary: each path under the build, such as `assets/index-abc.js`, to the file holding it. */
+  | { readonly _tag: "Embedded"; readonly files: Readonly<Record<string, string>> }
+
+/** The dashboard's build, given by the entry point. With none, the dashboard is not built. */
+export const Dashboard = Context.Reference<DashboardSource>("agent-proxy/Dashboard", {
+  defaultValue: () => ({ _tag: "Directories", dirs: [] }),
 })
 
 const CONTENT_TYPES: Readonly<Record<string, string>> = {
@@ -46,33 +46,51 @@ const notBuilt = HttpServerResponse.text(
   { status: 404 },
 )
 
+/** The file holding `relative` in the build, or `None` when the build has no such file. */
+const locate = (source: DashboardSource, relative: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    if (source._tag === "Embedded") {
+      return Object.hasOwn(source.files, relative)
+        ? Option.fromNullishOr(source.files[relative])
+        : Option.none<string>()
+    }
+    const dir = yield* Effect.findFirst(source.dirs, (candidate) =>
+      fs.exists(path.join(candidate, "index.html")).pipe(Effect.orElseSucceed(() => false)),
+    )
+    if (Option.isNone(dir)) return Option.none<string>()
+    const root = path.resolve(dir.value)
+    const file = path.resolve(root, relative)
+    if (!file.startsWith(`${root}${path.sep}`)) return Option.none<string>()
+    const info = yield* fs.stat(file).pipe(Effect.option)
+    return Option.isSome(info) && info.value.type === "File" ? Option.some(file) : Option.none()
+  })
+
 const serve = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const path = yield* Path.Path
   const request = yield* HttpServerRequest.HttpServerRequest
 
-  const dirs = yield* DashboardDirs
-  const dir = yield* Effect.findFirst(dirs, (candidate) =>
-    fs.exists(path.join(candidate, "index.html")).pipe(Effect.orElseSucceed(() => false)),
-  )
-  if (dir._tag === "None") return notBuilt
+  const source = yield* Dashboard
+  if (Option.isNone(yield* locate(source, "index.html"))) return notBuilt
 
   const pathname = yield* Effect.try({
     try: () => decodeURIComponent(new URL(request.url, "http://dashboard").pathname),
     catch: () => "malformed",
   }).pipe(Effect.option)
-  if (pathname._tag === "None") return notFound
-  const relative = pathname.value === "/" ? "index.html" : pathname.value.replace(/^\/+/, "")
-  const root = path.resolve(dir.value)
-  const file = path.resolve(root, relative)
-  if (!file.startsWith(`${root}${path.sep}`)) return notFound
+  if (Option.isNone(pathname)) return notFound
+  // Normalized, so `assets/../index.html` is looked up, and cached, as `index.html`.
+  const relative = path.normalize(
+    pathname.value === "/" ? "index.html" : pathname.value.replace(/^\/+/, ""),
+  )
 
-  const info = yield* fs.stat(file).pipe(Effect.option)
-  if (info._tag === "None" || info.value.type !== "File") return notFound
-  const bytes = yield* fs.readFile(file)
+  const file = yield* locate(source, relative)
+  if (Option.isNone(file)) return notFound
+  const bytes = yield* fs.readFile(file.value)
   return HttpServerResponse.uint8Array(bytes, {
-    contentType: CONTENT_TYPES[path.extname(file)] ?? "application/octet-stream",
-    headers: { "cache-control": cacheControlFor(path.relative(root, file)) },
+    contentType: CONTENT_TYPES[path.extname(relative)] ?? "application/octet-stream",
+    headers: { "cache-control": cacheControlFor(relative) },
   })
 }).pipe(Effect.catchTag("PlatformError", () => Effect.succeed(notFound)))
 

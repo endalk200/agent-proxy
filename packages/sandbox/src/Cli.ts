@@ -16,8 +16,18 @@ const collect = <E>(stream: Stream.Stream<Uint8Array, E>) =>
   stream.pipe(Stream.decodeText(), Stream.mkString)
 
 /**
- * Runs the agent-proxy CLI at `entry` (source `bin.ts` or built `bin.js`) as a
- * child process with only the sandbox environment, and captures its output.
+ * How to run `entry`: a script (source `bin.ts`) through `bun`, and the
+ * compiled binary (`dist/agent-proxy`) directly.
+ */
+export const commandFor = (entry: string, args: ReadonlyArray<string>) =>
+  /\.[cm]?[jt]s$/.test(entry)
+    ? { command: "bun", args: [entry, ...args] }
+    : { command: entry, args: [...args] }
+
+/**
+ * Runs the agent-proxy CLI at `entry` (source `bin.ts`, or the compiled
+ * binary) as a child process with only the sandbox environment, and captures
+ * its output.
  */
 export const runCli = Effect.fn("runCli")(function* (
   sandbox: Sandbox,
@@ -26,10 +36,11 @@ export const runCli = Effect.fn("runCli")(function* (
   options: { readonly cwd: string },
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
-  const command = ["bun", entry, ...args]
+  const run = commandFor(entry, args)
+  const command = [run.command, ...run.args]
   const startedAt = yield* Clock.currentTimeMillis
   const handle = yield* spawner.spawn(
-    ChildProcess.make("bun", [entry, ...args], {
+    ChildProcess.make(run.command, run.args, {
       cwd: options.cwd,
       env: sandbox.env,
       extendEnv: false,
