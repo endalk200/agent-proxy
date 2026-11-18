@@ -10,6 +10,7 @@ import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints, realEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
 import { alice, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
+import { noLaunchd } from "../support/no-launchd.ts"
 
 // `key` and `key --rotate`, driven in-process through the real command tree
 // against an in-process daemon (`daemon run`) whose Claude traffic goes to a
@@ -109,6 +110,7 @@ layer(
     BunServices.layer,
     RuntimeInfo.layerProcess,
     Processes.layerProcess,
+    noLaunchd,
     FetchHttpClient.layer,
     Layer.succeed(Browser, Browser.of({ open: () => Effect.die("no browser in this test") })),
   ),
@@ -155,7 +157,7 @@ layer(
         expect(rotated.stdout).toMatch(/^\S{32,}$/)
         expect(rotated.stdout).not.toBe(oldKey)
         expect(rotated.stderr).toBe(
-          "Rotated the proxy key; the old key no longer works. Clients that run `agent-proxy key` pick up the new one on their next request. opencode reads the key file only when it starts: restart it, or run `opencode reload`.",
+          "Rotated the proxy key; the old key no longer works. Claude Code picks up the new one by itself, on its next request. Codex and opencode read the key only when they start: restart Codex, and restart opencode or run `opencode reload`.",
         )
         expect(yield* statusWithKey(address, oldKey)).toBe(401)
         expect(yield* statusWithKey(address, rotated.stdout)).toBe(200)

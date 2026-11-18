@@ -24,10 +24,12 @@ export const keyCommand = Command.make(
     }
     const { key } = yield* rotateProxyKey.pipe(Effect.mapError(asUserError))
     yield* Console.log(key)
-    // opencode reads the key with `{file:…}` when it loads its config, so it
-    // keeps sending the old key until it loads it again (spike #6).
+    // Claude Code runs `apiKeyHelper` again after a 401. Codex runs its `auth`
+    // command once per process, and opencode reads the key with `{file:…}`
+    // when it loads its config, so both keep sending the old key until they
+    // start again (spike #6, #25).
     yield* Console.error(
-      "Rotated the proxy key; the old key no longer works. Clients that run `agent-proxy key` pick up the new one on their next request. opencode reads the key file only when it starts: restart it, or run `opencode reload`.",
+      "Rotated the proxy key; the old key no longer works. Claude Code picks up the new one by itself, on its next request. Codex and opencode read the key only when they start: restart Codex, and restart opencode or run `opencode reload`.",
     )
   }),
 ).pipe(Command.withDescription("Print the proxy key clients send, or replace it with --rotate"))

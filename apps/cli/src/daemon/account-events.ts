@@ -1,4 +1,4 @@
-import { Clock, Context, Effect, Layer, PubSub, Semaphore, Stream } from "effect"
+import { type Cause, Clock, Context, Effect, Layer, Queue, Semaphore, Stream } from "effect"
 
 import { AccountChanges } from "../accounts/changes.ts"
 import { Router } from "../accounts/router.ts"
@@ -11,15 +11,21 @@ import {
   toAccountList,
 } from "./api.ts"
 
-/** How many events a subscriber that stops reading may fall behind before the oldest are dropped. */
+/** How many events a subscriber that stops reading may fall behind before its stream is ended. */
 const EVENT_BACKLOG = 1024
+
+/** How long the watcher waits after a read of the accounts fails before it reads again. */
+const RETRY_AFTER_FAILURE = "1 second"
 
 /**
  * Account events for the daemon API's event stream. A watcher reads the
  * accounts again whenever the store or router signal a change, and when the
  * first running cooldown ends, which nothing writes, and publishes how the
  * list moved since it last read it. No event is kept: a subscriber gets the
- * accounts as the watcher last read them, then each event after.
+ * accounts as the watcher last read them, then each event after. A
+ * subscriber that falls more than `EVENT_BACKLOG` events behind has its
+ * stream ended, so it reconnects and starts again from a snapshot, rather
+ * than going on with events missing.
  */
 export class AccountEvents extends Context.Service<
   AccountEvents,
@@ -34,11 +40,25 @@ export class AccountEvents extends Context.Service<
       const store = yield* AccountStore
       const router = yield* Router
       const changes = yield* AccountChanges
-      // Bounded, dropping the oldest event for a subscriber that stops reading,
-      // so one stuck client can never grow the daemon's memory; a client that
-      // reconnects gets a fresh snapshot anyway.
-      const events = yield* PubSub.sliding<AccountEvent>(EVENT_BACKLOG)
-      yield* Effect.addFinalizer(() => PubSub.shutdown(events))
+      // Each subscriber's events wait in its own bounded queue, so one stuck
+      // client can never grow the daemon's memory or hold up the others.
+      const subscribers = new Set<Queue.Queue<AccountEvent, Cause.Done>>()
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          for (const queue of subscribers) Queue.endUnsafe(queue)
+          subscribers.clear()
+        }),
+      )
+      /** Hands `happened` to every subscriber, ending the stream of one that has fallen too far behind. */
+      const publish = (happened: ReadonlyArray<AccountEvent>) =>
+        Effect.sync(() => {
+          for (const queue of subscribers) {
+            if (!happened.every((event) => Queue.offerUnsafe(queue, event))) {
+              subscribers.delete(queue)
+              Queue.endUnsafe(queue)
+            }
+          }
+        })
       // Held while the watcher publishes and while a subscriber joins, so a
       // subscriber's snapshot is exactly the list its first event starts from.
       const lock = yield* Semaphore.make(1)
@@ -70,12 +90,20 @@ export class AccountEvents extends Context.Service<
         const next = yield* read
         const happened = accountEvents(current, next)
         current = next
-        yield* PubSub.publishAll(events, happened)
+        yield* publish(happened)
       })
 
       yield* untilChanged.pipe(
         Effect.andThen(lock.withPermit(catchUp)),
-        Effect.ignore({ log: "Warn", message: "could not read the accounts for the event stream" }),
+        // `current` stays as it was, so a cooldown in it that has ended would
+        // make the next wait return at once: waiting here keeps a read that
+        // keeps failing from spinning and flooding the log.
+        Effect.catch((error) =>
+          Effect.logWarning("could not read the accounts for the event stream").pipe(
+            Effect.annotateLogs({ cause: error.message }),
+            Effect.andThen(Effect.sleep(RETRY_AFTER_FAILURE)),
+          ),
+        ),
         Effect.forever,
         Effect.forkScoped,
       )
@@ -95,9 +123,17 @@ export class AccountEvents extends Context.Service<
               ),
               Effect.orDie,
             )
-            const subscription = yield* PubSub.subscribe(events)
+            const queue = yield* Queue.dropping<AccountEvent, Cause.Done>(EVENT_BACKLOG)
+            subscribers.add(queue)
             const snapshot: AccountSnapshot = { type: "snapshot", ...current }
-            return Stream.concat(Stream.make(snapshot), Stream.fromSubscription(subscription))
+            return Stream.concat(Stream.make(snapshot), Stream.fromQueue(queue)).pipe(
+              Stream.ensuring(
+                Effect.sync(() => {
+                  subscribers.delete(queue)
+                  Queue.endUnsafe(queue)
+                }),
+              ),
+            )
           }),
         ),
       )
