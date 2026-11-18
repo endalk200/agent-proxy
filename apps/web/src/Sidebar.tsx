@@ -1,14 +1,20 @@
+import { Menu } from "@base-ui/react/menu"
 import { Popover } from "@base-ui/react/popover"
+import type { ReactElement } from "react"
 
 import type { AccountList, DaemonInfo } from "./daemon-api.ts"
 import { clockText, countdown, hostOf, poolState, providerNames, uptimeText } from "./model.ts"
+import { type ThemeChoice, useTheme } from "./theme.ts"
 import {
   copyText,
   IconCheck,
   IconCopy,
   IconLaptop,
   IconLink,
+  IconMonitor,
+  IconMoon,
   IconSelector,
+  IconSun,
   IconUsers,
   ProviderMark,
   useFlag,
@@ -16,7 +22,7 @@ import {
 
 /**
  * The app shell's sidebar: the daemon switcher, the pages (only Accounts is
- * built), the pool strip, and Connect clients.
+ * built), the pool strip, Connect clients, and the theme.
  */
 export function Sidebar(props: {
   list: AccountList | undefined
@@ -106,8 +112,57 @@ export function Sidebar(props: {
           </span>
           <span className="nav-label">Connect clients</span>
         </button>
+        <ThemeMenu />
       </div>
     </nav>
+  )
+}
+
+const themes: Record<
+  ThemeChoice,
+  { readonly name: string; readonly icon: (size: number) => ReactElement }
+> = {
+  system: { name: "System", icon: (size) => <IconMonitor size={size} /> },
+  light: { name: "Light", icon: (size) => <IconSun size={size} /> },
+  dark: { name: "Dark", icon: (size) => <IconMoon size={size} /> },
+}
+const themeOrder: ReadonlyArray<ThemeChoice> = ["system", "light", "dark"]
+
+/** The theme menu: System, Light or Dark, kept by this browser. */
+function ThemeMenu() {
+  const [choice, choose] = useTheme()
+  const current = themes[choice]
+  return (
+    <Menu.Root>
+      <Menu.Trigger className="nav-item" aria-label={`Theme: ${current.name}`}>
+        <span className="nav-icon">{current.icon(15)}</span>
+        <span className="nav-label">Theme</span>
+        <span className="nav-hint" aria-hidden="true">
+          {current.name}
+        </span>
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner className="layer" side="top" align="start" sideOffset={6}>
+          <Menu.Popup className="menu">
+            <Menu.RadioGroup
+              value={choice}
+              onValueChange={(next: ThemeChoice) => choose(next)}
+              aria-label="Theme"
+            >
+              {themeOrder.map((option) => (
+                <Menu.RadioItem key={option} value={option} className="menu-item" closeOnClick>
+                  <span className="menu-icon">{themes[option].icon(14)}</span>
+                  {themes[option].name}
+                  <Menu.RadioItemIndicator className="menu-check">
+                    <IconCheck size={14} />
+                  </Menu.RadioItemIndicator>
+                </Menu.RadioItem>
+              ))}
+            </Menu.RadioGroup>
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
   )
 }
 

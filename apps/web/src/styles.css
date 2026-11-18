@@ -1,5 +1,6 @@
 /* The dashboard's look: a dense console. Neutral greys, one restrained blue
-   accent, 1px borders, the system font, light and dark from the system. */
+   accent, 1px borders, the system font. Light or dark comes from
+   <html data-theme>, which the theme menu sets (System follows the OS). */
 
 :root {
   --bg: #fafafa;
@@ -32,36 +33,35 @@
   --danger-solid: #dc2626;
   --shadow-sheet: 0 24px 64px -12px rgb(0 0 0 / 0.24), 0 2px 6px rgb(0 0 0 / 0.04);
 
-  color-scheme: light dark;
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #09090b;
-    --panel: #111113;
-    --subtle: #1a1a1d;
-    --hover: #161619;
-    --border: #232327;
-    --border-strong: #34343a;
-    --text: #f4f4f5;
-    --text-2: #d4d4d8;
-    --muted: #9a9aa3;
-    --faint: #66666e;
-    --accent: #6d9bff;
-    --accent-soft: rgb(109 155 255 / 0.12);
-    --green: #34d399;
-    --green-soft: rgb(52 211 153 / 0.12);
-    --amber: #fbbf24;
-    --amber-soft: rgb(251 191 36 / 0.12);
-    --red: #f87171;
-    --red-soft: rgb(248 113 113 / 0.12);
-    --side: #0d0d10;
-    --side-hover: #18181c;
-    --side-active: #1c1c21;
-    --shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.04), 0 16px 40px -8px rgb(0 0 0 / 0.7);
-    --overlay: rgb(0 0 0 / 0.6);
-    --shadow-sheet: 0 0 0 1px rgb(255 255 255 / 0.03), 0 24px 64px -12px rgb(0 0 0 / 0.75);
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #09090b;
+  --panel: #111113;
+  --subtle: #1a1a1d;
+  --hover: #161619;
+  --border: #232327;
+  --border-strong: #34343a;
+  --text: #f4f4f5;
+  --text-2: #d4d4d8;
+  --muted: #9a9aa3;
+  --faint: #66666e;
+  --accent: #6d9bff;
+  --accent-soft: rgb(109 155 255 / 0.12);
+  --green: #34d399;
+  --green-soft: rgb(52 211 153 / 0.12);
+  --amber: #fbbf24;
+  --amber-soft: rgb(251 191 36 / 0.12);
+  --red: #f87171;
+  --red-soft: rgb(248 113 113 / 0.12);
+  --side: #0d0d10;
+  --side-hover: #18181c;
+  --side-active: #1c1c21;
+  --shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.04), 0 16px 40px -8px rgb(0 0 0 / 0.7);
+  --overlay: rgb(0 0 0 / 0.6);
+  --shadow-sheet: 0 0 0 1px rgb(255 255 255 / 0.03), 0 24px 64px -12px rgb(0 0 0 / 0.75);
 }
 
 /* ------------------------------------------------------------------ base */
@@ -505,6 +505,12 @@ a.linkbtn {
 .menu-item.is-danger .menu-icon {
   color: inherit;
 }
+.menu-check {
+  display: grid;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--text);
+}
 
 /* pages */
 .nav {
@@ -568,10 +574,12 @@ a.linkbtn {
   color: var(--faint);
   font-variant-numeric: tabular-nums;
 }
-@media (prefers-color-scheme: dark) {
-  .nav-badge {
-    color: #1a0505;
-  }
+:root[data-theme="dark"] .nav-badge {
+  color: #1a0505;
+}
+.nav-hint {
+  font-size: 12px;
+  color: var(--faint);
 }
 
 /* the pool strip */
@@ -2444,6 +2452,7 @@ a.linkbtn {
   }
   .daemon > svg,
   .nav-count,
+  .nav-hint,
   .side-pools {
     display: none;
   }
