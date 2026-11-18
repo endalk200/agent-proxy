@@ -19,6 +19,10 @@ import { ClientConfigError, type ClientConnector, type ProxyTarget } from "./con
  * The result is parsed again and must mean exactly the old file plus those
  * two settings; a file laid out in a way the splice gets wrong (the provider
  * in dotted keys or an inline table, say) is refused rather than guessed at.
+ * `disconnect` removes the same two the same way.
+ *
+ * Codex profiles are never edited: a `[profiles.<name>]` that sets its own
+ * `model_provider` wins over the root one, so connect warns about it instead.
  */
 
 const PROVIDER = "agent-proxy"
@@ -28,7 +32,7 @@ const providerTable = (target: ProxyTarget) => `[model_providers.${PROVIDER}]
 name = "OpenAI"
 base_url = "${target.address}/backend-api/codex"
 wire_api = "responses"
-auth = { command = "agent-proxy", args = ["key"] }
+auth = { command = ${JSON.stringify(target.command)}, args = ["key"] }
 `
 
 const snippet = (target: ProxyTarget) =>
@@ -130,6 +134,120 @@ const withModelProvider = (lines: ReadonlyArray<string>): Array<string> => {
   return [...lines.slice(0, at), setting, "", ...lines.slice(at)]
 }
 
+/** `lines` without the runs `[start, end)` in `blocks`, leaving one blank line where two would meet. */
+const withoutBlocks = (
+  lines: ReadonlyArray<string>,
+  blocks: ReadonlyArray<readonly [number, number]>,
+): Array<string> => {
+  let kept = [...lines]
+  // Last block first, so the earlier ones keep their indexes.
+  for (const [start, end] of [...blocks].toSorted((a, b) => b[0] - a[0])) {
+    let from = start
+    let to = end
+    const after = kept[to]
+    if (after !== undefined && isBlank(after)) {
+      if (from === 0) to++
+      else if (isBlank(kept[from - 1] ?? "")) from--
+    }
+    kept = [...kept.slice(0, from), ...kept.slice(to)]
+  }
+  return kept
+}
+
+/** The `[model_providers.agent-proxy]` table's lines, as `[start, end)`, without the comments after it. */
+const providerBlock = (lines: ReadonlyArray<string>): Option.Option<readonly [number, number]> => {
+  const start = lines.findIndex(isProviderHeader)
+  if (start === -1) return Option.none()
+  const next = lines.findIndex((line, index) => index > start && isHeader(line))
+  const end = skipBack(
+    lines,
+    next === -1 ? lines.length : next,
+    (line) => isComment(line) || isBlank(line),
+  )
+  return Option.some([start, Math.max(end, start + 1)])
+}
+
+/** The root `model_provider = "agent-proxy"` line, if the file sets it there. */
+const rootProviderLine = (lines: ReadonlyArray<string>): Option.Option<number> => {
+  const firstHeader = lines.findIndex(isHeader)
+  const root = lines.slice(0, firstHeader === -1 ? lines.length : firstHeader)
+  const at = root.findIndex(
+    (line) => ROOT_KEY.test(line) && /=\s*(?:"agent-proxy"|'agent-proxy')/.test(line),
+  )
+  return at === -1 ? Option.none() : Option.some(at)
+}
+
+/** The 1-based line `[profiles.<profile>]` sets `model_provider` on, when it is written as a table. */
+const profileProviderLine = (lines: ReadonlyArray<string>, profile: string) => {
+  const quoted = profile.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const header = new RegExp(
+    String.raw`^\s*\[\s*profiles\s*\.\s*(?:${quoted}|"${quoted}"|'${quoted}')\s*\](?:\s*#.*)?\s*$`,
+  )
+  const start = lines.findIndex((line) => header.test(line))
+  if (start === -1) return Option.none<number>()
+  for (let index = start + 1; index < lines.length && !isHeader(lines[index] ?? ""); index++) {
+    if (/^\s*(?:model_provider|"model_provider"|'model_provider')\s*=/.test(lines[index] ?? "")) {
+      return Option.some(index + 1)
+    }
+  }
+  return Option.none<number>()
+}
+
+/** Each profile that sets its own `model_provider`, with it. */
+const profileProviders = (config: Table) => {
+  const profiles = config["profiles"]
+  if (!isTable(profiles)) return []
+  return Object.entries(profiles).flatMap(([profile, settings]) =>
+    isTable(settings) && typeof settings["model_provider"] === "string"
+      ? [{ profile, provider: settings["model_provider"] }]
+      : [],
+  )
+}
+
+/**
+ * What the owner should know about Codex's profiles (#22). Connected, a
+ * profile that sets another provider bypasses the proxy: the active one
+ * always, any other under `codex --profile`. Disconnected, a profile that
+ * still names `agent-proxy` names a provider that is gone.
+ */
+const profileWarnings = (content: string, name: string, direction: "connect" | "disconnect") => {
+  const parsed = parse(content)
+  if (Result.isFailure(parsed)) return []
+  const config = parsed.success
+  const lines = content.split(/\r?\n/)
+  const active = typeof config["profile"] === "string" ? config["profile"] : undefined
+  const at = (profile: string) =>
+    Option.match(profileProviderLine(lines, profile), {
+      onNone: () => name,
+      onSome: (line) => `${name}, line ${line}`,
+    })
+  const providers = profileProviders(config)
+
+  if (direction === "disconnect") {
+    return providers
+      .filter(({ provider }) => provider === PROVIDER)
+      .map(
+        ({ profile }) =>
+          `Codex profile ${profile} still sets model_provider = "${PROVIDER}" (${at(profile)}), a provider that no longer exists, so Codex fails${profile === active ? "" : ` with --profile ${profile}`}. Change that line to the provider you use, or delete it.`,
+      )
+  }
+  const bypassing = providers.filter(({ provider }) => provider !== PROVIDER)
+  const activeBypass = bypassing.find(({ profile }) => profile === active)
+  const others = bypassing.filter(({ profile }) => profile !== active)
+  return [
+    ...(activeBypass === undefined
+      ? []
+      : [
+          `Warning: Codex's active profile, ${activeBypass.profile}, sets model_provider = ${JSON.stringify(activeBypass.provider)} (${at(activeBypass.profile)}), which wins over the root one, so Codex does not use the proxy. To use it, change that line to model_provider = "${PROVIDER}", or delete it.`,
+        ]),
+    ...(others.length === 0
+      ? []
+      : [
+          `These Codex profiles set their own model_provider, so codex --profile <name> bypasses the proxy: ${others.map(({ profile, provider }) => `${profile} (${JSON.stringify(provider)}, ${at(profile)})`).join(", ")}.`,
+        ]),
+  ]
+}
+
 export const codex: ClientConnector = {
   name: "Codex",
   // Codex reads its config from `$CODEX_HOME` when that is set, so that is
@@ -178,4 +296,61 @@ export const codex: ClientConnector = {
     }
     return Result.succeed(Option.some(next))
   },
+  remove: (current, _target, name) => {
+    const parsed = parse(current)
+    if (Result.isFailure(parsed)) {
+      return Result.fail(
+        new ClientConfigError({
+          message: `${name} is not valid TOML (${parsed.failure}), so it was left unchanged. Fix it, or move it aside, and run this again.`,
+        }),
+      )
+    }
+    const config = parsed.success
+    const { modelProvider, provider } = managed(config)
+    const ourRoot = modelProvider === PROVIDER
+    if (!ourRoot && provider === undefined) return Result.succeed(Option.none())
+
+    const removed = [
+      ...(ourRoot ? ["model_provider"] : []),
+      ...(provider === undefined ? [] : [`model_providers.${PROVIDER}`]),
+    ]
+    const kept =
+      modelProvider !== undefined && !ourRoot
+        ? [`model_provider (${JSON.stringify(modelProvider)})`]
+        : []
+
+    const eol = current.includes("\r\n") ? "\r\n" : "\n"
+    const lines = current.split(eol)
+    const blocks = [
+      ...Option.toArray(Option.map(rootProviderLine(lines), (at) => [at, at + 1] as const)),
+      ...Option.toArray(providerBlock(lines)),
+    ]
+    const next = withoutBlocks(lines, blocks).join(eol)
+    const written = parse(next)
+    // Compared as connect compares: everything it does not manage stays, an
+    // empty `[model_providers]` of the owner's included, and of what it
+    // manages, only a `model_provider` it did not write is left.
+    if (
+      Result.isFailure(written) ||
+      !Equal.equals(unmanaged(written.success), unmanaged(config)) ||
+      !Equal.equals(managed(written.success), {
+        modelProvider: ourRoot ? undefined : modelProvider,
+        provider: undefined,
+      })
+    ) {
+      return Result.fail(
+        new ClientConfigError({
+          message: `${name} sets model_provider or the ${PROVIDER} provider in a way disconnect cannot change safely, so it was left unchanged. Remove the root model_provider = "${PROVIDER}" and the [model_providers.${PROVIDER}] table by hand.`,
+        }),
+      )
+    }
+    return Result.succeed(Option.some({ next, removed, kept }))
+  },
+  ownedIn: (backup) => {
+    const parsed = parse(backup)
+    if (Result.isFailure(parsed)) return []
+    const { modelProvider } = managed(parsed.success)
+    return modelProvider !== undefined && modelProvider !== PROVIDER ? ["model_provider"] : []
+  },
+  warnings: profileWarnings,
 }

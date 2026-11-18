@@ -1,7 +1,14 @@
 import { Config, Effect, Equal, FileSystem, Option, Path, Predicate, Result } from "effect"
-import { applyEdits, type FormattingOptions, modify, parse, type ParseError } from "jsonc-parser"
+import { applyEdits, modify, parse, type ParseError } from "jsonc-parser"
 
-import { ClientConfigError, type ClientConnector, type ProxyTarget } from "./connector.ts"
+import {
+  ClientConfigError,
+  type ClientConnector,
+  formatting,
+  removeJsonProperty,
+  type KeyFiles,
+  type ProxyTarget,
+} from "./connector.ts"
 
 /**
  * opencode, through its global config file. Two providers point at the
@@ -23,7 +30,9 @@ import { ClientConfigError, type ClientConnector, type ProxyTarget } from "./con
  * changed by editing the settings in place, so comments, order and layout
  * stay; only the line a new setting goes after may be laid out again. The
  * result is parsed again and must mean exactly the old file plus these
- * settings.
+ * settings. `disconnect` removes them the same way: the whole
+ * `agent-proxy-codex` provider, and `claude-agent`'s base URL and key while
+ * its key still reads the proxy key file.
  */
 
 const CLAUDE_AGENT = "claude-agent"
@@ -179,19 +188,48 @@ const unmanaged = (config: unknown, target: ProxyTarget): unknown => {
   return strip(config, [])
 }
 
-/** How `text` is laid out, so a new setting matches it. */
-const formatting = (text: string): FormattingOptions => {
-  const indent = /^([ \t]+)\S/m.exec(text)?.[1] ?? "  "
-  return {
-    insertSpaces: !indent.startsWith("\t"),
-    tabSize: indent.startsWith("\t") ? 1 : indent.length,
-    eol: text.includes("\r\n") ? "\r\n" : "\n",
-  }
-}
-
 /** `text` with the setting at `path` set to `value`. */
 const set = (text: string, path: JsonPath, value: unknown) =>
   applyEdits(text, modify(text, [...path], value, { formattingOptions: formatting(text) }))
+
+/** True when `apiKey` reads the proxy key file, by any of its names. */
+const readsKeyFile = (apiKey: unknown, target: KeyFiles) =>
+  typeof apiKey === "string" && target.keyFiles.some((file) => apiKey === `{file:${file}}`)
+
+const CLAUDE_SETTINGS: JsonPath = ["providers", CLAUDE_AGENT, "settings"]
+
+/** Parses `text` as opencode's config, or says why it cannot be changed. */
+const readConfig = (text: string, name: string): Result.Result<unknown, ClientConfigError> => {
+  const parsed = text.trim() === "" ? Result.succeed<unknown>({}) : parseJsonc(text)
+  if (Result.isFailure(parsed)) {
+    return Result.fail(
+      new ClientConfigError({
+        message: `${name} is not valid JSON (${parsed.failure}), so it was left unchanged. Fix it, or move it aside, and run this again.`,
+      }),
+    )
+  }
+  const why = unfit(parsed.success)
+  if (Option.isSome(why)) {
+    return Result.fail(
+      new ClientConfigError({
+        message: `${name} does not hold opencode settings (${why.value}), so it was left unchanged.`,
+      }),
+    )
+  }
+  return Result.succeed(parsed.success)
+}
+
+/** `value` without the setting at `path`, and without the objects on the way that this leaves empty. */
+const withoutSetting = (value: unknown, path: JsonPath): unknown => {
+  const [key, ...rest] = path
+  if (key === undefined || !isObject(value) || !Object.hasOwn(value, key)) return value
+  const { [key]: child, ...others } = value
+  if (rest.length === 0) return others
+  const stripped = withoutSetting(child, rest)
+  return isObject(stripped) && Object.keys(stripped).length === 0
+    ? others
+    : { ...others, [key]: stripped }
+}
 
 export const opencode: ClientConnector = {
   name: "opencode",
@@ -276,5 +314,69 @@ export const opencode: ClientConnector = {
       )
     }
     return Result.succeed(Option.some(next))
+  },
+  remove: (current, target, name) => {
+    const read = readConfig(current, name)
+    if (Result.isFailure(read)) return Result.fail(read.failure)
+    const config = read.success
+    const claude = valueAt(config, CLAUDE_SETTINGS)
+    const removing: Array<JsonPath> = []
+    const kept: Array<string> = []
+    if (valueAt(config, ["providers", CODEX]) !== undefined) removing.push(["providers", CODEX])
+    if (isObject(claude)) {
+      if (readsKeyFile(claude["apiKey"], target)) {
+        for (const key of ["baseURL", "apiKey"]) {
+          if (claude[key] !== undefined) removing.push([...CLAUDE_SETTINGS, key])
+        }
+      } else if (claude["apiKey"] !== undefined || claude["baseURL"] !== undefined) {
+        kept.push(
+          `${CLAUDE_SETTINGS.join(".")}.baseURL and apiKey (its apiKey does not read the proxy key file)`,
+        )
+      }
+    }
+    if (removing.length === 0) return Result.succeed(Option.none())
+
+    const expected = removing.reduce(withoutSetting, config)
+    let next = current
+    for (const path of removing) {
+      next = removeJsonProperty(next, path)
+      // An object the removal empties was made for the proxy, unless it was empty already.
+      for (let depth = path.length - 1; depth > 1; depth--) {
+        const parent = path.slice(0, depth)
+        const left = valueAt(Result.getOrUndefined(parseJsonc(next)), parent)
+        if (isObject(left) && Object.keys(left).length === 0) {
+          next = removeJsonProperty(next, parent)
+        }
+      }
+    }
+    const providers = valueAt(Result.getOrUndefined(parseJsonc(next)), ["providers"])
+    if (isObject(providers) && Object.keys(providers).length === 0) {
+      next = removeJsonProperty(next, ["providers"])
+    }
+
+    const written = parseJsonc(next)
+    if (Result.isFailure(written) || !Equal.equals(written.success, expected)) {
+      return Result.fail(
+        new ClientConfigError({
+          message: `${name} sets the opencode providers in a way disconnect cannot change safely, so it was left unchanged. Remove the ${CODEX} provider, and ${CLAUDE_AGENT}'s baseURL and apiKey, by hand.`,
+        }),
+      )
+    }
+    return Result.succeed(
+      Option.some({
+        next,
+        removed: removing.map((path) => path.join(".")),
+        kept,
+      }),
+    )
+  },
+  ownedIn: (backup, target) => {
+    const parsed = parseJsonc(backup)
+    if (Result.isFailure(parsed)) return []
+    const claude = valueAt(parsed.success, CLAUDE_SETTINGS)
+    if (!isObject(claude) || readsKeyFile(claude["apiKey"], target)) return []
+    return ["baseURL", "apiKey"]
+      .filter((key) => claude[key] !== undefined)
+      .map((key) => [...CLAUDE_SETTINGS, key].join("."))
   },
 }
