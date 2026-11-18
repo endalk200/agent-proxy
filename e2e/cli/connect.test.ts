@@ -27,8 +27,11 @@ const sandboxed = Effect.gen(function* () {
   return { sandbox, agentProxy, address, claudeDir, settings: `${claudeDir}/settings.json` }
 })
 
+/** The key helper the compiled binary writes: its own absolute path, which a GUI client finds without PATH. */
+const KEY_HELPER = `${defaultRepo.cliBuilt} key`
+
 const settingsFor = (address: string) =>
-  `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${address}"\n  },\n  "apiKeyHelper": "agent-proxy key"\n}\n`
+  `{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${address}"\n  },\n  "apiKeyHelper": "${KEY_HELPER}"\n}\n`
 
 layer(BunServices.layer)("agent-proxy connect claude-code (built binary)", (it) => {
   it.effect("needs the daemon running to learn an address the config leaves open", () =>
@@ -64,7 +67,7 @@ layer(BunServices.layer)("agent-proxy connect claude-code (built binary)", (it) 
           expect(yield* fs.exists(claudeDir)).toBe(false)
 
           yield* fs.makeDirectory(claudeDir)
-          const connected = `{ "model": "opus", "env": { "ANTHROPIC_BASE_URL": "${proxy}" }, "apiKeyHelper": "agent-proxy key" }\n`
+          const connected = `{ "model": "opus", "env": { "ANTHROPIC_BASE_URL": "${proxy}" }, "apiKeyHelper": "${KEY_HELPER}" }\n`
           yield* fs.writeFileString(settings, connected)
           const again = yield* agentProxy(["connect", "claude-code"])
           expect(again.exitCode).toBe(0)

@@ -23,7 +23,8 @@ layer(BunServices.layer)("agent-proxy (built binary)", (it) => {
     Effect.gen(function* () {
       const { result } = yield* agentProxy(["--version"])
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toMatch(/agent-proxy v\d+\.\d+\.\d+/)
+      // The compiled binary names the commit it was built from.
+      expect(result.stdout.trim()).toMatch(/^agent-proxy v\d+\.\d+\.\d+ \([0-9a-f]{7,}(-dirty)?\)$/)
     }),
   )
 
