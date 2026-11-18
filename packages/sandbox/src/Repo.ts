@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url"
 export interface RepoPaths {
   readonly root: string
   readonly cliSource: string
+  /** The compiled binary `bun run build` makes (ADR-0008). */
   readonly cliBuilt: string
   readonly webDir: string
   readonly verifyDir: string
@@ -12,7 +13,7 @@ export interface RepoPaths {
 export const repoPaths = (root: string): RepoPaths => ({
   root,
   cliSource: `${root}/apps/cli/src/bin.ts`,
-  cliBuilt: `${root}/apps/cli/dist/bin.js`,
+  cliBuilt: `${root}/apps/cli/dist/agent-proxy`,
   webDir: `${root}/apps/web`,
   verifyDir: `${root}/.verify`,
 })

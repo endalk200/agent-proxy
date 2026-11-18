@@ -3,10 +3,12 @@ import { CliError, Command, Flag } from "effect/cli"
 
 import packageJson from "../../package.json" with { type: "json" }
 import { resolveConfigPath } from "../paths.ts"
-import { RuntimeInfo } from "../runtime-info.ts"
+import { buildLabel, RuntimeInfo } from "../runtime-info.ts"
 
 export interface Info {
   readonly version: string
+  /** The build: `abc1234`, `abc1234-dirty`, or `source`. */
+  readonly build: string
   readonly runtime: string
   readonly runtimeVersion: string
   readonly platform: string
@@ -28,6 +30,7 @@ export const gatherInfo = Effect.gen(function* () {
   )
   const info: Info = {
     version: packageJson.version,
+    build: buildLabel(runtime.binary),
     runtime: runtime.runtime,
     runtimeVersion: runtime.runtimeVersion,
     platform: runtime.platform,
@@ -41,7 +44,7 @@ export const formatInfo = (info: Info, options: { readonly json: boolean }): str
   options.json
     ? JSON.stringify(info, null, 2)
     : [
-        `agent-proxy ${info.version}`,
+        `agent-proxy ${info.version} (${info.build})`,
         `runtime   ${info.runtime} ${info.runtimeVersion}`,
         `platform  ${info.platform}-${info.arch}`,
         `config    ${info.configPath}`,
@@ -59,4 +62,4 @@ export const infoCommand = Command.make(
     const info = yield* gatherInfo
     yield* Console.log(formatInfo(info, { json }))
   }),
-).pipe(Command.withDescription("Show version, runtime, and configuration details"))
+).pipe(Command.withDescription("Show version, build, runtime, and configuration details"))

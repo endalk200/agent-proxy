@@ -6,9 +6,10 @@ import { ConfigProvider, Effect, FileSystem, Layer } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/http"
 
 import { startDaemon } from "../../src/daemon/daemon.ts"
-import { DashboardDirs } from "../../src/daemon/dashboard.ts"
+import { Dashboard, type DashboardSource } from "../../src/daemon/dashboard.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
+import { RuntimeInfo } from "../../src/runtime-info.ts"
 
 // The daemon serves the built dashboard at `/` on its one listener, beside
 // `/api/` and the proxy routes. A temporary directory stands in for the build.
@@ -16,8 +17,8 @@ import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 const INDEX = "<!doctype html><title>agent-proxy</title><div id=root></div>"
 const SCRIPT = "console.log('dashboard')"
 
-/** A daemon in a throwaway home that looks for the dashboard in `dirs` (`built` is a fake build). */
-const makeDaemon = (dirs: (built: string) => ReadonlyArray<string>) =>
+/** A daemon in a throwaway home that finds the dashboard in `source` (`built` is a fake build). */
+const makeDaemon = (source: (built: string) => ReadonlyArray<string> | DashboardSource) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-dashboard-" })
@@ -36,7 +37,12 @@ const makeDaemon = (dirs: (built: string) => ReadonlyArray<string>) =>
     }
     return yield* startDaemon.pipe(
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
-      Effect.provideService(DashboardDirs, dirs(built)),
+      Effect.provideService(
+        Dashboard,
+        ((given) => ("_tag" in given ? given : { _tag: "Directories", dirs: given }))(
+          source(built),
+        ),
+      ),
     )
   })
 
@@ -74,6 +80,7 @@ const raw = (address: string, method: string, path: string, headers: Record<stri
 layer(
   Layer.mergeAll(
     BunServices.layer,
+    RuntimeInfo.layerProcess,
     Processes.layerProcess,
     FetchHttpClient.layer,
     ProviderEndpoints.layer,
@@ -123,6 +130,33 @@ layer(
         const response = yield* get(`${daemon.address}${path}`)
         expect({ path, status: response.status }).toEqual({ path, status: 404 })
         expect(response.body).not.toContain("not part of the dashboard")
+      }
+    }),
+  )
+
+  it.effect("serves the files embedded in the binary, and only those", () =>
+    Effect.gen(function* () {
+      // The compiled binary names each file of the build by where Bun put it.
+      const daemon = yield* makeDaemon((built) => ({
+        _tag: "Embedded",
+        files: {
+          "index.html": `${built}/index.html`,
+          "assets/index-abc123.js": `${built}/assets/index-abc123.js`,
+        },
+      }))
+      const page = yield* get(`${daemon.address}/`)
+      expect(page.status).toBe(200)
+      expect(page.contentType).toMatch(/^text\/html/)
+      expect(page.body).toBe(INDEX)
+      const script = yield* get(`${daemon.address}/assets/index-abc123.js`)
+      expect(script.contentType).toMatch(/^text\/javascript/)
+      expect(script.cacheControl).toBe("public, max-age=31536000, immutable")
+      expect(script.body).toBe(SCRIPT)
+      for (const path of ["/assets/missing.js", "/secret.txt", "/%2e%2e/secret.txt", "/toString"]) {
+        expect({ path, status: (yield* get(`${daemon.address}${path}`)).status }).toEqual({
+          path,
+          status: 404,
+        })
       }
     }),
   )

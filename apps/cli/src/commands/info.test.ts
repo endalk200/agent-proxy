@@ -1,11 +1,12 @@
 import { expect, layer } from "@effect/vitest"
-import { ConfigProvider, Effect, Layer, Path } from "effect"
+import { ConfigProvider, Effect, Layer, Option, Path } from "effect"
 
 import { RuntimeInfo } from "../runtime-info.ts"
 import { formatInfo, gatherInfo, type Info } from "./info.ts"
 
 const info: Info = {
   version: "1.2.3",
+  build: "abc1234-dirty",
   runtime: "bun",
   runtimeVersion: "1.4.4",
   platform: "linux",
@@ -21,6 +22,8 @@ const TestEnvironment = Layer.mergeAll(
     runtimeVersion: "1.4.4",
     platform: "linux",
     arch: "x64",
+    binary: Option.none(),
+    realHome: Option.some("/home/me"),
   }),
 )
 
@@ -34,6 +37,7 @@ layer(TestEnvironment)("info command", (it) => {
         platform: "linux",
         arch: "x64",
         configPath: "/home/me/.config/agent-proxy/config.toml",
+        build: "source",
       })
       expect(gathered.version).toMatch(/^\d+\.\d+\.\d+/)
     }),
@@ -42,7 +46,7 @@ layer(TestEnvironment)("info command", (it) => {
   it("formatInfo renders aligned human-readable lines", () => {
     expect(formatInfo(info, { json: false })).toBe(
       [
-        "agent-proxy 1.2.3",
+        "agent-proxy 1.2.3 (abc1234-dirty)",
         "runtime   bun 1.4.4",
         "platform  linux-x64",
         "config    /home/me/.config/agent-proxy/config.toml",

@@ -43,6 +43,12 @@ export const DaemonInfo = Schema.Struct({
   pid: Schema.Int,
   address: Schema.String,
   version: Schema.String,
+  /**
+   * The build it runs, `abc1234`, `abc1234-dirty` or `source`. Optional, so
+   * a new binary still knows the daemon an older one started, which it
+   * replaces when it is installed.
+   */
+  build: Schema.optionalKey(Schema.String),
   startedAt: Schema.String,
   uptimeSeconds: Schema.Finite,
 })
