@@ -59,6 +59,9 @@ const forward: Connect.NextHandleFunction = (req, res, next) => {
     },
   )
   upstream.on("error", () => req.socket.destroy())
+  // A page that closes, or reloads, ends its request: end the daemon's too, or
+  // every reload would leave another `/api/events` subscription open.
+  res.on("close", () => upstream.destroy())
   req.pipe(upstream)
 }
 
