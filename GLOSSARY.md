@@ -23,7 +23,7 @@ All enabled accounts of one provider, any of which may serve that provider's req
 _Avoid_: Group, rotation
 
 **Cooldown**:
-The period an account sits out of its pool after hitting a provider limit, ending when the provider says the limit resets.
+The period an account sits out of its pool after hitting a provider limit (a used-up limit window, or a short rate limit), ending when the provider says the limit resets.
 _Avoid_: Ban, block, suspension
 
 **Account status**:
@@ -33,6 +33,28 @@ _Avoid_: State, health, expired, banned
 **Priority**:
 The owner's ranking of an account within its pool. It decides which account a new session goes to, before headroom does.
 _Avoid_: Weight, order
+
+### Usage
+
+**Limit window**:
+A provider's rolling allowance for one account, such as Claude's 5-hour, weekly, and per-model weekly (Fable) windows, or Codex's 5-hour and weekly windows. It has a share used and a time it resets; the provider owns both, and the proxy only observes them.
+_Avoid_: Quota, rate limit, usage limit, headroom (that is the router's view of the tightest window)
+
+**Usage**:
+The requests that went through the proxy and the tokens each one spent, as the provider counted them.
+_Avoid_: Traffic, stats, metrics, consumption
+
+**Token kinds**:
+The four disjoint parts of a request's tokens: uncached input, cache read, cache write, and output. Reasoning is part of output, not a fifth kind.
+_Avoid_: Prompt tokens, completion tokens, cached tokens
+
+**Cache hit rate**:
+The share of all input tokens (uncached input, cache read, and cache write) that were cache reads.
+_Avoid_: Cache rate, hit ratio
+
+**Equivalent cost**:
+What usage would have cost at the provider's API list prices. The owner pays flat subscriptions, so it measures what the subscriptions are worth, not what was billed. A model with no known price is **unpriced** and left out of totals.
+_Avoid_: Cost, spend, billing
 
 ### Clients
 
