@@ -6,9 +6,11 @@ import { TestClock } from "effect/testing"
 
 import { Browser } from "../../src/browser.ts"
 import { runCli } from "../../src/cli.ts"
+import { LogFileLimit } from "../../src/daemon/log-file.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
+import { noLaunchd } from "../support/no-launchd.ts"
 
 // The `daemon` commands, driven in-process through the real command tree with
 // a throwaway HOME and XDG directories. `daemon run` serves on a real loopback
@@ -39,10 +41,21 @@ const makeHome = (config: string, extraEnv: Record<string, string> = {}) =>
     }
     const stateDir = `${root}/state/agent-proxy`
 
-    /** Runs `agent-proxy <argv>` in this home and returns what it printed to stdout. */
-    const cli = (argv: ReadonlyArray<string>) =>
+    /**
+     * Runs `agent-proxy <argv>` in this home and returns what it printed to
+     * stdout. `env` adds to the home's environment, and `logLimit` sets the
+     * size the daemon rotates its log at.
+     */
+    const cli = (
+      argv: ReadonlyArray<string>,
+      options: {
+        readonly env?: Readonly<Record<string, string>>
+        readonly logLimit?: number
+        readonly lines?: Array<string>
+      } = {},
+    ) =>
       Effect.gen(function* () {
-        const lines: Array<string> = []
+        const lines: Array<string> = options.lines ?? []
         const console: Console.Console = {
           ...globalThis.console,
           log: (...args: ReadonlyArray<unknown>) => {
@@ -51,7 +64,11 @@ const makeHome = (config: string, extraEnv: Record<string, string> = {}) =>
         }
         yield* runCli(argv).pipe(
           Effect.provideService(Console.Console, console),
-          Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
+          Effect.provideService(
+            ConfigProvider.ConfigProvider,
+            ConfigProvider.fromEnvRecord({ ...env, ...options.env }),
+          ),
+          Effect.provideService(LogFileLimit, options.logLimit ?? 10 * 1024 * 1024),
         )
         return lines.join("\n")
       })
@@ -75,35 +92,80 @@ const makeHome = (config: string, extraEnv: Record<string, string> = {}) =>
 const notRunning =
   "The agent-proxy daemon is not running. Start it with `agent-proxy daemon start`."
 
+/** What `daemon status` says about a daemon that is not running, with no launch agent and nothing logged. */
+const notRunningStatus = (stateDir: string) =>
+  [notRunning, `logs          ${stateDir}/daemon.log`, "launch agent  not installed"].join("\n")
+
+/** The message of a command that failed with a user error. */
+const userMessage = (error: unknown) =>
+  typeof error === "object" && error !== null && "userMessage" in error
+    ? String(error.userMessage)
+    : String(error)
+
 layer(
   Layer.mergeAll(
     BunServices.layer,
     RuntimeInfo.layerProcess,
     Processes.layerProcess,
+    noLaunchd,
     FetchHttpClient.layer,
     ProviderEndpoints.layer,
     Layer.succeed(Browser, Browser.of({ open: () => Effect.die("no browser in this test") })),
   ),
 )("agent-proxy daemon", (it) => {
-  it.effect("status fails with a one-line hint when no daemon runs, and starts none", () =>
+  it.effect("status says the daemon is not running, where its logs are, and starts none", () =>
     TestClock.withLive(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
         const home = yield* makeHome('listen = "127.0.0.1:0"\n')
         const error = yield* Effect.flip(home.cli(["daemon", "status"]))
-        expect(error._tag === "UserError" && error.userMessage).toBe(notRunning)
+        expect(error._tag).toBe("UserError")
+        expect(userMessage(error)).toBe(notRunningStatus(home.stateDir))
         expect(yield* fs.exists(`${home.stateDir}/daemon.json`)).toBe(false)
         expect(yield* fs.exists(`${home.stateDir}/daemon.lock`)).toBe(false)
       }),
     ),
   )
 
-  it.effect("status --json fails the same way when no daemon runs", () =>
+  it.effect("status --json prints the same facts when no daemon runs, and exits 1", () =>
     TestClock.withLive(
       Effect.gen(function* () {
         const home = yield* makeHome('listen = "127.0.0.1:0"\n')
-        const error = yield* Effect.flip(home.cli(["daemon", "status", "--json"]))
-        expect(error._tag === "UserError" && error.userMessage).toBe(notRunning)
+        const lines: Array<string> = []
+        const error = yield* Effect.flip(home.cli(["daemon", "status", "--json"], { lines }))
+        expect(error._tag === "ExitCode" && error.code).toBe(1)
+        expect(JSON.parse(lines.join("\n"))).toEqual({
+          running: false,
+          logs: `${home.stateDir}/daemon.log`,
+          launchAgent: { installed: false },
+          lastError: null,
+        })
+      }),
+    ),
+  )
+
+  it.effect("status names the last error the daemon logged, so a crash reads as one", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome('listen = "127.0.0.1:0"\n')
+        const first = yield* home.runDaemon
+        // A second daemon on the same state directory is refused, and logs why.
+        yield* Effect.flip(home.cli(["daemon", "run"]))
+        yield* Fiber.interrupt(first)
+
+        const error = yield* Effect.flip(home.cli(["daemon", "status"]))
+        expect(userMessage(error)).toBe(
+          [
+            notRunningStatus(home.stateDir),
+            `last error    Another agent-proxy daemon (pid ${process.pid}) is already running for ${home.stateDir}.`,
+          ].join("\n"),
+        )
+        const lines: Array<string> = []
+        yield* Effect.flip(home.cli(["daemon", "status", "--json"], { lines }))
+        expect(JSON.parse(lines.join("\n"))).toMatchObject({
+          running: false,
+          lastError: `Another agent-proxy daemon (pid ${process.pid}) is already running for ${home.stateDir}.`,
+        })
       }),
     ),
   )
@@ -120,7 +182,7 @@ layer(
           JSON.stringify({ pid: 999_999, port: 9, address: "http://127.0.0.1:9" }),
         )
         const error = yield* Effect.flip(home.cli(["daemon", "status"]))
-        expect(error._tag === "UserError" && error.userMessage).toBe(notRunning)
+        expect(userMessage(error)).toBe(notRunningStatus(home.stateDir))
       }),
     ),
   )
@@ -146,7 +208,7 @@ layer(
           )
 
           const statusError = yield* Effect.flip(home.cli(["daemon", "status"]))
-          expect(statusError._tag === "UserError" && statusError.userMessage).toBe(notRunning)
+          expect(userMessage(statusError)).toBe(notRunningStatus(home.stateDir))
           const stopError = yield* Effect.flip(home.cli(["daemon", "stop"]))
           expect(stopError._tag === "UserError" && stopError.userMessage).toBe(notRunning)
           // The other directory's daemon was never signalled.
@@ -222,7 +284,8 @@ layer(
               `pid      ${process.pid}`,
               String.raw`address  http://127\.0\.0\.1:\d+`,
               String.raw`uptime   \d+s`,
-              String.raw`version  \d+\.\d+\.\d+$`,
+              String.raw`version  \d+\.\d+\.\d+ \(source\)`,
+              `logs     ${home.stateDir.replaceAll(".", String.raw`\.`)}/daemon\\.log$`,
             ].join("\n"),
           ),
         )
@@ -240,9 +303,103 @@ layer(
         yield* Fiber.interrupt(fiber)
         expect(yield* fs.exists(`${home.stateDir}/daemon.json`)).toBe(false)
         const error = yield* Effect.flip(home.cli(["daemon", "status"]))
-        expect(error._tag === "UserError" && error.userMessage).toBe(notRunning)
+        expect(userMessage(error)).toBe(notRunningStatus(home.stateDir))
       }),
     ),
+  )
+
+  it.effect("status finds the last error in the older log when rotation moved it there", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome('listen = "127.0.0.1:0"\n')
+        yield* fs.makeDirectory(home.stateDir, { recursive: true })
+        yield* fs.writeFileString(
+          `${home.stateDir}/daemon.log.1`,
+          '{"level":"ERROR","message":"daemon failed to start","annotations":{"error":"Could not listen on 127.0.0.1:8318: in use"}}\n',
+        )
+        yield* fs.writeFileString(`${home.stateDir}/daemon.log`, "")
+        const error = yield* Effect.flip(home.cli(["daemon", "status"]))
+        expect(userMessage(error)).toContain(
+          "last error    Could not listen on 127.0.0.1:8318: in use",
+        )
+      }),
+    ),
+  )
+
+  it.effect(
+    "run under launchd exits cleanly, logging no error, when another daemon holds the lock",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome('listen = "127.0.0.1:0"\n')
+          const first = yield* home.runDaemon
+          const lines: Array<string> = []
+          yield* home.cli(["daemon", "run"], { env: { AGENT_PROXY_SUPERVISED: "1" }, lines })
+          expect(lines.join("\n")).toBe(
+            `Another agent-proxy daemon (pid ${process.pid}) is already running for ${home.stateDir}. Exiting, so launchd does not run this one again.`,
+          )
+          yield* Fiber.interrupt(first)
+          const error = yield* Effect.flip(home.cli(["daemon", "status"]))
+          expect(userMessage(error)).toBe(notRunningStatus(home.stateDir))
+        }),
+      ),
+  )
+
+  it.effect("run rotates a log that has reached its limit before it writes", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem
+        const home = yield* makeHome('listen = "127.0.0.1:0"\n')
+        const log = `${home.stateDir}/daemon.log`
+        yield* fs.makeDirectory(home.stateDir, { recursive: true })
+        yield* fs.writeFileString(`${log}.1`, "the oldest log\n")
+        const full = '{"level":"INFO","message":"old"}\n'.repeat(400)
+        yield* fs.writeFileString(log, full)
+
+        const daemon = yield* Effect.forkScoped(home.cli(["daemon", "run"], { logLimit: 10_000 }))
+        yield* fs.exists(`${home.stateDir}/daemon.json`).pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("20 millis"),
+            until: (up) => up,
+            times: 250,
+          }),
+        )
+        expect(yield* fs.readFileString(`${log}.1`)).toBe(full)
+        const fresh = yield* fs.readFileString(log)
+        expect(fresh).toContain('"daemon started"')
+        expect(fresh).not.toContain('"old"')
+        yield* Fiber.interrupt(daemon)
+      }),
+    ),
+  )
+
+  it.effect(
+    "run rotates the log once a write takes it past its limit, keeping one older file",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem
+          const home = yield* makeHome('listen = "127.0.0.1:0"\n')
+          const log = `${home.stateDir}/daemon.log`
+          yield* fs.makeDirectory(home.stateDir, { recursive: true })
+          yield* fs.writeFileString(`${log}.1`, "the oldest log\n")
+
+          // Smaller than one line: every line rotates the log once it is written.
+          const daemon = yield* Effect.forkScoped(home.cli(["daemon", "run"], { logLimit: 10 }))
+          yield* fs.exists(`${home.stateDir}/daemon.json`).pipe(
+            Effect.repeat({
+              schedule: Schedule.spaced("20 millis"),
+              until: (up) => up,
+              times: 250,
+            }),
+          )
+          yield* Fiber.interrupt(daemon)
+          expect(yield* fs.readFileString(`${log}.1`)).toContain('"daemon stopped"')
+          expect(yield* fs.readFileString(`${log}.1`)).not.toContain("the oldest log")
+          expect(yield* fs.exists(log)).toBe(false)
+        }),
+      ),
   )
 
   it.effect("run refuses to start a second daemon on the same state directory", () =>
@@ -251,7 +408,7 @@ layer(
         const home = yield* makeHome('listen = "127.0.0.1:0"\n')
         yield* home.runDaemon
         const error = yield* Effect.flip(home.cli(["daemon", "run"]))
-        expect(error._tag === "UserError" && error.userMessage).toBe(
+        expect(userMessage(error)).toBe(
           `Another agent-proxy daemon (pid ${process.pid}) is already running for ${home.stateDir}.`,
         )
       }),

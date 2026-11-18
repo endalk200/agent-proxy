@@ -8,6 +8,7 @@ import { CredentialKeeper } from "../accounts/keeper.ts"
 import { Router } from "../accounts/router.ts"
 import { AccountStore } from "../accounts/store.ts"
 import { type ListenAddress, loadConfigFile } from "../config.ts"
+import { isSupervised } from "../launchd.ts"
 import { Logins } from "../logins/logins.ts"
 import { resolveDataDir, resolveStateDir } from "../paths.ts"
 import { Processes } from "../processes.ts"
@@ -18,12 +19,14 @@ import { CodexLogin, CodexTokens } from "../providers/codex.ts"
 import { claudeRoutes } from "../proxy/claude-routes.ts"
 import { codexRoutes } from "../proxy/codex-routes.ts"
 import { ProxyKey } from "../proxy/proxy-key.ts"
+import { buildLabel, RuntimeInfo } from "../runtime-info.ts"
 import { AccountEvents } from "./account-events.ts"
 import { accountRoutes } from "./accounts-routes.ts"
 import { dashboardRoutes } from "./dashboard.ts"
 import { eventRoutes } from "./events-routes.ts"
 import { localOnly } from "./http.ts"
 import { keyRoutes } from "./key-routes.ts"
+import { openLogFile } from "./log-file.ts"
 import { acquireLock, removeStateFile, stateFiles, writeStateFile } from "./state.ts"
 
 /**
@@ -60,6 +63,8 @@ const routes = (info: {
   readonly address: string
   readonly listenHost: string
   readonly startedAt: DateTime.Utc
+  /** The build it runs, as `buildLabel` names it. */
+  readonly build: string
   /** Done when the daemon starts shutting down. */
   readonly closing: Deferred.Deferred<void>
 }) =>
@@ -83,6 +88,7 @@ const routes = (info: {
               pid: info.pid,
               address: info.address,
               version: packageJson.version,
+              build: info.build,
               startedAt: DateTime.formatIso(info.startedAt),
               uptimeSeconds: Math.max(0, Math.floor(uptimeMs / 1000)),
             })
@@ -127,13 +133,17 @@ export const startDaemon = Effect.gen(function* () {
   const stateDir = yield* resolveStateDir
   const files = stateFiles(stateDir)
 
+  const build = buildLabel((yield* RuntimeInfo).binary)
+  const supervised = yield* isSupervised
+
   const { path: configPath, config } = yield* loadConfigFile
   yield* fs.makeDirectory(stateDir, { recursive: true, mode: 0o700 })
-  const fileLogger = yield* Logger.toFile(Logger.formatJson, files.log)
-  const logToFile = Effect.provideService(Logger.CurrentLoggers, new Set([fileLogger]))
+  const logFile = yield* openLogFile(files.log)
+  const logToFile = Effect.provideService(Logger.CurrentLoggers, new Set([logFile.logger]))
 
   return yield* Effect.gen(function* () {
     yield* acquireLock(stateDir, pid)
+    yield* logFile.rotateIfFull
     // The data directory gets its own lock: two daemons with different state
     // directories must still never share accounts, or both would refresh the
     // same single-use refresh tokens and write the same files.
@@ -159,7 +169,7 @@ export const startDaemon = Effect.gen(function* () {
 
     yield* Layer.build(
       HttpRouter.serve(
-        routes({ pid, address, listenHost: config.listen.host, startedAt, closing }),
+        routes({ pid, address, listenHost: config.listen.host, startedAt, build, closing }),
         {
           disableLogger: true,
           disableListenLog: true,
@@ -194,19 +204,28 @@ export const startDaemon = Effect.gen(function* () {
 
     yield* writeStateFile(stateDir, { pid, port, address })
     yield* Effect.logInfo("daemon started").pipe(
-      Effect.annotateLogs({ pid, address, version: packageJson.version, config: configPath }),
+      Effect.annotateLogs({
+        pid,
+        address,
+        version: packageJson.version,
+        build,
+        supervised,
+        config: configPath,
+      }),
       logToFile,
     )
 
     const daemon: RunningDaemon = { pid, port, address }
     return daemon
   }).pipe(
-    // `daemon start` reads this line to tell the owner why its daemon exited.
+    // `daemon start` and `daemon status` read this line to tell the owner why
+    // the daemon is not running. A supervised daemon refused by the lock is no
+    // failure: the daemon that holds it serves.
     Effect.tapError((error) =>
-      Effect.logError("daemon failed to start").pipe(
-        Effect.annotateLogs({ error: error.message }),
-        logToFile,
-      ),
+      (supervised && error._tag === "DaemonAlreadyRunning"
+        ? Effect.logWarning("daemon not started: another daemon is running")
+        : Effect.logError("daemon failed to start")
+      ).pipe(Effect.annotateLogs({ error: error.message }), logToFile),
     ),
   )
 })

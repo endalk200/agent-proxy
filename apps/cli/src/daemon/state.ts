@@ -1,5 +1,5 @@
 import { dlopen, FFIType } from "bun:ffi"
-import { closeSync, constants, ftruncateSync, openSync, writeSync } from "node:fs"
+import { closeSync, constants, ftruncateSync, openSync, readFileSync, writeSync } from "node:fs"
 
 import { Data, Effect, FileSystem, Option, Schema } from "effect"
 
@@ -9,12 +9,16 @@ import { Data, Effect, FileSystem, Option, Schema } from "effect"
  * - `daemon.lock` is held with `flock(2)` by the one daemon allowed per directory,
  *   and records its pid while held.
  * - `daemon.json`, the state file, tells the CLI where the running daemon listens.
- * - `daemon.log` holds its logs, one JSON object per line.
+ * - `daemon.log` holds its logs, one JSON object per line. Past 10 MB it
+ *   becomes `daemon.log.1`, replacing the one before.
+ * - `daemon.stderr.log` holds whatever the daemon prints itself, such as a
+ *   crash before its logger exists.
  */
 export const stateFiles = (stateDir: string) => ({
   lock: `${stateDir}/daemon.lock`,
   state: `${stateDir}/daemon.json`,
   log: `${stateDir}/daemon.log`,
+  stderr: `${stateDir}/daemon.stderr.log`,
 })
 
 export const StateFile = Schema.Struct({
@@ -112,6 +116,35 @@ export const acquireLock = Effect.fn("acquireLock")(function* (stateDir: string,
   // so the file never names a daemon that is gone.
   yield* Effect.addFinalizer(() => Effect.sync(() => ftruncateSync(fd, 0)).pipe(Effect.ignore))
 })
+
+/**
+ * Who holds the state directory's lock now: `Some` with the pid it records
+ * (`None` inside when it records none) while a daemon holds it, `None` when
+ * no daemon does. A daemon that answers no HTTP, paused or wedged, still
+ * holds it, and a stale state file whose pid was reused does not.
+ *
+ * It takes the lock for a moment when it is free, so a daemon starting at
+ * that very moment is refused; only commands that are about to stop or
+ * remove the daemon ask.
+ */
+export const lockedBy = (stateDir: string) =>
+  Effect.sync((): Option.Option<Option.Option<number>> => {
+    const { lock } = stateFiles(stateDir)
+    let fd: number
+    try {
+      fd = openSync(lock, constants.O_RDWR)
+    } catch {
+      return Option.none()
+    }
+    try {
+      if (tryFlock(fd)) return Option.none()
+      const pid = Number.parseInt(readFileSync(lock, "utf8").trim(), 10)
+      return Option.some(Number.isSafeInteger(pid) && pid > 0 ? Option.some(pid) : Option.none())
+    } finally {
+      // Closing releases the lock if this took it.
+      closeSync(fd)
+    }
+  })
 
 /** Replaces the state file atomically, so a reader never sees half of it. */
 export const writeStateFile = Effect.fn("writeStateFile")(function* (

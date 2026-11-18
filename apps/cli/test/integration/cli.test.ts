@@ -8,6 +8,7 @@ import { runCli } from "../../src/cli.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
+import { noLaunchd } from "../support/no-launchd.ts"
 
 // Drives the real command tree in-process with the real Bun platform services.
 // Only the environment and the console are controlled, so the test can assert
@@ -33,6 +34,7 @@ layer(
     BunServices.layer,
     RuntimeInfo.layerProcess,
     Processes.layerProcess,
+    noLaunchd,
     FetchHttpClient.layer,
     ProviderEndpoints.layer,
     Layer.succeed(Browser, Browser.of({ open: () => Effect.die("no browser in this test") })),

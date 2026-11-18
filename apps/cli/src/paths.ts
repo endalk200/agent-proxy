@@ -60,3 +60,15 @@ export const resolveProxyKeyFile = Effect.gen(function* () {
   const path = yield* Path.Path
   return path.join(yield* resolveDataDir, "key")
 })
+
+/** `file` as the owner would type it: `~/…` when it lies under their home directory. */
+export const displayPath = (file: string) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path
+    const home = yield* Config.option(Config.NonEmptyString("HOME")).pipe(
+      Effect.orElseSucceed(() => Option.none<string>()),
+    )
+    if (Option.isNone(home)) return file
+    const relative = path.relative(home.value, file)
+    return relative.startsWith("..") || path.isAbsolute(relative) ? file : `~/${relative}`
+  })
