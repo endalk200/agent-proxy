@@ -33,6 +33,7 @@
   "scripts": {
     "dev": "turbo run dev",
     "build": "turbo run build",
+    "install-local": "bun apps/cli/scripts/install-local.ts",
     "lint": "turbo run lint",
     "lint:fix": "turbo run lint:fix",
     "typecheck": "turbo run typecheck",
