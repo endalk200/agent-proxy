@@ -7,8 +7,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process"
 
 import * as Browse from "./Browse.ts"
 import { runCli } from "./Cli.ts"
-import * as Daemon from "./Daemon.ts"
 import * as Doctor from "./Doctor.ts"
+import * as Down from "./Down.ts"
 import * as Processes from "./Processes.ts"
 import { defaultRepo as repo } from "./Repo.ts"
 import * as Runs from "./Runs.ts"
@@ -118,7 +118,7 @@ const cli = Command.make(
     run: runFlag,
     built: Flag.Boolean("built").pipe(
       Flag.withDefault(false),
-      Flag.withDescription("Run the built bundle (apps/cli/dist) instead of source"),
+      Flag.withDescription("Run the compiled binary (apps/cli/dist/agent-proxy) instead of source"),
     ),
     extraEnv: Flag.KeyValuePair("env").pipe(
       Flag.optional,
@@ -143,7 +143,7 @@ const cli = Command.make(
       if (built && !(yield* fs.exists(entry).pipe(Effect.orElseSucceed(() => false)))) {
         return yield* new CliError.UserError({
           cause: undefined,
-          userMessage: "apps/cli/dist/bin.js is missing; run `bun run build` first",
+          userMessage: "apps/cli/dist/agent-proxy is missing; run `bun run build` first",
         })
       }
       const merged = { ...run.sandbox.env, ...Option.getOrElse(extraEnv, () => ({})) }
@@ -273,19 +273,6 @@ const browse = Command.make(
   ),
 )
 
-const tearDown = Effect.fn("tearDown")(function* (run: Runs.Run) {
-  yield* Console.log(`daemon   ${yield* Daemon.stop(repo, run.sandbox)}`)
-  for (const record of run.manifest.processes) {
-    const outcome = yield* Processes.stop(record)
-    yield* Console.log(`${record.name.padEnd(8)} pid ${record.pid}: ${outcome}`)
-  }
-  yield* Sandbox.destroy(run.sandbox, { keepArtifacts: true })
-  yield* Runs.save({ ...run, manifest: { ...run.manifest, status: "down", processes: [] } })
-  yield* Console.log(
-    `run      ${run.manifest.id} down; evidence kept in ${relative(run.sandbox.artifacts)}`,
-  )
-})
-
 const down = Command.make(
   "down",
   {
@@ -302,8 +289,14 @@ const down = Command.make(
       if (live.length === 0) {
         yield* Console.log("nothing to tear down")
       }
-      yield* Effect.forEach(live, tearDown, { discard: true })
-    }).pipe(Effect.mapError(asUserError)),
+      const kept = yield* Effect.forEach(live, (run) => Down.tearDown(repo, run)).pipe(
+        Effect.mapError(asUserError),
+      )
+      // A run kept up because its daemon would not stop is a failure to report.
+      if (kept.some(Option.isSome)) {
+        return yield* new ExitWith({ code: 1 })
+      }
+    }),
 ).pipe(
   Command.withDescription(
     "Stop the processes this run started and delete its state; keep evidence",
