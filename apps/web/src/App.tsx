@@ -111,8 +111,9 @@ function Dashboard(props: DashboardProps) {
                 <span>
                   {failure.kind === "unreachable" ? (
                     <>
-                      <b>Can't reach the daemon at {hostOf(address)}.</b> Is it running? Start it
-                      with <code>agent-proxy daemon start</code>.
+                      <b>Can't reach the daemon at {hostOf(address)}.</b> Run{" "}
+                      <code>agent-proxy daemon status</code> to see why, or{" "}
+                      <code>agent-proxy daemon start</code> to start it.
                     </>
                   ) : (
                     <>

@@ -55,6 +55,8 @@ export interface AccountList {
 export interface DaemonInfo {
   readonly address: string
   readonly version: string
+  /** The build it runs, `abc1234`, `abc1234-dirty` or `source`; missing from a daemon older than builds. */
+  readonly build: string | undefined
   readonly startedAt: string
 }
 
@@ -262,6 +264,7 @@ const decodeDaemonInfo = (value: unknown): DaemonInfo => {
   return {
     address: string(json["address"]),
     version: string(json["version"]),
+    build: json["build"] === undefined ? undefined : string(json["build"]),
     startedAt: string(json["startedAt"]),
   }
 }

@@ -150,7 +150,10 @@ function DaemonSwitcher(props: {
               {props.info !== undefined && (
                 <div>
                   <dt>Version</dt>
-                  <dd>v{props.info.version}</dd>
+                  <dd>
+                    v{props.info.version}
+                    {props.info.build !== undefined && ` (${props.info.build})`}
+                  </dd>
                 </div>
               )}
               {props.info !== undefined && props.reachable && (

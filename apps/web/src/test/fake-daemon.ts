@@ -390,6 +390,7 @@ export const fakeDaemon = (
             pid: 4242,
             address: daemon.address,
             version: "0.0.0",
+            build: "abc1234",
             // Ninety and a half minutes ago: "1h 30m" for as long as a test runs.
             startedAt: new Date(Date.now() - (90 * 60 + 30) * 1000).toISOString(),
             uptimeSeconds: 90 * 60,

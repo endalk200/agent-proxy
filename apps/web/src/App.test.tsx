@@ -244,6 +244,9 @@ describe("when the daemon stops answering", () => {
     daemon.reachable = false
     const banner = await screen.findByRole("status")
     expect(banner.textContent).toContain("Can't reach the daemon at 127.0.0.1:8318.")
+    expect(banner.textContent).toContain(
+      "Run agent-proxy daemon status to see why, or agent-proxy daemon start to start it.",
+    )
     expect(banner.textContent).toContain("This is what it last reported")
     screen.getByRole("table", { name: "Claude accounts" })
     screen.getByRole("listitem", { name: "Claude: new sessions go to Work" })
@@ -347,7 +350,9 @@ describe("daemon switcher", () => {
     expect(within(popup).getByText("Address").nextElementSibling?.textContent).toBe(
       "127.0.0.1:8318",
     )
-    expect(within(popup).getByText("Version").nextElementSibling?.textContent).toBe("v0.0.0")
+    expect(within(popup).getByText("Version").nextElementSibling?.textContent).toBe(
+      "v0.0.0 (abc1234)",
+    )
     expect(within(popup).getByText("Uptime").nextElementSibling?.textContent).toBe("1h 30m")
     fireEvent.click(within(popup).getByRole("button", { name: "Copy address" }))
     await within(popup).findByRole("button", { name: "Copied" })
