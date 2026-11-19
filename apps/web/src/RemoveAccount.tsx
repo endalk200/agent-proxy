@@ -1,9 +1,23 @@
-import { AlertDialog } from "@base-ui/react/alert-dialog"
+import { Trash2, TriangleAlert } from "lucide-react"
 import { useState } from "react"
+
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 
 import type { Account, AccountList } from "./daemon-api.ts"
 import { accountsOf, clientsOf, planWeight, poolState, providerNames } from "./model.ts"
-import { IconAlert, IconTrash, ProviderMark } from "./ui.tsx"
+import { ProviderMark } from "./ui.tsx"
 
 /**
  * Asks before removing `account`, and removes it when the owner confirms.
@@ -27,34 +41,31 @@ export function RemoveAccountDialog(props: {
   const account = props.account ?? shown
 
   return (
-    <AlertDialog.Root
+    <AlertDialog
       open={props.account !== undefined}
       onOpenChange={(open) => !open && !removing && props.onClose()}
     >
-      <AlertDialog.Portal>
-        <AlertDialog.Backdrop className="backdrop" />
-        <AlertDialog.Popup
-          className="dialog dialog-narrow"
-          finalFocus={removed ? () => document.getElementById("page-title") : true}
-        >
-          {account !== undefined && (
-            <RemoveBody
-              account={account}
-              list={props.list}
-              removing={removing}
-              onRemove={() => {
-                setRemoving(true)
-                void props.remove(account).then((gone) => {
-                  setRemoving(false)
-                  setRemoved(gone)
-                  props.onClose()
-                })
-              }}
-            />
-          )}
-        </AlertDialog.Popup>
-      </AlertDialog.Portal>
-    </AlertDialog.Root>
+      <AlertDialogContent
+        className="gap-6 sm:max-w-lg"
+        finalFocus={removed ? () => document.getElementById("page-title") : true}
+      >
+        {account !== undefined && (
+          <RemoveBody
+            account={account}
+            list={props.list}
+            removing={removing}
+            onRemove={() => {
+              setRemoving(true)
+              void props.remove(account).then((gone) => {
+                setRemoving(false)
+                setRemoved(gone)
+                props.onClose()
+              })
+            }}
+          />
+        )}
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 
@@ -77,60 +88,77 @@ function RemoveBody(props: {
 
   return (
     <>
-      <div className="dialog-head">
-        <span className="dialog-icon is-danger" aria-hidden="true">
-          <IconTrash size={16} />
+      <AlertDialogHeader className="grid-cols-[auto_1fr] grid-rows-none place-items-start gap-x-4 gap-y-1.5 text-left">
+        <span
+          className="row-span-2 grid size-10 place-items-center bg-destructive/15 text-destructive"
+          aria-hidden="true"
+        >
+          <Trash2 className="size-5" />
         </span>
-        <div className="dialog-titles">
-          <AlertDialog.Title>Remove {account.label}?</AlertDialog.Title>
-          <AlertDialog.Description>
-            agent-proxy signs out of <b>{account.email}</b> and forgets its credentials. Sessions
-            already using it finish;{" "}
-            {servedByAnother ? (
-              <>
-                new sessions keep going to <b>{state.account.label}</b>.
-              </>
-            ) : (
-              <>new sessions go to the next account in the {provider} pool.</>
-            )}{" "}
-            You can add it again later.
-          </AlertDialog.Description>
-        </div>
-      </div>
-      <div className="dialog-body remove">
-        <div className="account-card">
+        <AlertDialogTitle className="font-semibold">Remove {account.label}?</AlertDialogTitle>
+        <AlertDialogDescription className="text-pretty">
+          agent-proxy signs out of <b className="font-medium text-foreground">{account.email}</b>{" "}
+          and forgets its credentials. Sessions already using it finish;{" "}
+          {servedByAnother ? (
+            <>
+              new sessions keep going to{" "}
+              <b className="font-medium text-foreground">{state.account.label}</b>.
+            </>
+          ) : (
+            <>new sessions go to the next account in the {provider} pool.</>
+          )}{" "}
+          You can add it again later.
+        </AlertDialogDescription>
+      </AlertDialogHeader>
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-3 rounded-lg border bg-muted/50 px-4 py-3">
           <ProviderMark provider={account.provider} size={18} />
-          <div className="account-card-who">
-            <b>{account.label}</b>
-            <span>{account.email}</span>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <b className="truncate font-medium">{account.label}</b>
+            <span className="truncate text-xs text-muted-foreground">{account.email}</span>
           </div>
-          <span className="plan" data-weight={planWeight(account.provider, account.plan)}>
-            {account.plan}
-          </span>
+          <PlanBadge account={account} />
         </div>
         {props.list !== undefined && !others.some((other) => other.enabled) && (
-          <div className="callout is-warn">
-            <IconAlert size={15} />
-            <span>
+          <Alert className="border-warning/40 text-warning">
+            <TriangleAlert aria-hidden="true" />
+            <AlertDescription className="text-warning/90">
               No other {provider} account is enabled, so {clientsOf(account.provider)} can't use{" "}
               {provider} until you add or enable one.
-            </span>
-          </div>
+            </AlertDescription>
+          </Alert>
         )}
       </div>
-      <div className="dialog-foot">
-        <AlertDialog.Close className="btn" disabled={props.removing}>
-          Cancel
-        </AlertDialog.Close>
-        <button
+      <AlertDialogFooter>
+        <AlertDialogCancel disabled={props.removing}>Cancel</AlertDialogCancel>
+        <Button
           type="button"
-          className="btn is-danger"
+          variant="destructive"
+          className="bg-destructive text-destructive-foreground hover:bg-destructive/85 dark:bg-destructive dark:hover:bg-destructive/85"
           disabled={props.removing}
           onClick={props.onRemove}
         >
           {props.removing ? "Removing…" : "Remove account"}
-        </button>
-      </div>
+        </Button>
+      </AlertDialogFooter>
     </>
+  )
+}
+
+/** An account's plan, heavier for bigger plans. */
+export function PlanBadge({ account }: { account: Account }) {
+  const weight = planWeight(account.provider, account.plan)
+  return (
+    <Badge
+      variant="outline"
+      data-weight={weight}
+      className={cn(
+        "rounded-md font-semibold",
+        weight === 2 && "bg-muted",
+        weight === 3 && "border-foreground bg-foreground text-background",
+      )}
+    >
+      {account.plan}
+    </Badge>
   )
 }

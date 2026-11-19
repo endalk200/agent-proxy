@@ -154,7 +154,7 @@ describe("the order new sessions go in", () => {
 
     await waitFor(() => expect(header()).toBe("New sessions go to Home · then Work"))
     screen.getByRole("listitem", { name: "Claude: new sessions go to Home" })
-    expect(rowOf(table, "Home").classList.contains("is-serving")).toBe(true)
+    expect(rowOf(table, "Home").dataset["serving"]).toBeDefined()
     expect(rowOf(table, "Work").dataset["flash"]).toBeUndefined()
     expect(notices()).toEqual([])
   })

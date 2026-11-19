@@ -198,7 +198,7 @@ describe("drag to reorder", () => {
     })
     dragOver(table, "Home", "top")
     expect(dropHint()).toBe("Drop to move to priority 2")
-    expect(rowOf(table, "Home")?.classList.contains("is-drop-above")).toBe(true)
+    expect(rowOf(table, "Home")?.dataset["drop"]).toBe("above")
     dragOver(table, "Work", "top")
     expect(dropHint()).toBe("Drop to move to priority 1")
     // Rows stay put while dragging; a line marks where the row would land.
@@ -215,7 +215,7 @@ describe("drag to reorder", () => {
     })
     dragOver(table, "Work", "middle")
     expect(dropHint()).toBe("Drop to share priority 2 with Work")
-    expect(rowOf(table, "Work")?.classList.contains("is-drop-share")).toBe(true)
+    expect(rowOf(table, "Work")?.dataset["drop"]).toBe("share")
     fireEvent.pointerUp(document, { pointerId: 2 })
     await waitFor(() => expect(stored(daemon)).toEqual(["1 Spare (off)", "2 Work", "2 Home"]))
     expect(priorities(table)).toEqual(["1 Spare", "2 Work", "2 Home"])

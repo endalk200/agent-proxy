@@ -1,21 +1,35 @@
-import { Dialog } from "@base-ui/react/dialog"
+import {
+  ArrowRightIcon,
+  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CircleAlertIcon,
+  ExternalLinkIcon,
+  LoaderCircleIcon,
+  PlusIcon,
+  TriangleAlertIcon,
+} from "lucide-react"
 import { type ReactNode, useEffect, useId, useRef, useState } from "react"
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
+import { Button, buttonVariants } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { cn } from "@/lib/utils"
 
 import type { Account, DaemonClient, DaemonFailure, Login, Provider } from "./daemon-api.ts"
 import { clientsOf, planWeight, providerNames, statusLabels } from "./model.ts"
-import {
-  CopyButton,
-  IconAlert,
-  IconArrowRight,
-  IconCheck,
-  IconChevronLeft,
-  IconChevronRight,
-  IconExternal,
-  IconPlus,
-  IconX,
-  ProviderMark,
-  Spinner,
-} from "./ui.tsx"
+import { CopyButton, ProviderMark } from "./ui.tsx"
 import { asFailure } from "./useDaemon.ts"
 
 /**
@@ -134,29 +148,23 @@ export function SignInDialog(props: {
   const request = props.request ?? shown
 
   return (
-    <Dialog.Root
-      open={props.request !== undefined}
-      onOpenChange={(open) => !open && props.onClose()}
-    >
-      <Dialog.Portal>
-        <Dialog.Backdrop className="backdrop" />
-        <Dialog.Popup className="dialog dialog-signin">
-          {request !== undefined && (
-            <SignInFlow
-              key={opening}
-              request={request}
-              open={props.request !== undefined}
-              client={props.client}
-              pollInterval={props.pollInterval}
-              requestTimeout={props.requestTimeout}
-              onSignedIn={props.onSignedIn}
-              rename={props.rename}
-              onClose={props.onClose}
-            />
-          )}
-        </Dialog.Popup>
-      </Dialog.Portal>
-    </Dialog.Root>
+    <Dialog open={props.request !== undefined} onOpenChange={(open) => !open && props.onClose()}>
+      <DialogContent className="gap-6 p-6 sm:max-w-lg">
+        {request !== undefined && (
+          <SignInFlow
+            key={opening}
+            request={request}
+            open={props.request !== undefined}
+            client={props.client}
+            pollInterval={props.pollInterval}
+            requestTimeout={props.requestTimeout}
+            onSignedIn={props.onSignedIn}
+            rename={props.rename}
+            onClose={props.onClose}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -367,11 +375,11 @@ function SignInFlow(props: {
       return (
         <>
           <Head
-            icon={<IconPlus size={16} />}
+            icon={<PlusIcon />}
             title="Add an account"
             description="Pick a provider. Its sign-in page opens in a new tab."
           />
-          <div className="dialog-body signin-pick">
+          <div className="grid gap-3">
             {(["claude", "codex"] as const).map((provider) => (
               <ProviderCard key={provider} provider={provider} onPick={() => start(provider)} />
             ))}
@@ -394,7 +402,7 @@ function SignInFlow(props: {
       return (
         <>
           <Head
-            icon={<ProviderMark provider={step.provider} size={18} />}
+            icon={<ProviderMark provider={step.provider} size={20} />}
             title={
               request.kind === "again"
                 ? `Sign in again to ${request.account.label}`
@@ -403,23 +411,24 @@ function SignInFlow(props: {
             description={
               request.kind === "again" ? (
                 <>
-                  Sign in as <b>{request.account.email}</b> to put it back in the{" "}
-                  {providerNames[step.provider]} pool.
+                  Sign in as <b className="font-medium text-foreground">{request.account.email}</b>{" "}
+                  to put it back in the {providerNames[step.provider]} pool.
                 </>
               ) : (
                 `agent-proxy adds the account you sign in as to the bottom of the ${providerNames[step.provider]} pool.`
               )
             }
           />
-          <div className="dialog-body signin">
+          <div className="grid gap-4">
             {step.kind === "starting" && (
-              <div className="wait">
-                <Spinner size={18} />
-                <output>
-                  <b>Starting sign-in…</b>
-                  <p>Asking the daemon to listen for {providerNames[step.provider]}'s redirect.</p>
+              <WaitPanel>
+                <output className="grid gap-1">
+                  <b className="font-medium">Starting sign-in…</b>
+                  <p className="text-muted-foreground">
+                    Asking the daemon to listen for {providerNames[step.provider]}'s redirect.
+                  </p>
                 </output>
-              </div>
+              </WaitPanel>
             )}
             {step.kind === "waiting" && (
               <Waiting
@@ -433,34 +442,45 @@ function SignInFlow(props: {
             )}
             {step.kind === "problem" && (
               <>
-                <div className="problem" role="alert">
-                  <IconAlert size={16} />
-                  <div>
-                    <b>{step.title}</b>
-                    <p>{step.message}</p>
-                  </div>
-                </div>
-                {step.hint !== undefined && <p className="problem-hint">{step.hint}</p>}
+                <Alert variant="destructive" className="px-4 py-3.5">
+                  <CircleAlertIcon />
+                  <AlertTitle>{step.title}</AlertTitle>
+                  <AlertDescription>{step.message}</AlertDescription>
+                </Alert>
+                {step.hint !== undefined && (
+                  <p className="text-sm text-pretty text-muted-foreground">{step.hint}</p>
+                )}
               </>
             )}
           </div>
-          <div className="dialog-foot signin-foot">
+          <DialogFooter className="items-center">
             {request.kind === "add" && request.provider === undefined && (
-              <button type="button" className="linkbtn is-quiet" onClick={back}>
-                <IconChevronLeft size={13} />
+              <Button variant="ghost" className="text-muted-foreground sm:mr-auto" onClick={back}>
+                <ChevronLeftIcon data-icon="inline-start" />
                 Choose another provider
-              </button>
+              </Button>
             )}
-            <Dialog.Close className="btn">Cancel</Dialog.Close>
+            <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
             {step.kind === "problem" && (
-              <button type="button" className="btn is-primary" onClick={() => start(step.provider)}>
-                Try again
-              </button>
+              <Button onClick={() => start(step.provider)}>Try again</Button>
             )}
-          </div>
+          </DialogFooter>
         </>
       )
   }
+}
+
+/** A spinner beside what the dialog is waiting on. */
+function WaitPanel(props: { children: ReactNode }) {
+  return (
+    <div className="flex items-start gap-3.5 rounded-lg border bg-muted/40 p-4 text-sm">
+      <LoaderCircleIcon
+        aria-hidden="true"
+        className="mt-0.5 size-5 shrink-0 animate-spin text-muted-foreground"
+      />
+      <div className="grid min-w-0 gap-2.5">{props.children}</div>
+    </div>
+  )
 }
 
 /** The redirect address in a login's sign-in URL: where the provider sends the browser back. */
@@ -489,88 +509,102 @@ function Waiting(props: {
   return (
     <>
       {props.step.tabBlocked ? (
-        <div className="callout is-warn blocked">
-          <IconAlert size={15} />
-          <div>
-            <b>Your browser blocked the new tab.</b>
-            <p>Open {name}'s sign-in page yourself; this dialog waits for you to sign in.</p>
+        <div className="flex flex-col gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm sm:flex-row sm:items-center">
+          <TriangleAlertIcon aria-hidden="true" className="size-5 shrink-0 text-warning" />
+          <div className="grid flex-1 gap-1">
+            <b className="font-medium">Your browser blocked the new tab.</b>
+            <p className="text-muted-foreground">
+              Open {name}'s sign-in page yourself; this dialog waits for you to sign in.
+            </p>
           </div>
           <a
-            className="btn btn-sm is-primary"
+            className={cn(buttonVariants({ size: "sm" }), "self-start sm:self-center")}
             href={login.authorizeUrl}
             target="_blank"
             rel="noreferrer"
           >
             Open sign-in page
-            <IconExternal size={12} />
+            <ExternalLinkIcon data-icon="inline-end" />
           </a>
         </div>
       ) : (
-        <div className="wait">
-          <Spinner size={18} />
-          <div>
-            <output>
-              <b>Waiting for you to sign in…</b>
-              <p>
-                {name}'s sign-in page opened in a new tab. Sign in there and approve agent-proxy;
-                this dialog moves on by itself.
-              </p>
-            </output>
-            <a className="linkbtn" href={login.authorizeUrl} target="_blank" rel="noreferrer">
-              Open sign-in page again
-              <IconExternal size={12} />
-            </a>
-          </div>
-        </div>
+        <WaitPanel>
+          <output className="grid gap-1">
+            <b className="font-medium">Waiting for you to sign in…</b>
+            <p className="text-pretty text-muted-foreground">
+              {name}'s sign-in page opened in a new tab. Sign in there and approve agent-proxy; this
+              dialog moves on by itself.
+            </p>
+          </output>
+          <a
+            className="inline-flex w-fit items-center gap-1.5 text-sm font-medium text-foreground underline decoration-muted-foreground underline-offset-4 hover:decoration-foreground"
+            href={login.authorizeUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open sign-in page again
+            <ExternalLinkIcon aria-hidden="true" className="size-3.5" />
+          </a>
+        </WaitPanel>
       )}
       {props.trouble !== undefined && (
-        <p className="wait-trouble">
-          <IconAlert size={13} />
-          {props.trouble} Still waiting.
+        <p className="flex items-start gap-2 text-sm text-warning">
+          <TriangleAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+          <span>{props.trouble} Still waiting.</span>
         </p>
       )}
 
-      <div className={`paste ${pasteOpen ? "is-open" : ""}`}>
+      <div className="border-t pt-4">
         <button
           type="button"
-          className="paste-toggle"
+          className="group flex items-center gap-2 text-sm font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
           aria-expanded={pasteOpen}
           aria-controls={`${ids}-paste`}
           onClick={() => setPasteOpen(!pasteOpen)}
         >
-          <IconChevronRight size={14} />
+          <ChevronRightIcon
+            aria-hidden="true"
+            className="size-4 transition-transform group-aria-expanded:rotate-90"
+          />
           <span>Paste the callback URL instead</span>
         </button>
         {pasteOpen && (
-          <div className="paste-body" id={`${ids}-paste`}>
-            <p className="paste-why">
+          <div className="mt-4 grid gap-4 text-sm" id={`${ids}-paste`}>
+            <p className="text-muted-foreground">
               For signing in from another machine, or when the browser can't reach this one.
             </p>
-            <ol>
-              <li>
+            <ol className="grid list-decimal gap-5 pl-5 marker:text-muted-foreground">
+              <li className="pl-1">
                 Open this URL in a browser on any machine:
-                <div className="urlbox">
-                  <code>{login.authorizeUrl}</code>
+                <div className="mt-2 flex items-start gap-2 rounded-md border bg-muted/40 py-2 pr-2 pl-3">
+                  <code className="min-w-0 flex-1 py-1 text-xs leading-relaxed break-all text-muted-foreground">
+                    {login.authorizeUrl}
+                  </code>
                   <CopyButton text={login.authorizeUrl} label="Copy sign-in URL" />
                 </div>
               </li>
-              <li>
+              <li className="pl-1 text-pretty">
                 Sign in. The browser ends up on a page that may not load, at an address starting
-                with <code className="inline-code">{redirect ?? "http://localhost"}</code>. Copy
-                that whole address.
+                with{" "}
+                <code className="bg-muted px-1.5 py-0.5 text-xs break-all">
+                  {redirect ?? "http://localhost"}
+                </code>
+                . Copy that whole address.
               </li>
-              <li>
-                <label htmlFor={`${ids}-url`}>Paste it here:</label>
+              <li className="pl-1">
+                <Label htmlFor={`${ids}-url`} className="font-normal">
+                  Paste it here:
+                </Label>
                 <form
-                  className="paste-form"
+                  className="mt-2 flex flex-col gap-2 sm:flex-row"
                   onSubmit={(event) => {
                     event.preventDefault()
                     if (url.trim() !== "" && !props.pasting) props.onPaste(url.trim())
                   }}
                 >
-                  <input
+                  <Input
                     id={`${ids}-url`}
-                    className={`field-input is-mono ${props.pasteError === undefined ? "" : "is-error"}`}
+                    className="flex-1 font-mono text-xs"
                     value={url}
                     aria-label="Callback URL"
                     aria-invalid={props.pasteError !== undefined}
@@ -580,16 +614,12 @@ function Waiting(props: {
                     autoComplete="off"
                     onChange={(event) => setUrl(event.target.value)}
                   />
-                  <button
-                    type="submit"
-                    className="btn is-primary"
-                    disabled={url.trim() === "" || props.pasting}
-                  >
+                  <Button type="submit" disabled={url.trim() === "" || props.pasting}>
                     {props.pasting ? "Checking…" : "Continue"}
-                  </button>
+                  </Button>
                 </form>
                 {props.pasteError !== undefined && (
-                  <p className="field-error" id={`${ids}-error`} role="alert">
+                  <p className="mt-2 text-sm text-destructive" id={`${ids}-error`} role="alert">
                     {props.pasteError}
                   </p>
                 )}
@@ -604,18 +634,21 @@ function Waiting(props: {
 
 function Head(props: { icon: ReactNode; title: string; description: ReactNode; tone?: "ok" }) {
   return (
-    <div className="dialog-head">
-      <span className={`dialog-icon ${props.tone === "ok" ? "is-ok" : ""}`} aria-hidden="true">
+    <DialogHeader className="flex-row items-start gap-4 pr-8">
+      <span
+        className={cn(
+          "grid size-10 shrink-0 place-items-center rounded-lg border bg-muted [&_svg:not([class*='size-'])]:size-5",
+          props.tone === "ok" && "border-success/40 bg-success/15 text-success",
+        )}
+        aria-hidden="true"
+      >
         {props.icon}
       </span>
-      <div className="dialog-titles">
-        <Dialog.Title>{props.title}</Dialog.Title>
-        <Dialog.Description>{props.description}</Dialog.Description>
+      <div className="grid min-w-0 gap-1.5">
+        <DialogTitle className="text-lg leading-tight font-semibold">{props.title}</DialogTitle>
+        <DialogDescription className="text-pretty">{props.description}</DialogDescription>
       </div>
-      <Dialog.Close className="iconbtn dialog-x" aria-label="Close">
-        <IconX size={16} />
-      </Dialog.Close>
-    </div>
+    </DialogHeader>
   )
 }
 
@@ -630,22 +663,48 @@ function ProviderCard({ provider, onPick }: { provider: Provider; onPick: () => 
   return (
     <button
       type="button"
-      className="pick"
+      className="group flex w-full items-center gap-4 rounded-lg border bg-card p-4 text-left transition-colors outline-none hover:border-foreground/30 hover:bg-foreground/5 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
       aria-labelledby={nameId}
       aria-describedby={detailId}
       onClick={onPick}
     >
-      <span className="pick-mark" aria-hidden="true">
+      <span
+        className="grid size-11 shrink-0 place-items-center rounded-lg border bg-muted"
+        aria-hidden="true"
+      >
         <ProviderMark provider={provider} size={22} />
       </span>
-      <span className="pick-text">
-        <b id={nameId}>{providerNames[provider]}</b>
-        <span id={detailId}>
+      <span className="grid min-w-0 flex-1 gap-0.5">
+        <b id={nameId} className="text-base font-semibold">
+          {providerNames[provider]}
+        </b>
+        <span id={detailId} className="text-sm text-muted-foreground">
           {planLines[provider]} · used by {clientsOf(provider)}
         </span>
       </span>
-      <IconArrowRight size={16} />
+      <ArrowRightIcon
+        aria-hidden="true"
+        className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground"
+      />
     </button>
+  )
+}
+
+/** A plan's badge, heavier for a bigger plan. */
+function PlanBadge(props: { provider: Provider; plan: string }) {
+  const weight = planWeight(props.provider, props.plan)
+  return (
+    <Badge
+      variant="outline"
+      data-weight={weight}
+      className={cn(
+        "rounded-md font-semibold",
+        weight === 2 && "bg-muted",
+        weight === 3 && "border-foreground bg-foreground text-background",
+      )}
+    >
+      {props.plan}
+    </Badge>
   )
 }
 
@@ -668,7 +727,7 @@ function SignedIn(props: {
       {/* The waiting step's controls are gone: say what happened. */}
       <output className="sr-only">{title}</output>
       <Head
-        icon={<IconCheck size={16} />}
+        icon={<CheckIcon />}
         tone="ok"
         title={title}
         description={
@@ -682,27 +741,34 @@ function SignedIn(props: {
         }
       />
       <form
+        className="grid gap-6"
         onSubmit={(event) => {
           event.preventDefault()
           props.onDone()
         }}
       >
-        <div className="dialog-body signin-done">
-          <div className="account-card">
-            <ProviderMark provider={provider} size={18} />
-            <div className="account-card-who">
-              <b>{account.email}</b>
-              <span>Signed in · {statusLabels[account.status]}</span>
-            </div>
-            <span className="plan" data-weight={planWeight(provider, account.plan)}>
-              {account.plan}
+        <div className="grid gap-5">
+          <div className="flex items-center gap-3.5 rounded-lg border bg-muted/40 p-4">
+            <span className="grid size-9 shrink-0 place-items-center rounded-md border bg-card">
+              <ProviderMark provider={provider} size={18} />
             </span>
+            <div className="grid min-w-0 flex-1 gap-0.5">
+              <b className="truncate font-medium">{account.email}</b>
+              <span className="text-sm text-muted-foreground">
+                Signed in · {statusLabels[account.status]}
+              </span>
+            </div>
+            <PlanBadge provider={provider} plan={account.plan} />
           </div>
           {mismatch !== undefined && (
-            <div className="callout is-warn">
-              <IconAlert size={15} />
-              <span>
-                You signed in as <b>{account.email}</b>, not <b>{mismatch.email}</b>, so{" "}
+            <div className="flex items-start gap-3 rounded-lg border border-warning/40 bg-warning/10 p-4 text-sm">
+              <TriangleAlertIcon
+                aria-hidden="true"
+                className="mt-0.5 size-4 shrink-0 text-warning"
+              />
+              <span className="text-pretty">
+                You signed in as <b className="font-medium">{account.email}</b>, not{" "}
+                <b className="font-medium">{mismatch.email}</b>, so{" "}
                 {created
                   ? "it was added as a new account"
                   : `${account.label} was signed in again instead`}
@@ -711,11 +777,10 @@ function SignedIn(props: {
             </div>
           )}
           {created && (
-            <div className="field">
-              <label htmlFor={`${fieldId}-label`}>Label</label>
-              <input
+            <div className="grid gap-2">
+              <Label htmlFor={`${fieldId}-label`}>Label</Label>
+              <Input
                 id={`${fieldId}-label`}
-                className="field-input"
                 value={props.label}
                 // oxlint-disable-next-line jsx-a11y/no-autofocus -- naming it is what is left to do
                 autoFocus
@@ -724,24 +789,23 @@ function SignedIn(props: {
                 aria-describedby={`${fieldId}-hint`}
                 onChange={(event) => props.setLabel(event.target.value)}
               />
-              <small id={`${fieldId}-hint`}>
+              <p id={`${fieldId}-hint`} className="text-sm text-muted-foreground">
                 Only you see it. Pick something that tells your accounts apart.
-              </small>
+              </p>
             </div>
           )}
         </div>
-        <div className="dialog-foot">
-          <button
+        <DialogFooter>
+          <Button
             type="submit"
-            className="btn is-primary"
             // With no label to name, Done is what is left: focus lands there,
             // not on the page behind the dialog.
             // oxlint-disable-next-line jsx-a11y/no-autofocus -- see above
             autoFocus={!created}
           >
             Done
-          </button>
-        </div>
+          </Button>
+        </DialogFooter>
       </form>
     </>
   )
