@@ -9,7 +9,8 @@ import { isAlive } from "../support/process.ts"
 // The credential keeper across a crash, black-box: the built daemon in a
 // sandbox refreshes a seeded account against a fake Claude token endpoint
 // that never answers, and is killed with SIGKILL mid-refresh. Only commands,
-// account files, and what the fake receives are observed.
+// account files, and what the fake receives are observed. A refresh whose
+// outcome is unknown is retried: the provider decides whether the token was spent.
 
 const Accounts = Schema.fromJsonString(
   Schema.Struct({
@@ -57,7 +58,7 @@ const credentials = {
 
 layer(BunServices.layer)("agent-proxy credential keeper (built binary)", (it) => {
   it.effect(
-    "a daemon killed mid-refresh leaves the old token pair, and the account needs sign-in after a restart",
+    "a daemon killed mid-refresh leaves the old token pair, and refreshes it again after a restart",
     () =>
       TestClock.withLive(
         Effect.gen(function* () {
@@ -109,17 +110,16 @@ layer(BunServices.layer)("agent-proxy credential keeper (built binary)", (it) =>
           expect(afterCrash.credentials).toEqual(credentials)
 
           expect((yield* agentProxy(["daemon", "start"])).exitCode).toBe(0)
+          // The token is still due, so the new daemon sends the same refresh again.
+          yield* eventually("the second refresh", () => claude.refreshes.length === 2)
           const listed = yield* agentProxy(["accounts", "--json"])
           expect(listed.exitCode).toBe(0)
           const { accounts } = yield* Schema.decodeEffect(Accounts)(listed.stdout)
-          expect(accounts).toEqual([{ label: "Work", status: "needs-sign-in" }])
-          expect(yield* agentProxy(["accounts"])).toMatchObject({
-            exitCode: 0,
-            stdout: expect.stringContaining(
-              "Work   me@work.example  Max 20x  1         Needs sign-in",
-            ),
-          })
-          expect(claude.refreshes).toEqual(["sk-ant-ort01-before-crash"])
+          expect(accounts).toEqual([{ label: "Work", status: "active" }])
+          expect(claude.refreshes).toEqual([
+            "sk-ant-ort01-before-crash",
+            "sk-ant-ort01-before-crash",
+          ])
           expect((yield* fs.readDirectory(accountsDir)).toSorted()).toEqual(["aa01.json"])
         }),
       ),

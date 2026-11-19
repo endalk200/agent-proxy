@@ -436,37 +436,53 @@ layer(services)("the credential keeper", (it) => {
   )
 
   it.effect(
-    "a refresh whose connection drops after sending is never retried, and the account needs sign-in after a restart too",
+    "a refresh whose connection drops before an answer is tried again later with the same token",
     () =>
       Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem
         const claude = yield* fakeClaude
-        const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        claude.dropNextRefresh()
 
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const home = yield* makeHome(claude, { dataHome })
-            yield* home.signIn(alice)
-            claude.dropNextRefresh()
-            yield* untilRefreshDue
-            yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-            yield* TestClock.adjust("2 hours")
-            expect((yield* home.sendMessage).status).toBe(400)
-          }),
-        )
-        const restarted = yield* makeHome(claude, { dataHome })
-        yield* TestClock.adjust("1 day")
+        yield* untilRefreshDue
+        yield* within3s("the first refresh", claude.refreshesArrived(1))
+        // The token in hand still works until it expires.
+        expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
+        expect((yield* home.sendMessage).status).toBe(200)
 
-        expect((yield* restarted.accounts).map((account) => account.status)).toEqual([
-          "needs-sign-in",
+        yield* TestClock.adjust("5 minutes")
+        yield* within3s("the second refresh", claude.refreshesArrived(2))
+        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1", "sk-ant-ort01-fake-1"])
+        expect((yield* home.sendMessage).status).toBe(200)
+        expect(upstreamTokens(claude)).toEqual([
+          "Bearer sk-ant-oat01-fake-1",
+          "Bearer sk-ant-oat01-fake-2",
         ])
-        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
-        expect(claude.apiRequests()).toEqual([])
       }),
   )
 
   it.effect(
-    "a daemon stopped mid-refresh leaves the old token pair, and the account needs sign-in when it starts again",
+    "a refresh Claude took whose answer was lost: the retry is refused, and the account needs sign-in",
+    () =>
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        yield* home.signIn(alice)
+        claude.spendAndDropNextRefresh()
+
+        yield* untilRefreshDue
+        yield* within3s("the first refresh", claude.refreshesArrived(1))
+        expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
+
+        yield* TestClock.adjust("5 minutes")
+        yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
+        yield* TestClock.adjust("1 day")
+        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1", "sk-ant-ort01-fake-1"])
+      }),
+  )
+
+  it.effect(
+    "a daemon stopped mid-refresh leaves the old token pair, and refreshes again once it starts",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem
@@ -491,37 +507,39 @@ layer(services)("the credential keeper", (it) => {
         const [signedIn] = before.files
         const left = JSON.parse(stopped?.text ?? "{}")
         expect(left.credentials).toEqual(JSON.parse(signedIn?.text ?? "{}").credentials)
-        // The stop left no outcome recorded: it is the restart that flags the account.
         expect(left.needsSignIn).toBe(false)
 
-        // The account shows Needs sign-in as soon as the daemon is back,
-        // though its token is hours from due, and is never refreshed again.
+        // Claude never took the held refresh, so the restarted daemon's own
+        // refresh of the same token succeeds, and its request is served.
         const restarted = yield* makeHome(claude, { dataHome })
-        expect((yield* restarted.accounts).map((account) => account.status)).toEqual([
-          "needs-sign-in",
-        ])
-        yield* TestClock.adjust("1 day")
-        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
+        expect((yield* restarted.accounts).map((account) => account.status)).toEqual(["active"])
+        expect((yield* restarted.sendMessage).status).toBe(200)
+        expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1", "sk-ant-ort01-fake-1"])
+        expect(upstreamTokens(claude).at(-1)).toBe("Bearer sk-ant-oat01-fake-2")
         expect((yield* restarted.accountFiles).map((file) => file.name)).toEqual([signedIn?.name])
       }),
   )
 
   for (const status of [502, 504]) {
     it.effect(
-      `a refresh answered by a gateway ${status} is never sent again: the account needs sign-in`,
+      `a refresh answered by a gateway ${status} leaves the account active and is tried again later`,
       () =>
         Effect.gen(function* () {
           const claude = yield* fakeClaude
           const home = yield* makeHome(claude)
           yield* home.signIn(alice)
-          // A gateway error says nothing about whether Claude spent the refresh token.
+          // A gateway error says nothing about whether Claude spent the refresh
+          // token; the retry finds out.
           claude.refuseNextRefresh(status, { error: "bad_gateway" })
 
           yield* untilRefreshDue
-          yield* within3s("the refresh", claude.refreshesArrived(1))
-          yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-          yield* TestClock.adjust("1 day")
-          expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1"])
+          yield* within3s("the first refresh", claude.refreshesArrived(1))
+          expect((yield* home.accounts).map((account) => account.status)).toEqual(["active"])
+          yield* TestClock.adjust("5 minutes")
+          yield* within3s("the second refresh", claude.refreshesArrived(2))
+          expect(claude.refreshRequests()).toEqual(["sk-ant-ort01-fake-1", "sk-ant-ort01-fake-1"])
+          expect((yield* home.sendMessage).status).toBe(200)
+          expect(upstreamTokens(claude)).toEqual(["Bearer sk-ant-oat01-fake-2"])
         }),
     )
   }
