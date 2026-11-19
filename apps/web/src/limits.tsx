@@ -1,3 +1,5 @@
+import { cn } from "@/lib/utils"
+
 import type { AccountLimits, LimitWindow } from "./daemon-api.ts"
 import { age, timeText, until, weekdayText } from "./format.ts"
 import { Tip } from "./ui.tsx"
@@ -76,11 +78,41 @@ export const windowColumns = (
     .toSorted((a, b) => rank(a.id) - rank(b.id) || a.label.localeCompare(b.label))
 }
 
-export function Meter(props: { usedPct: number; size?: "sm" | "lg" }) {
+/** The fill colour and the percent's ink for each tone: green with room, amber at half, red near the end. */
+const toneFill: Readonly<Record<LimitTone, string>> = {
+  ok: "bg-success",
+  warn: "bg-warning",
+  high: "bg-danger",
+  out: "bg-danger",
+}
+const toneText: Readonly<Record<LimitTone, string>> = {
+  ok: "text-foreground",
+  warn: "text-warning",
+  high: "text-danger",
+  out: "text-danger",
+}
+
+export function Meter(props: { usedPct: number; size?: "sm" | "lg"; className?: string }) {
   const tone = limitTone(props.usedPct)
   return (
-    <span className={`meter is-${tone} ${props.size === "lg" ? "is-lg" : ""}`} aria-hidden="true">
-      <span style={{ width: `${leftPct(props.usedPct)}%` }} />
+    <span
+      className={cn(
+        "block w-full overflow-hidden rounded-full bg-foreground/10",
+        props.size === "lg" ? "h-2" : "h-1.5",
+        // Nothing left draws no fill, so the track itself turns red.
+        tone === "out" && "bg-danger/35",
+        props.className,
+      )}
+      data-tone={tone}
+      aria-hidden="true"
+    >
+      <span
+        className={cn(
+          "block h-full rounded-full transition-[width,background-color] duration-500 ease-out",
+          toneFill[tone],
+        )}
+        style={{ width: `${leftPct(props.usedPct)}%` }}
+      />
     </span>
   )
 }
@@ -88,17 +120,25 @@ export function Meter(props: { usedPct: number; size?: "sm" | "lg" }) {
 /** One limit window in a cell: percent left, reset right, a bar under both; "—" when there is none. */
 export function LimitCell(props: { window: LimitWindow | undefined; now: number }) {
   const { window, now } = props
-  if (window === undefined) return <span className="lim-none">—</span>
+  if (window === undefined) return <span className="text-muted-foreground/60">—</span>
   const stale = isStale(window, now)
+  const tone = limitTone(window.usedPct)
   const body = (
     <span
-      className={`lim is-${limitTone(window.usedPct)} ${stale ? "is-stale" : ""}`}
+      className={cn(
+        "flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1.5 transition-opacity outline-none",
+        stale && "cursor-help opacity-45 hover:opacity-80 focus-visible:opacity-80",
+      )}
+      data-tone={tone}
+      data-stale={stale ? "true" : undefined}
       // oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focus shows when stale numbers are from
       tabIndex={stale ? 0 : undefined}
     >
-      <span className="lim-pct">{leftText(window)}</span>
-      <span className="lim-reset">{resetText(window, now)}</span>
-      <Meter usedPct={window.usedPct} />
+      <span className={cn("text-sm font-semibold whitespace-nowrap tabular-nums", toneText[tone])}>
+        {leftText(window)}
+      </span>
+      <span className="text-xs text-muted-foreground tabular-nums">{resetText(window, now)}</span>
+      <Meter usedPct={window.usedPct} className="mt-0.5 basis-full" />
     </span>
   )
   return stale ? <Tip label={asOfText(window.asOf, now)}>{body}</Tip> : body
@@ -116,42 +156,49 @@ export function LimitList(props: {
   now: number
 }) {
   const { limits, now } = props
-  if (limits === undefined) return <p className="muted limlist-empty">Loading limit windows…</p>
+  if (limits === undefined) {
+    return <p className="py-2 text-sm text-muted-foreground">Loading limit windows…</p>
+  }
   if (limits.windows.length === 0) {
     return (
-      <p className="muted limlist-empty">
+      <p className="py-2 text-sm text-muted-foreground">
         Not read yet. They show once the account serves a request, or after a refresh.
       </p>
     )
   }
   return (
-    <ul className="limlist">
+    <ul className="flex flex-col gap-5">
       {props.columns.map((column) => {
         const window = limits.windows.find((candidate) => candidate.id === column.id)
         if (window === undefined) {
           return (
-            <li key={column.id} className="limlist-none">
-              <span className="limlist-name">{column.label}</span>
-              <span className="muted">Not on the {props.plan} plan</span>
+            <li key={column.id} className="flex items-baseline justify-between gap-3 text-sm">
+              <span className="font-medium">{column.label}</span>
+              <span className="text-muted-foreground">Not on the {props.plan} plan</span>
             </li>
           )
         }
         const stale = isStale(window, now)
+        const tone = limitTone(window.usedPct)
         return (
           <li
             key={column.id}
-            className={`is-${limitTone(window.usedPct)} ${stale ? "is-stale" : ""}`}
+            className={cn("flex flex-col gap-2", stale && "opacity-60")}
+            data-tone={tone}
+            data-stale={stale ? "true" : undefined}
           >
-            <div className="limlist-head">
-              <span className="limlist-name">{column.label}</span>
-              <span className="limlist-pct">{leftText(window)}</span>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-sm font-medium">{column.label}</span>
+              <span className={cn("text-sm font-semibold tabular-nums", toneText[tone])}>
+                {leftText(window)}
+              </span>
             </div>
             <Meter usedPct={window.usedPct} size="lg" />
-            <div className="limlist-reset">
+            <div className="text-xs text-muted-foreground tabular-nums">
               {window.resetsAt <= now
                 ? "Resets now"
                 : `Resets in ${until(window.resetsAt, now)} · ${resetClock(window.resetsAt, now)}`}
-              {stale && <span className="limlist-asof"> · {asOfText(window.asOf, now)}</span>}
+              {stale && <span> · {asOfText(window.asOf, now)}</span>}
             </div>
           </li>
         )

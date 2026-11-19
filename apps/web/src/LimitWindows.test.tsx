@@ -175,7 +175,9 @@ describe("the Accounts tables", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh limits" }))
     await waitFor(async () =>
-      expect(rowsOf(await table("Claude accounts"))[1]?.["5-hour"]).toBe("97% left resets in 4h 50m"),
+      expect(rowsOf(await table("Claude accounts"))[1]?.["5-hour"]).toBe(
+        "97% left resets in 4h 50m",
+      ),
     )
     expect(daemon.refreshes).toEqual(["c1", "all"])
   })

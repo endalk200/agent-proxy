@@ -1,25 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>agent-proxy</title>
-    <script>
-      // Sets the theme before the first paint, so the page never flashes the
-      // other one; src/theme.ts keeps it from then on.
-      ;(function () {
-        var stored = null
-        try {
-          stored = localStorage.getItem("agent-proxy:theme")
-        } catch (error) {}
-        document.documentElement.dataset.theme =
-          stored === "light" || stored === "dark"
-            ? stored
-            : window.matchMedia("(prefers-color-scheme: dark)").matches
-              ? "dark"
-              : "light"
-      })()
-    </script>
   </head>
   <body>
     <div id="root"></div>

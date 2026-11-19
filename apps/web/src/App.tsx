@@ -1,8 +1,15 @@
-import { Tooltip } from "@base-ui/react/tooltip"
+import { Plus, RefreshCw, Unplug } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 
+import { PageContent, PageHeader } from "@/components/page"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
+import { Separator } from "@/components/ui/separator"
+import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
+
 import "./styles.css"
-import "./usage.css"
 import { AccountSheet } from "./AccountSheet.tsx"
 import { type AccountControls, AccountsPage } from "./AccountsPage.tsx"
 import { ConnectClientsDialog } from "./ConnectClients.tsx"
@@ -13,9 +20,9 @@ import { accountsOf, hostOf, labelsText, place, priorityCount } from "./model.ts
 import { NoticeProvider } from "./Notices.tsx"
 import { RemoveAccountDialog } from "./RemoveAccount.tsx"
 import { usePage } from "./route.ts"
-import { Sidebar } from "./Sidebar.tsx"
+import { pageNames, Sidebar } from "./Sidebar.tsx"
 import { type SignInRequest, SignInDialog } from "./SignIn.tsx"
-import { IconPlus, IconPower, IconRefresh, Spinner } from "./ui.tsx"
+import { Spinner } from "./ui.tsx"
 import {
   DEFAULT_THROTTLE,
   isRefreshing,
@@ -25,6 +32,9 @@ import {
 } from "./usage.tsx"
 import { useAccountActions } from "./useAccountActions.ts"
 import { useDaemon, useNow } from "./useDaemon.ts"
+
+/** Whether the sidebar starts expanded: as the owner last left it, kept in a cookie by the sidebar. */
+const sidebarOpenAtStart = () => !document.cookie.split("; ").includes("sidebar_state=false")
 
 /** The browser's own fetch, called through so it keeps `window` as `this`. */
 const browserFetch: typeof fetch = (input, init) => window.fetch(input, init)
@@ -127,10 +137,16 @@ function Dashboard(props: DashboardProps) {
     signIn: setSigningIn,
   }
 
+  const title = firstRun && page === "dashboard" ? "Get started" : pageNames[page]
+
   return (
     <UsageProvider usage={usage}>
-      <Tooltip.Provider delay={400}>
-        <div className={`app ${sheetOpen ? "has-sheet" : ""}`}>
+      <TooltipProvider delay={400}>
+        <SidebarProvider
+          defaultOpen={sidebarOpenAtStart()}
+          data-sheet-open={sheetOpen ? "" : undefined}
+          className="[--sheet-w:30rem]"
+        >
           <Sidebar
             list={view.accounts}
             info={view.info}
@@ -141,26 +157,57 @@ function Dashboard(props: DashboardProps) {
             onConnectClients={() => setConnecting(true)}
           />
 
-          <main className="main">
-            <div className="page">
+          <SidebarInset
+            className={cn(
+              "min-w-0 transition-[padding] duration-200 ease-out",
+              sheetOpen && "xl:pr-(--sheet-w)",
+            )}
+          >
+            <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-3 border-b bg-background/90 px-4 backdrop-blur supports-backdrop-filter:bg-background/75 lg:px-6">
+              <SidebarTrigger className="-ml-1 text-muted-foreground hover:text-foreground" />
+              <Separator
+                orientation="vertical"
+                className="data-vertical:h-5 data-vertical:self-center"
+              />
+              <span className="truncate text-sm font-medium">{title}</span>
+            </header>
+
+            <div className="mx-auto flex w-full max-w-[110rem] flex-col gap-8 px-6 py-8 lg:px-10 lg:py-10">
               {failure !== undefined && (
-                <output className="banner">
-                  <IconPower size={16} />
-                  <span>
+                <output className="block">
+                  <Alert role={undefined} className="border-danger/50 bg-danger/10">
+                    <Unplug aria-hidden="true" className="text-danger" />
                     {failure.kind === "unreachable" ? (
                       <>
-                        <b>Can't reach the daemon at {hostOf(address)}.</b> Run{" "}
-                        <code>agent-proxy daemon status</code> to see why, or{" "}
-                        <code>agent-proxy daemon start</code> to start it.
+                        <AlertTitle className="font-semibold">
+                          Can't reach the daemon at {hostOf(address)}.{" "}
+                        </AlertTitle>
+                        <AlertDescription className="text-foreground/80">
+                          <p>
+                            Run <code className="text-foreground">agent-proxy daemon status</code>{" "}
+                            to see why, or{" "}
+                            <code className="text-foreground">agent-proxy daemon start</code> to
+                            start it.
+                            {view.accounts !== undefined &&
+                              " This is what it last reported; it updates when the daemon answers again."}
+                          </p>
+                        </AlertDescription>
                       </>
                     ) : (
                       <>
-                        <b>The daemon answered with an error.</b> {failure.message}
+                        <AlertTitle className="font-semibold">
+                          The daemon answered with an error.{" "}
+                        </AlertTitle>
+                        <AlertDescription className="text-foreground/80">
+                          <p>
+                            {failure.message}
+                            {view.accounts !== undefined &&
+                              " This is what it last reported; it updates when the daemon answers again."}
+                          </p>
+                        </AlertDescription>
                       </>
                     )}
-                    {view.accounts !== undefined &&
-                      " This is what it last reported; it updates when the daemon answers again."}
-                  </span>
+                  </Alert>
                 </output>
               )}
 
@@ -173,43 +220,46 @@ function Dashboard(props: DashboardProps) {
                 />
               ) : (
                 <>
-                  <header className="pagehead">
-                    <div className="pagehead-text">
-                      <h1 id="page-title" tabIndex={-1}>
-                        {firstRun && page === "dashboard" ? "Get started" : "Accounts"}
-                      </h1>
-                      <p>
-                        {firstRun && page === "dashboard"
-                          ? "Add an account and connect a client, and this page shows what goes through the proxy."
-                          : "Each client spends only its own provider's accounts. Within a pool, the highest-priority account that is Active gets new sessions; accounts sharing a priority take turns, by the room left in their limits."}
-                      </p>
-                    </div>
-                    {list !== undefined && list.accounts.length > 0 && (
-                      <div className="pagehead-actions">
-                        <button
-                          type="button"
-                          className="btn"
-                          disabled={!reachable || refreshingAll}
-                          onClick={() => usage.refresh()}
-                        >
-                          {refreshingAll ? <Spinner size={13} /> : <IconRefresh size={14} />}
-                          Refresh limits
-                        </button>
-                        <button
-                          type="button"
-                          className="btn is-primary"
-                          disabled={!reachable}
-                          onClick={() => setSigningIn({ kind: "add" })}
-                        >
-                          <IconPlus size={14} />
-                          Add account
-                        </button>
-                      </div>
-                    )}
-                  </header>
+                  <PageHeader
+                    title={title}
+                    description={
+                      firstRun && page === "dashboard"
+                        ? "Add an account and connect a client, and this page shows what goes through the proxy."
+                        : "Each client spends only its own provider's accounts. Within a pool, the highest-priority account that is Active gets new sessions; accounts sharing a priority take turns, by the room left in their limits."
+                    }
+                    {...(list !== undefined && list.accounts.length > 0
+                      ? {
+                          actions: (
+                            <>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                disabled={!reachable || refreshingAll}
+                                onClick={() => usage.refresh()}
+                              >
+                                {refreshingAll ? (
+                                  <Spinner size={14} />
+                                ) : (
+                                  <RefreshCw aria-hidden="true" />
+                                )}
+                                Refresh limits
+                              </Button>
+                              <Button
+                                type="button"
+                                disabled={!reachable}
+                                onClick={() => setSigningIn({ kind: "add" })}
+                              >
+                                <Plus aria-hidden="true" />
+                                Add account
+                              </Button>
+                            </>
+                          ),
+                        }
+                      : {})}
+                  />
 
                   {view.accounts !== undefined && (
-                    <div className={`content ${reachable ? "" : "is-stale"}`}>
+                    <PageContent stale={!reachable}>
                       <AccountsPage
                         list={view.accounts}
                         now={now}
@@ -217,12 +267,12 @@ function Dashboard(props: DashboardProps) {
                         client={client}
                         controls={controls}
                       />
-                    </div>
+                    </PageContent>
                   )}
                 </>
               )}
             </div>
-          </main>
+          </SidebarInset>
 
           <div className="sr-only" aria-live="polite">
             {announcement}
@@ -259,8 +309,8 @@ function Dashboard(props: DashboardProps) {
             list={view.accounts}
             client={client}
           />
-        </div>
-      </Tooltip.Provider>
+        </SidebarProvider>
+      </TooltipProvider>
     </UsageProvider>
   )
 }

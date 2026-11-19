@@ -1,5 +1,38 @@
-import { Popover } from "@base-ui/react/popover"
+import { ArrowRight, CalendarDays, TriangleAlert } from "lucide-react"
 import { type ReactNode, useState } from "react"
+
+import { PageContent, PageHeader } from "@/components/page"
+import { Badge } from "@/components/ui/badge"
+import { Button, buttonVariants } from "@/components/ui/button"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover"
+import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { cn } from "@/lib/utils"
 
 import {
   Legend,
@@ -8,6 +41,7 @@ import {
   ShareBar,
   Sparkline,
   StackedColumns,
+  useHeight,
   bucketTotals,
   foldTail,
   metricText,
@@ -15,6 +49,7 @@ import {
 import {
   type Account,
   type AccountList,
+  type AccountStatus,
   type BreakdownAccount,
   type BreakdownRow,
   type RangeKey,
@@ -38,7 +73,7 @@ import {
 import { LimitCell, type WindowColumn, windowColumns } from "./limits.tsx"
 import { accountsOf, providerNames, statusLabels } from "./model.ts"
 import { pageLink, setSearchParams, useSearchParam } from "./route.ts"
-import { IconAlert, IconArrowRight, IconCalendar, ProviderMark, Tip } from "./ui.tsx"
+import { ProviderMark, Tip } from "./ui.tsx"
 import { rangeKey, type UsageAnswer, useUsage, useUsageQuery } from "./usage.tsx"
 import { useNow } from "./useDaemon.ts"
 
@@ -60,22 +95,23 @@ export function DashboardPage(props: DashboardProps) {
   const range = useRange()
   return (
     <>
-      <header className="pagehead dash-head">
-        <div className="pagehead-text">
-          <h1 id="page-title" tabIndex={-1}>
-            Dashboard
-          </h1>
-          <p>What went through the proxy, and how much of each plan's limit windows is used.</p>
-        </div>
-        <div className="dash-controls">
-          <LiveMarker list={props.list} reachable={props.reachable} />
-          <RangePicker range={range} />
-        </div>
-      </header>
+      <PageHeader
+        title="Dashboard"
+        description="What went through the proxy, and how much of each plan's limit windows is used."
+        actions={
+          <div className="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-3">
+            <LiveMarker list={props.list} reachable={props.reachable} />
+            {/* On the narrowest phones the presets scroll within their own box, not the page. */}
+            <div className="-m-1 max-w-full overflow-x-auto p-1">
+              <RangePicker range={range} />
+            </div>
+          </div>
+        }
+      />
       {props.list !== undefined && (
-        <div className={`content ${props.reachable ? "" : "is-stale"}`}>
+        <PageContent stale={!props.reachable}>
           <CardGrid {...props} list={props.list} range={range} />
-        </div>
+        </PageContent>
       )}
     </>
   )
@@ -149,11 +185,21 @@ function RangePicker(props: { range: UsageRange }) {
   const [to, setTo] = useState(range.key === "custom" ? range.to : today)
   const valid = DAY_PATTERN.test(from) && DAY_PATTERN.test(to) && from <= to
   return (
-    <fieldset className="range">
-      <legend className="sr-only">Range</legend>
+    <ToggleGroup
+      aria-label="Range"
+      variant="outline"
+      size="sm"
+      spacing={0}
+      value={[range.key]}
+      onValueChange={(next) => {
+        const key = RANGE_KEYS.find((candidate) => next.includes(candidate))
+        if (key !== undefined && key !== "custom") pickRange(key)
+      }}
+      className="bg-card"
+    >
       {RANGE_KEYS.map((key) =>
         key === "custom" ? (
-          <Popover.Root
+          <Popover
             key={key}
             open={open}
             onOpenChange={(next) => {
@@ -164,73 +210,65 @@ function RangePicker(props: { range: UsageRange }) {
               setOpen(next)
             }}
           >
-            <Popover.Trigger
-              className={`range-opt ${range.key === "custom" ? "is-on" : ""}`}
-              aria-pressed={range.key === "custom"}
-            >
-              <IconCalendar size={13} />
+            <PopoverTrigger render={<ToggleGroupItem value="custom" className="gap-1.5 px-3" />}>
+              <CalendarDays />
               {range.key === "custom" ? rangeWords(range) : rangeLabels.custom}
-            </Popover.Trigger>
-            <Popover.Portal>
-              <Popover.Positioner className="layer" sideOffset={6} align="end">
-                <Popover.Popup className="popover range-pop">
-                  <Popover.Title className="range-pop-title">Custom range</Popover.Title>
-                  <form
-                    onSubmit={(event) => {
-                      event.preventDefault()
-                      if (!valid) return
-                      setSearchParams({ range: "custom", from, to })
-                      setOpen(false)
-                    }}
-                  >
-                    <div className="range-pop-fields">
-                      <label>
-                        <span>From</span>
-                        <input
-                          type="date"
-                          className="field-input"
-                          value={from}
-                          max={to}
-                          onChange={(event) => setFrom(event.target.value)}
-                        />
-                      </label>
-                      <label>
-                        <span>To</span>
-                        <input
-                          type="date"
-                          className="field-input"
-                          value={to}
-                          min={from}
-                          max={today}
-                          onChange={(event) => setTo(event.target.value)}
-                        />
-                      </label>
-                    </div>
-                    <p className="range-pop-hint">Whole calendar days, both included.</p>
-                    <div className="range-pop-foot">
-                      <Popover.Close className="btn btn-sm">Cancel</Popover.Close>
-                      <button type="submit" className="btn btn-sm is-primary" disabled={!valid}>
-                        Apply
-                      </button>
-                    </div>
-                  </form>
-                </Popover.Popup>
-              </Popover.Positioner>
-            </Popover.Portal>
-          </Popover.Root>
+            </PopoverTrigger>
+            <PopoverContent align="end" sideOffset={8} className="w-80 gap-5 p-5">
+              <PopoverHeader>
+                <PopoverTitle className="text-base">Custom range</PopoverTitle>
+                <PopoverDescription>Whole calendar days, both included.</PopoverDescription>
+              </PopoverHeader>
+              <form
+                className="flex flex-col gap-5"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (!valid) return
+                  setSearchParams({ range: "custom", from, to })
+                  setOpen(false)
+                }}
+              >
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="range-from">From</Label>
+                    <Input
+                      id="range-from"
+                      type="date"
+                      value={from}
+                      max={to}
+                      onChange={(event) => setFrom(event.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <Label htmlFor="range-to">To</Label>
+                    <Input
+                      id="range-to"
+                      type="date"
+                      value={to}
+                      min={from}
+                      max={today}
+                      onChange={(event) => setTo(event.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" size="sm" disabled={!valid}>
+                    Apply
+                  </Button>
+                </div>
+              </form>
+            </PopoverContent>
+          </Popover>
         ) : (
-          <button
-            key={key}
-            type="button"
-            aria-pressed={range.key === key}
-            className={`range-opt ${range.key === key ? "is-on" : ""}`}
-            onClick={() => pickRange(key)}
-          >
+          <ToggleGroupItem key={key} value={key} className="px-3">
             {rangeLabels[key]}
-          </button>
+          </ToggleGroupItem>
         ),
       )}
-    </fieldset>
+    </ToggleGroup>
   )
 }
 
@@ -252,26 +290,33 @@ function LiveMarker(props: { list: AccountList | undefined; reachable: boolean }
         ? `last request ${seconds}s ago`
         : `last request ${ago(lastUsed, now)}`
   return (
-    <span className={`live ${props.reachable ? "" : "is-off"}`}>
-      <span
-        key={lastRecorded?.at ?? 0}
-        className={`live-dot ${lastRecorded === undefined ? "" : "is-pulse"}`}
-        aria-hidden="true"
-      />
+    <span className="inline-flex items-center gap-2 text-sm font-medium whitespace-nowrap">
+      <span className="relative flex size-2" aria-hidden="true">
+        {props.reachable && lastRecorded !== undefined && (
+          // A ring that spreads once each time a request finishes.
+          <span
+            key={lastRecorded.at}
+            className="absolute inset-0 animate-ping bg-success [animation-iteration-count:1] motion-reduce:hidden"
+          />
+        )}
+        <span
+          className={cn("relative size-2", props.reachable ? "bg-success" : "bg-muted-foreground")}
+        />
+      </span>
       {props.reachable ? "Live" : "Offline"}
-      <span className="live-sub">· {sub}</span>
+      <span className="font-normal text-muted-foreground tabular-nums">· {sub}</span>
     </span>
   )
 }
 
 // --------------------------------------------------------------------- KPIs
 
-/** Token kinds, cheapest per token to dearest: a grey ramp that darkens with price. */
+/** Token kinds, cheapest per token to dearest: on the dark surface, dearer kinds stand out more. */
 export const TOKEN_KINDS = [
-  { key: "uncached", name: "Uncached input", color: "var(--kind-uncached)" },
-  { key: "cacheRead", name: "Cache read", color: "var(--kind-cache-read)" },
-  { key: "cacheWrite", name: "Cache write", color: "var(--kind-cache-write)" },
-  { key: "output", name: "Output", color: "var(--kind-output)" },
+  { key: "uncached", name: "Uncached input", color: "oklch(0.52 0 0)" },
+  { key: "cacheRead", name: "Cache read", color: "oklch(0.4 0 0)" },
+  { key: "cacheWrite", name: "Cache write", color: "oklch(0.66 0 0)" },
+  { key: "output", name: "Output", color: "oklch(0.9 0 0)" },
 ] as const
 
 interface Kpi {
@@ -294,11 +339,10 @@ export function UnpricedFlag(props: { models: ReadonlyArray<string> }) {
     <Tip
       label={`${props.models.join(", ")} ${n === 1 ? "has" : "have"} no known list price, so ${n === 1 ? "its" : "their"} tokens are left out of this total.`}
     >
-      {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focus shows which models */}
-      <span className="flag" tabIndex={0}>
-        <IconAlert size={12} />
+      <Badge variant="destructive" className="cursor-help" tabIndex={0}>
+        <TriangleAlert />
         {n} model{n === 1 ? "" : "s"} unpriced
-      </span>
+      </Badge>
     </Tip>
   )
 }
@@ -313,13 +357,13 @@ const kpisOf = (summary: UsageSummary): ReadonlyArray<Kpi> => {
       label: "Requests",
       value: count(requests.total),
       sub: (
-        <span className="kpi-good">
-          <span className="kpi-dot" aria-hidden="true" />
+        <span className="inline-flex items-center gap-2 font-medium tabular-nums">
+          <span className="size-2 rounded-full bg-success" aria-hidden="true" />
           {successRate === null ? "—" : pct(successRate)} success
         </span>
       ),
       extra: (
-        <span className="kpi-fine">
+        <span className="text-xs text-muted-foreground tabular-nums">
           {count(requests.failed)} failed · {count(requests.limited)} limited ·{" "}
           {count(requests.incomplete)} incomplete
         </span>
@@ -344,19 +388,27 @@ const kpisOf = (summary: UsageSummary): ReadonlyArray<Kpi> => {
       ),
       extra: (
         <>
-          <dl className="kinds">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-xs">
             {TOKEN_KINDS.map((kind) => (
-              <div key={kind.key}>
-                <dt>
-                  <i style={{ background: kind.color }} aria-hidden="true" />
-                  {kind.name}
+              <div key={kind.key} className="flex min-w-0 flex-col gap-0.5">
+                <dt className="inline-flex min-w-0 items-center gap-1.5 text-muted-foreground">
+                  <i
+                    className="size-2 shrink-0 rounded-[2px]"
+                    style={{ background: kind.color }}
+                    aria-hidden="true"
+                  />
+                  <span className="truncate">{kind.name}</span>
                 </dt>
-                <dd>{compact(tokens[kind.key])}</dd>
+                <dd className="pl-3.5 text-sm font-medium tabular-nums">
+                  {compact(tokens[kind.key])}
+                </dd>
               </div>
             ))}
           </dl>
           {tokens.reasoning > 0 && (
-            <p className="kinds-foot">Output includes {compact(tokens.reasoning)} reasoning</p>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              Output includes {compact(tokens.reasoning)} reasoning
+            </p>
           )}
         </>
       ),
@@ -369,7 +421,7 @@ const kpisOf = (summary: UsageSummary): ReadonlyArray<Kpi> => {
       label: "Cache hit rate",
       value: summary.cacheHitRate === null ? "—" : pct(summary.cacheHitRate),
       sub: (
-        <span className="kpi-muted">
+        <span className="text-muted-foreground">
           {compact(tokens.cacheRead)} read from cache of {compact(input)} input
         </span>
       ),
@@ -381,7 +433,7 @@ const kpisOf = (summary: UsageSummary): ReadonlyArray<Kpi> => {
       id: "cost",
       label: "Equivalent cost",
       value: usd(summary.costUsd),
-      sub: <span className="kpi-muted">At API list prices; your plans are flat.</span>,
+      sub: <span className="text-muted-foreground">At API list prices; your plans are flat.</span>,
       extra:
         summary.unpricedModels.length === 0 ? undefined : (
           <UnpricedFlag models={summary.unpricedModels} />
@@ -393,41 +445,49 @@ const kpisOf = (summary: UsageSummary): ReadonlyArray<Kpi> => {
   ]
 }
 
+const KPI_GRID = "grid gap-6 sm:grid-cols-2 xl:grid-cols-4"
+
 function KpiRow(props: { answer: UsageAnswer<UsageSummary>; range: UsageRange }) {
   const summary = props.answer.data
   if (summary === undefined) {
-    return (
-      <div className="kpi-grid">
-        {props.answer.error === undefined ? (
-          [0, 1, 2, 3].map((i) => <div key={i} className="card kpi is-skel" />)
-        ) : (
-          <p className="card dash-error" role="alert">
-            Usage isn't available. {props.answer.error}
-          </p>
-        )}
+    return props.answer.error === undefined ? (
+      <div className={KPI_GRID}>
+        {[0, 1, 2, 3].map((i) => (
+          <Skeleton key={i} className="h-56 rounded-xl ring-1 ring-border" />
+        ))}
       </div>
+    ) : (
+      <Card role="alert" className="px-6 text-muted-foreground">
+        Usage isn't available. {props.answer.error}
+      </Card>
     )
   }
   const times = summary.spark.map((point) => point.t)
   const step = (times[1] ?? 0) - (times[0] ?? 0)
   return (
-    <div className="kpi-grid">
+    <div className={KPI_GRID}>
       {kpisOf(summary).map((kpi) => (
-        <section key={kpi.id} className="card kpi" aria-label={kpi.label}>
-          <h2 className="kpi-label">{kpi.label}</h2>
-          <div className="kpi-value">{kpi.value}</div>
-          <div className="kpi-sub">{kpi.sub}</div>
-          {kpi.extra !== undefined && <div className="kpi-extra">{kpi.extra}</div>}
-          <div className="kpi-spark">
-            <Sparkline
-              values={kpi.spark}
-              times={times}
-              bucketMs={step > 0 ? step : 3_600_000}
-              format={kpi.sparkFormat}
-              zero={kpi.zero}
-              label={`${kpi.label} over ${rangeWords(props.range)}`}
-            />
-          </div>
+        <section key={kpi.id} aria-label={kpi.label} className="min-w-0">
+          <Card className="h-full gap-0">
+            <CardContent className="flex h-full flex-col gap-3">
+              <h2 className="text-sm font-medium text-muted-foreground">{kpi.label}</h2>
+              <div className="text-3xl leading-none font-semibold tracking-tight tabular-nums">
+                {kpi.value}
+              </div>
+              <div className="min-h-5 text-sm">{kpi.sub}</div>
+              {kpi.extra !== undefined && <div className="min-w-0">{kpi.extra}</div>}
+              <div className="mt-auto pt-3">
+                <Sparkline
+                  values={kpi.spark}
+                  times={times}
+                  bucketMs={step > 0 ? step : 3_600_000}
+                  format={kpi.sparkFormat}
+                  zero={kpi.zero}
+                  label={`${kpi.label} over ${rangeWords(props.range)}`}
+                />
+              </div>
+            </CardContent>
+          </Card>
         </section>
       ))}
     </div>
@@ -441,8 +501,11 @@ function CostCell(props: { row: BreakdownRow }) {
   if (props.row.costUsd === null) {
     return (
       <Tip label="No known list price, so these tokens are left out of the equivalent cost.">
-        {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focus says why */}
-        <span className="unpriced" tabIndex={0}>
+        <span
+          className="cursor-help text-muted-foreground underline decoration-dotted underline-offset-4"
+          // oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focus says why
+          tabIndex={0}
+        >
           Unpriced
         </span>
       </Tip>
@@ -453,8 +516,12 @@ function CostCell(props: { row: BreakdownRow }) {
       {usd(props.row.costUsd)}
       {props.row.partlyUnpriced && (
         <Tip label="Some of these tokens are from an unpriced model, left out of the equivalent cost.">
-          {/* oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focus says why */}
-          <span className="partly" tabIndex={0} aria-label="partly unpriced">
+          <span
+            className="ml-0.5 cursor-help text-warning"
+            // oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focus says why
+            tabIndex={0}
+            aria-label="partly unpriced"
+          >
             *
           </span>
         </Tip>
@@ -463,14 +530,48 @@ function CostCell(props: { row: BreakdownRow }) {
   )
 }
 
+/** An account's status as a small square: green serving, amber cooling, red signed out, hollow off. */
+const statusDot: Readonly<Record<AccountStatus | "removed", string>> = {
+  active: "bg-success",
+  "cooling-down": "bg-warning",
+  "needs-sign-in": "bg-danger",
+  disabled: "ring-1 ring-inset ring-muted-foreground",
+  unknown: "ring-1 ring-inset ring-muted-foreground",
+  removed: "ring-1 ring-inset ring-muted-foreground",
+}
+
 function AccountName(props: { account: Account }) {
   const { account } = props
   return (
-    <span className={`acct is-${account.status}`}>
-      <span className="acct-dot" aria-hidden="true" />
-      <span className="acct-label">{account.label}</span>
+    <span className="inline-flex min-w-0 items-center gap-2.5">
+      <span
+        className={cn("size-2 shrink-0 rounded-full", statusDot[account.status])}
+        aria-hidden="true"
+      />
+      <span className="truncate font-medium group-hover/rowlink:underline group-hover/rowlink:underline-offset-4">
+        {account.label}
+      </span>
       <span className="sr-only">, {statusLabels[account.status]}</span>
     </span>
+  )
+}
+
+/** A button that opens an account's sheet, drawn as the account's name. */
+function RowLink(props: {
+  account: Account
+  onOpen: (event: React.MouseEvent) => void
+  withRowMarker?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      className="group/rowlink inline-flex min-w-0 cursor-pointer items-center rounded-sm text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+      data-account-row={props.withRowMarker === true ? "" : undefined}
+      data-opens-sheet={props.account.id}
+      onClick={props.onOpen}
+    >
+      <AccountName account={props.account} />
+    </button>
   )
 }
 
@@ -501,42 +602,82 @@ function RemovedAccountName(props: { account: BreakdownRow["account"] }) {
   const { account } = props
   if (account === null) {
     return (
-      <span className="acct is-removed">
-        <span className="acct-dot" aria-hidden="true" />
-        <span className="acct-label">Removed account</span>
+      <span className="inline-flex items-center gap-2.5 text-muted-foreground italic">
+        <span
+          className={cn("size-2 shrink-0 rounded-full", statusDot.removed)}
+          aria-hidden="true"
+        />
+        <span>Removed account</span>
       </span>
     )
   }
   return (
-    <>
-      <ProviderMark provider={account.provider} size={13} />
-      <span className="acct is-removed" title={account.email}>
-        <span className="acct-dot" aria-hidden="true" />
-        <span className="acct-label">{account.label}</span>
-        <span className="tag">Removed</span>
-      </span>
-    </>
+    <span className="inline-flex min-w-0 items-center gap-2.5" title={account.email}>
+      <ProviderMark provider={account.provider} size={14} />
+      <span className={cn("size-2 shrink-0 rounded-full", statusDot.removed)} aria-hidden="true" />
+      <span className="truncate text-muted-foreground italic">{account.label}</span>
+      <Badge variant="outline" className="text-muted-foreground">
+        Removed
+      </Badge>
+    </span>
   )
 }
 
-function CardHead(props: { id: string; title: string; sub: string; children?: ReactNode }) {
+/**
+ * A dashboard card: a region named by its title, with a line under the title
+ * and the card's tools on the right.
+ */
+function DashCard(props: {
+  id: string
+  title: string
+  sub: string
+  action?: ReactNode
+  className?: string
+  children: ReactNode
+}) {
   return (
-    <header className="card-head">
-      <div>
-        <h2 id={props.id}>{props.title}</h2>
-        <p>{props.sub}</p>
-      </div>
-      {props.children}
-    </header>
+    <section aria-labelledby={props.id} className={cn("min-w-0", props.className)}>
+      <Card className="h-full">
+        <CardHeader className="max-sm:grid-cols-1">
+          <CardTitle>
+            <h2 id={props.id} className="text-base font-semibold">
+              {props.title}
+            </h2>
+          </CardTitle>
+          <CardDescription>{props.sub}</CardDescription>
+          {props.action !== undefined && (
+            // Below sm the actions drop under the title, so it keeps its width.
+            <CardAction className="max-sm:col-start-1 max-sm:row-span-1 max-sm:row-start-3 max-sm:mt-3 max-sm:justify-self-start">
+              {props.action}
+            </CardAction>
+          )}
+        </CardHeader>
+        <CardContent className="flex flex-1 flex-col gap-5">{props.children}</CardContent>
+      </Card>
+    </section>
   )
 }
 
 /** A card's body until its answer comes: a skeleton, or why it can't. */
 function Pending(props: { error: string | undefined; short?: boolean }) {
   return props.error === undefined ? (
-    <div className={`chart-skel ${props.short === true ? "is-short" : ""}`} />
+    <Skeleton className={props.short === true ? "h-40" : "h-72"} />
   ) : (
-    <p className="dash-empty">Usage isn't available. {props.error}</p>
+    <Empty>Usage isn't available. {props.error}</Empty>
+  )
+}
+
+/** A card with nothing to show, saying why. */
+function Empty(props: { children: ReactNode; tall?: boolean }) {
+  return (
+    <p
+      className={cn(
+        "flex items-center justify-center rounded-lg border border-dashed border-border px-6 text-center text-sm text-muted-foreground",
+        props.tall === true ? "min-h-72" : "min-h-32",
+      )}
+    >
+      {props.children}
+    </p>
   )
 }
 
@@ -548,6 +689,13 @@ const bucketWords = (ms: number) =>
       : ms > 3_600_000
         ? `${ms / 3_600_000} hours`
         : `${ms / 60_000} minutes`
+
+/** A numeric column's cells: right-aligned, figures that line up. */
+const NUM = "text-right tabular-nums"
+/** Roomy rows, the outer cells flush with the card's padding. */
+const CELL = "h-12 px-3 first:pl-0 last:pr-0"
+const HEAD =
+  "h-10 px-3 text-xs font-medium tracking-wide text-muted-foreground uppercase first:pl-0 last:pr-0"
 
 // ---------------------------------------------------------------- the grid
 
@@ -583,9 +731,12 @@ function CardGrid(props: DashboardProps & { list: AccountList; range: UsageRange
   )
   const loading = summary.stale || series.stale || byModel.stale || byAccount.stale
   return (
-    <div className={`dash ${loading ? "is-loading" : ""}`} aria-busy={loading}>
+    <div
+      className={cn("flex flex-col gap-6 transition-opacity", loading && "opacity-75")}
+      aria-busy={loading}
+    >
       <KpiRow answer={summary} range={range} />
-      <div className="grid-a">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
         <TrendCard answer={series} range={range} metric={metric} setMetric={setMetric} />
         <ModelsCard answer={byModel} range={range} />
       </div>
@@ -614,13 +765,12 @@ function TrendCard(props: {
   const folded = answered === undefined ? undefined : foldTail(answered)
   const series = folded?.series
   return (
-    <section className="card card-trend" aria-labelledby="dash-trend">
-      <CardHead
-        id="dash-trend"
-        title="Token trend"
-        sub={`${metric === "cost" ? "Equivalent cost" : "Tokens"} per ${series === undefined ? "bucket" : bucketWords(series.bucketMs)} by model, ${rangeWords(props.range)}`}
-      >
-        <div className="card-tools">
+    <DashCard
+      id="dash-trend"
+      title="Token trend"
+      sub={`${metric === "cost" ? "Equivalent cost" : "Tokens"} per ${series === undefined ? "bucket" : bucketWords(series.bucketMs)} by model, ${rangeWords(props.range)}`}
+      action={
+        <div className="flex flex-wrap justify-end gap-2">
           <Seg
             label="Measure token trend in"
             options={[
@@ -640,24 +790,38 @@ function TrendCard(props: {
             onChange={(shown) => setAsTable(shown === "table")}
           />
         </div>
-      </CardHead>
+      }
+    >
       {series === undefined ? (
         <Pending error={props.answer.error} />
       ) : series.keys.length === 0 ? (
-        <p className="dash-empty is-tall">
+        <Empty tall>
           {metric === "cost" ? "No priced usage" : "No tokens"} in {rangeWords(props.range)}.
-        </p>
+        </Empty>
       ) : (
         <>
           <Legend keys={series.keys} others={folded?.others ?? []} label="Models" />
-          {asTable ? (
-            <TrendTable series={series} />
-          ) : (
-            <StackedColumns series={series} label="Token trend by model" />
-          )}
+          {asTable ? <TrendTable series={series} /> : <TrendChart series={series} />}
         </>
       )}
-    </section>
+    </DashCard>
+  )
+}
+
+/**
+ * The trend's columns, as tall as the card lets them be: beside Models the
+ * card grows to Models' height, and the chart fills it rather than leaving a
+ * gap. The chart sits in an absolute box so its own height never feeds back
+ * into the card's.
+ */
+function TrendChart(props: { series: UsageSeries }) {
+  const [ref, height] = useHeight<HTMLDivElement>(288)
+  return (
+    <div ref={ref} className="relative min-h-72 flex-1">
+      <div className="absolute inset-0">
+        <StackedColumns series={props.series} height={height} label="Token trend by model" />
+      </div>
+    </div>
   )
 }
 
@@ -669,20 +833,23 @@ function Seg<A extends string>(props: {
   onChange: (value: A) => void
 }) {
   return (
-    <fieldset className="seg">
-      <legend className="sr-only">{props.label}</legend>
+    <ToggleGroup
+      aria-label={props.label}
+      variant="outline"
+      size="sm"
+      spacing={0}
+      value={[props.value]}
+      onValueChange={(next) => {
+        const picked = props.options.find(([value]) => next.includes(value))
+        if (picked !== undefined) props.onChange(picked[0])
+      }}
+    >
       {props.options.map(([value, text]) => (
-        <button
-          key={value}
-          type="button"
-          className={`seg-opt ${props.value === value ? "is-on" : ""}`}
-          aria-pressed={props.value === value}
-          onClick={() => props.onChange(value)}
-        >
+        <ToggleGroupItem key={value} value={value} className="px-3">
           {text}
-        </button>
+        </ToggleGroupItem>
       ))}
-    </fieldset>
+    </ToggleGroup>
   )
 }
 
@@ -692,37 +859,43 @@ function TrendTable(props: { series: UsageSeries }) {
   const { value } = metricText[series.metric]
   const totals = bucketTotals(series)
   return (
-    <div className="trend-table">
-      <table className="mini" aria-label="Token trend by model">
-        <thead>
-          <tr>
-            <th scope="col">When</th>
+    <div className="max-h-80 overflow-y-auto">
+      <Table aria-label="Token trend by model">
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead scope="col" className={HEAD}>
+              When
+            </TableHead>
             {series.keys.map((model) => (
-              <th key={model} scope="col" className="num">
+              <TableHead key={model} scope="col" className={cn(HEAD, NUM, "normal-case")}>
                 {model}
-              </th>
+              </TableHead>
             ))}
-            <th scope="col" className="num">
+            <TableHead scope="col" className={cn(HEAD, NUM)}>
               Total
-            </th>
-          </tr>
-        </thead>
-        <tbody>
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
           {series.buckets.map((bucket, i) =>
             (totals[i] ?? 0) === 0 ? null : (
-              <tr key={bucket.t}>
-                <th scope="row">{bucketText(bucket.t, series.bucketMs)}</th>
+              <TableRow key={bucket.t}>
+                <TableHead scope="row" className={cn(CELL, "font-normal")}>
+                  {bucketText(bucket.t, series.bucketMs)}
+                </TableHead>
                 {series.keys.map((model) => (
-                  <td key={model} className="num">
+                  <TableCell key={model} className={cn(CELL, NUM)}>
                     {value(bucket.values[model] ?? 0)}
-                  </td>
+                  </TableCell>
                 ))}
-                <td className="num">{value(totals[i] ?? 0)}</td>
-              </tr>
+                <TableCell className={cn(CELL, NUM, "font-medium")}>
+                  {value(totals[i] ?? 0)}
+                </TableCell>
+              </TableRow>
             ),
           )}
-        </tbody>
-      </table>
+        </TableBody>
+      </Table>
     </div>
   )
 }
@@ -733,61 +906,66 @@ function ModelsCard(props: {
 }) {
   const rows = props.answer.data?.rows
   return (
-    <section className="card" aria-labelledby="dash-models">
-      <CardHead id="dash-models" title="Models" sub="Tokens, equivalent cost and share" />
+    <DashCard id="dash-models" title="Models" sub="Tokens, equivalent cost and share">
       {rows === undefined ? (
         <Pending error={props.answer.error} short />
       ) : rows.length === 0 ? (
-        <p className="dash-empty">No requests in {rangeWords(props.range)}.</p>
+        <Empty>No requests in {rangeWords(props.range)}.</Empty>
       ) : (
         <>
           <SegBar
             label="Share of tokens by model"
-            height={8}
+            height={10}
             parts={rows.map((row) => ({
               key: row.key,
               value: row.totalTokens,
               color: seriesColor(row.key),
             }))}
           />
-          <table className="mini" aria-labelledby="dash-models">
-            <thead>
-              <tr>
-                <th scope="col">Model</th>
-                <th scope="col" className="num col-tokens">
+          <Table aria-labelledby="dash-models">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead scope="col" className={HEAD}>
+                  Model
+                </TableHead>
+                <TableHead scope="col" className={cn(HEAD, NUM)}>
                   Tokens
-                </th>
-                <th scope="col" className="num col-cost">
+                </TableHead>
+                <TableHead scope="col" className={cn(HEAD, NUM)}>
                   Equivalent cost
-                </th>
-                <th scope="col" className="num col-share">
+                </TableHead>
+                <TableHead scope="col" className={cn(HEAD, NUM)}>
                   Share
-                </th>
-              </tr>
-            </thead>
-            <tbody>
+                </TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {rows.map((row) => (
-                <tr key={row.key}>
-                  <th scope="row">
-                    <span
-                      className="swatch"
-                      style={{ background: seriesColor(row.key) }}
-                      aria-hidden="true"
-                    />
-                    {row.key}
-                  </th>
-                  <td className="num">{compact(row.totalTokens)}</td>
-                  <td className="num">
+                <TableRow key={row.key}>
+                  <TableHead scope="row" className={cn(CELL, "max-w-56")}>
+                    <span className="flex min-w-0 items-center gap-2.5">
+                      <span
+                        className="size-2.5 shrink-0"
+                        style={{ background: seriesColor(row.key) }}
+                        aria-hidden="true"
+                      />
+                      <span className="truncate">{row.key}</span>
+                    </span>
+                  </TableHead>
+                  <TableCell className={cn(CELL, NUM)}>{compact(row.totalTokens)}</TableCell>
+                  <TableCell className={cn(CELL, NUM)}>
                     <CostCell row={row} />
-                  </td>
-                  <td className="num col-share">{pct(row.share)}</td>
-                </tr>
+                  </TableCell>
+                  <TableCell className={cn(CELL, NUM, "text-muted-foreground")}>
+                    {pct(row.share)}
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </>
       )}
-    </section>
+    </DashCard>
   )
 }
 
@@ -804,48 +982,48 @@ function LimitsCard(props: { list: AccountList; openAccount: (account: Account) 
   })
   const widest = Math.max(0, ...pools.map((pool) => pool.columns.length))
   return (
-    <section className="card card-limits" aria-labelledby="dash-limits">
-      <CardHead
-        id="dash-limits"
-        title="Limit windows"
-        sub="Share left of each window, and when it resets"
-      >
-        <a className="linkbtn is-quiet" {...pageLink("accounts")}>
-          Accounts <IconArrowRight size={13} />
+    <DashCard
+      id="dash-limits"
+      title="Limit windows"
+      sub="Share left of each window, and when it resets"
+      action={
+        <a className={buttonVariants({ variant: "ghost", size: "sm" })} {...pageLink("accounts")}>
+          Accounts <ArrowRight />
         </a>
-      </CardHead>
-      <div className="limpanel">
+      }
+    >
+      <div className="flex flex-col gap-8">
         {pools.map((pool) => (
-          <table
+          <Table
             key={pool.provider}
-            className="limpanel-table"
+            className="min-w-[36rem] table-fixed"
             aria-label={`${providerNames[pool.provider]} limit windows`}
           >
             <colgroup>
-              <col className="limpanel-namecol" />
+              <col className="w-36 md:w-56" />
               {Array.from({ length: widest }, (_, i) => (
                 <col key={i} />
               ))}
             </colgroup>
-            <thead>
-              <tr>
-                <th scope="col">
-                  <span className="limpanel-provider">
-                    <ProviderMark provider={pool.provider} size={13} />
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead scope="col" className={cn(HEAD, "normal-case")}>
+                  <span className="inline-flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
+                    <ProviderMark provider={pool.provider} size={15} />
                     {providerNames[pool.provider]}
                   </span>
-                </th>
+                </TableHead>
                 {pool.columns.map((column) => (
-                  <th key={column.id} scope="col">
+                  <TableHead key={column.id} scope="col" className={cn(HEAD, "pr-8")}>
                     {column.label}
-                  </th>
+                  </TableHead>
                 ))}
                 {Array.from({ length: widest - pool.columns.length }, (_, i) => (
                   <td key={`pad-${i}`} aria-hidden="true" />
                 ))}
-              </tr>
-            </thead>
-            <tbody>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {pool.accounts.map((account) => (
                 <LimitRow
                   key={account.id}
@@ -856,11 +1034,11 @@ function LimitsCard(props: { list: AccountList; openAccount: (account: Account) 
                   openAccount={props.openAccount}
                 />
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         ))}
       </div>
-    </section>
+    </DashCard>
   )
 }
 
@@ -875,27 +1053,19 @@ function LimitRow(props: {
   const { limits } = useUsage()
   const windows = limits?.get(account.id)?.windows
   return (
-    <tr>
-      <th scope="row">
-        <button
-          type="button"
-          className="rowlink"
-          data-account-row=""
-          data-opens-sheet={account.id}
-          onClick={() => props.openAccount(account)}
-        >
-          <AccountName account={account} />
-        </button>
-      </th>
+    <TableRow className="hover:bg-transparent">
+      <TableHead scope="row" className="h-16 px-3 pl-0">
+        <RowLink account={account} withRowMarker onOpen={() => props.openAccount(account)} />
+      </TableHead>
       {props.columns.map((column) => (
-        <td key={column.id}>
+        <TableCell key={column.id} className="h-16 px-3 pr-8 whitespace-normal">
           <LimitCell window={windows?.find((window) => window.id === column.id)} now={props.now} />
-        </td>
+        </TableCell>
       ))}
       {Array.from({ length: props.pad }, (_, i) => (
         <td key={`pad-${i}`} aria-hidden="true" />
       ))}
-    </tr>
+    </TableRow>
   )
 }
 
@@ -909,84 +1079,82 @@ function AccountsCard(props: {
   const rows = props.answer.data?.rows
   const lastNames = useLastNames(props.list)
   return (
-    <section className="card" aria-labelledby="dash-accounts">
-      <CardHead
-        id="dash-accounts"
-        title="Accounts"
-        sub={`Usage per account, ${rangeWords(props.range)}`}
-      />
+    <DashCard
+      id="dash-accounts"
+      title="Accounts"
+      sub={`Usage per account, ${rangeWords(props.range)}`}
+    >
       {rows === undefined ? (
         <Pending error={props.answer.error} short />
       ) : rows.length === 0 ? (
-        <p className="dash-empty">No requests in {rangeWords(props.range)}.</p>
+        <Empty>No requests in {rangeWords(props.range)}.</Empty>
       ) : (
-        <table className="mini" aria-labelledby="dash-accounts">
-          <thead>
-            <tr>
-              <th scope="col">Account</th>
-              <th scope="col" className="num col-req">
+        <Table aria-labelledby="dash-accounts">
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead scope="col" className={HEAD}>
+                Account
+              </TableHead>
+              <TableHead scope="col" className={cn(HEAD, NUM)}>
                 Requests
-              </th>
-              <th scope="col" className="num col-tokens">
+              </TableHead>
+              <TableHead scope="col" className={cn(HEAD, NUM)}>
                 Tokens
-              </th>
-              <th scope="col" className="num col-cost">
+              </TableHead>
+              <TableHead scope="col" className={cn(HEAD, NUM)}>
                 Equivalent cost
-              </th>
-              <th scope="col" className="num col-sharebar">
+              </TableHead>
+              <TableHead scope="col" className={cn(HEAD, NUM, "w-40")}>
                 Share
-              </th>
-            </tr>
-          </thead>
-          <tbody>
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {rows.map((row) => {
               const account = props.list.accounts.find((held) => held.id === row.key)
               return (
-                <tr
+                <TableRow
                   key={row.key}
-                  className={
-                    account === undefined
-                      ? "is-removed"
-                      : `is-link ${props.openId === account.id ? "is-open" : ""}`
+                  className={cn(account !== undefined && "cursor-pointer")}
+                  data-state={
+                    account !== undefined && props.openId === account.id ? "selected" : undefined
                   }
                   data-account-row={account === undefined ? undefined : ""}
                   onClick={account === undefined ? undefined : () => props.openAccount(account)}
                 >
-                  <th scope="row">
+                  <TableHead scope="row" className={CELL}>
                     {account === undefined ? (
                       <RemovedAccountName account={lastNames.get(row.key) ?? row.account} />
                     ) : (
-                      <>
-                        <ProviderMark provider={account.provider} size={13} />
-                        <button
-                          type="button"
-                          className="rowlink"
-                          data-opens-sheet={account.id}
-                          onClick={(event) => {
+                      <span className="inline-flex min-w-0 items-center gap-2.5">
+                        <ProviderMark provider={account.provider} size={14} />
+                        <RowLink
+                          account={account}
+                          onOpen={(event) => {
                             event.stopPropagation()
                             props.openAccount(account)
                           }}
-                        >
-                          <AccountName account={account} />
-                        </button>
-                      </>
+                        />
+                      </span>
                     )}
-                  </th>
-                  <td className="num col-req">{count(row.requests.total)}</td>
-                  <td className="num">{compact(row.totalTokens)}</td>
-                  <td className="num">
+                  </TableHead>
+                  <TableCell className={cn(CELL, NUM)}>{count(row.requests.total)}</TableCell>
+                  <TableCell className={cn(CELL, NUM)}>{compact(row.totalTokens)}</TableCell>
+                  <TableCell className={cn(CELL, NUM)}>
                     <CostCell row={row} />
-                  </td>
-                  <td className="num col-sharebar">
-                    <ShareBar fraction={row.share} />
-                    <span className="sharepct">{pct(row.share, 0)}</span>
-                  </td>
-                </tr>
+                  </TableCell>
+                  <TableCell className={cn(CELL, NUM)}>
+                    <span className="inline-flex items-center justify-end gap-3">
+                      <ShareBar fraction={row.share} />
+                      <span className="w-9 text-muted-foreground">{pct(row.share, 0)}</span>
+                    </span>
+                  </TableCell>
+                </TableRow>
               )
             })}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       )}
-    </section>
+    </DashCard>
   )
 }
