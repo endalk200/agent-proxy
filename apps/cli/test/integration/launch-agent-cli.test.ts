@@ -392,7 +392,15 @@ layer(
         yield* home.cli(["daemon", "install"])
         home.calls.length = 0
         const output = yield* home.cli(["daemon", "install"])
-        expect(home.calls).toEqual(["launchd bootout", "launchd write plist", "launchd bootstrap"])
+        // The daemon is stopped with SIGTERM before launchd lets go of it, so
+        // it finishes the requests in flight: launchd's own stop is a 20-second kill.
+        expect(home.calls).toEqual([
+          "signal SIGTERM",
+          "launchd bootout",
+          "launchd write plist",
+          "launchd bootstrap",
+        ])
+        expect(output).not.toContain("ran without it")
         expect(output.split("\n").at(-1)).toMatch(STARTED)
         expect(supervision(home)).toBe("true")
       }),

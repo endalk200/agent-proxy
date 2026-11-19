@@ -1,5 +1,15 @@
 import { BunHttpServer } from "@effect/platform-bun"
-import { Clock, Data, DateTime, Deferred, Effect, FileSystem, Layer, Logger } from "effect"
+import {
+  Clock,
+  Data,
+  DateTime,
+  Deferred,
+  Duration,
+  Effect,
+  FileSystem,
+  Layer,
+  Logger,
+} from "effect"
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http"
 
 import packageJson from "../../package.json" with { type: "json" }
@@ -18,6 +28,7 @@ import { CodexApi } from "../providers/codex-api.ts"
 import { CodexLogin, CodexTokens } from "../providers/codex.ts"
 import { claudeRoutes } from "../proxy/claude-routes.ts"
 import { codexRoutes } from "../proxy/codex-routes.ts"
+import { DrainLimit, InFlight, makeInFlight } from "../proxy/in-flight.ts"
 import { ProxyKey } from "../proxy/proxy-key.ts"
 import { buildLabel, RuntimeInfo } from "../runtime-info.ts"
 import { LimitWindows } from "../usage/limit-windows.ts"
@@ -53,7 +64,10 @@ export class DaemonStartError extends Data.TaggedError("DaemonStartError")<{
   readonly cause?: unknown
 }> {}
 
-/** In-flight requests get this long to finish once shutdown starts. */
+/**
+ * Requests still open once the daemon stops serving get this long to finish:
+ * by then no proxied request is in flight, or the drain limit has passed.
+ */
 const GRACEFUL_SHUTDOWN = "5 seconds"
 
 /** The URL a client on this machine uses to reach `host:port`. */
@@ -61,6 +75,26 @@ export const clientAddress = (host: string, port: number) => {
   const reachable = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "::1" : host
   return `http://${reachable.includes(":") ? `[${reachable}]` : reachable}:${port}`
 }
+
+/** Waits, still serving, until no proxied request is in flight, and logs how the wait went. */
+const drain = (inFlight: InFlight["Service"], limit: Duration.Input) =>
+  Effect.gen(function* () {
+    const pending = yield* inFlight.count
+    if (pending === 0) return
+    yield* Effect.logInfo("daemon stopping once the requests in flight finish").pipe(
+      Effect.annotateLogs({
+        inFlight: pending,
+        atMost: Duration.format(Duration.fromInputUnsafe(limit)),
+      }),
+    )
+    const drained = yield* inFlight.drain(limit)
+    if (drained === "idle") return yield* Effect.logInfo("no request in flight; stopping")
+    yield* Effect.logWarning(
+      drained === "timed-out"
+        ? "requests still in flight after the drain limit; stopping anyway"
+        : "asked again to stop; stopping without waiting for the requests in flight",
+    ).pipe(Effect.annotateLogs({ inFlight: yield* inFlight.count }))
+  })
 
 const routes = (info: {
   readonly pid: number
@@ -171,6 +205,8 @@ export const startDaemon = Effect.gen(function* () {
     const address = clientAddress(config.listen.host, port)
     const startedAt = yield* DateTime.now
     const closing = yield* Deferred.make<void>()
+    const inFlight = makeInFlight()
+    const drainLimit = yield* DrainLimit
 
     yield* Layer.build(
       HttpRouter.serve(
@@ -202,6 +238,7 @@ export const startDaemon = Effect.gen(function* () {
               ),
             ),
             ProxyKey.layer,
+            Layer.succeed(InFlight, inFlight),
           ),
         ),
         Layer.provide(Layer.succeed(HttpServer.HttpServer, server)),
@@ -210,6 +247,10 @@ export const startDaemon = Effect.gen(function* () {
     // Runs before the listener drains, so open event streams end rather than
     // holding up shutdown for the whole grace period.
     yield* Effect.addFinalizer(() => Deferred.succeed(closing, undefined))
+    // Runs first of all: the daemon goes on serving, so a client mid-turn
+    // finishes it and no client finds the proxy gone, until no proxied
+    // request is in flight. Only then does it stop, which takes a moment.
+    yield* Effect.addFinalizer(() => drain(inFlight, drainLimit).pipe(logToFile))
 
     yield* writeStateFile(stateDir, { pid, port, address })
     yield* Effect.logInfo("daemon started").pipe(

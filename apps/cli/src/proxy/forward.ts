@@ -24,6 +24,7 @@ import type { ProxiedRequest, UpstreamApi } from "../providers/upstream.ts"
 import { LimitWindows } from "../usage/limit-windows.ts"
 import { UsageStore } from "../usage/store.ts"
 import { type ClientName, noTokens, type TokenCounts, type UsageStatus } from "../usage/usage.ts"
+import { InFlight } from "./in-flight.ts"
 import { ProxyKey } from "./proxy-key.ts"
 
 /**
@@ -90,21 +91,23 @@ const presentedKey = (headers: Headers.Headers) => {
 const NOT_RELAYED = ["connection", "keep-alive", "transfer-encoding", "content-length"]
 
 /**
- * The provider's response, streamed to the client as it arrives. `ended`
- * gets the body's usage-bearing part as text once the stream ends, however
- * it ends: in full, cut off upstream, or because the client went away.
+ * The provider's response, streamed to the client as it arrives. Once the
+ * stream ends, however it ends (in full, cut off upstream, or because the
+ * client went away), `ended` gets the body's usage-bearing part as text,
+ * and then `done` runs.
  */
 const relay = (
   upstream: HttpClientResponse.HttpClientResponse,
-  ended?: (body: string) => Effect.Effect<void>,
+  ended: ((body: string) => Effect.Effect<void>) | undefined,
+  done: Effect.Effect<void>,
 ) => {
   const tap = usageTap(upstream.headers["content-encoding"])
   const stream =
     ended === undefined
-      ? upstream.stream
+      ? upstream.stream.pipe(Stream.onExit(() => done))
       : upstream.stream.pipe(
           Stream.tap((chunk) => Effect.sync(() => tap.push(chunk))),
-          Stream.onExit(() => Effect.suspend(() => ended(tap.text()))),
+          Stream.onExit(() => Effect.suspend(() => ended(tap.text())).pipe(Effect.ensuring(done))),
         )
   return HttpServerResponse.stream(stream, {
     status: upstream.status,
@@ -273,6 +276,12 @@ const clientOf = (headers: Headers.Headers): ClientName => {
 
 const isSuccess = (status: number) => status >= 200 && status < 300
 
+/** The signal Bun aborts when the client of `request` goes away, if the request has one. */
+const abortSignalOf = (request: HttpServerRequest.HttpServerRequest) => {
+  const source: object = request.source
+  return "signal" in source && source.signal instanceof AbortSignal ? source.signal : undefined
+}
+
 /** Records nothing: a route that does not record usage. */
 const recordNothing = () => Effect.void
 
@@ -322,6 +331,9 @@ export const forward = <I>(
     ) => Effect.Effect<void> = recordNothing
     // Whether this request's row is recorded, or left to the relayed body to record.
     let settled = false
+    // Ends this request's time in flight; a relayed answer ends it when its stream does.
+    let leave: Effect.Effect<void> = Effect.void
+    let relaying = false
     const recordFailure = Effect.suspend(() =>
       lastAccount === undefined ? Effect.void : record(lastAccount.id, "failed"),
     )
@@ -334,6 +346,7 @@ export const forward = <I>(
       const presented = presentedKey(request.headers)
       if (presented === undefined) return noKey
       if (!(yield* (yield* ProxyKey).matches(presented))) return wrongKey
+      leave = yield* (yield* InFlight).enter(abortSignalOf(request))
 
       const proxied = {
         method,
@@ -483,9 +496,12 @@ export const forward = <I>(
         if (signal._tag === "Within") {
           yield* markUsed(account)
           settled = true
-          return buffered.body === undefined
-            ? relay(response, spent(account, response))
-            : replay(buffered)
+          if (buffered.body !== undefined) return replay(buffered)
+          const relayed = relay(response, spent(account, response), leave)
+          // An answer the server sends without a body (204, 205, 304, or one
+          // to a HEAD) never runs its stream, so the handler ends it instead.
+          relaying = !HttpServerResponse.omitsBody(relayed, method === "HEAD")
+          return relayed
         }
         if (buffered.body === undefined) yield* discard(response)
         limited = { accountId: account.id, answer: buffered }
@@ -507,6 +523,7 @@ export const forward = <I>(
       Effect.onInterrupt(() =>
         settled || lastAccount === undefined ? Effect.void : record(lastAccount.id, "incomplete"),
       ),
+      Effect.ensuring(Effect.suspend(() => (relaying ? Effect.void : leave))),
     )
   })
 }
