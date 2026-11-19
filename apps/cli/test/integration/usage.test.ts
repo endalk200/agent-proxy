@@ -1,5 +1,8 @@
+import { Database } from "bun:sqlite"
+import { rmSync } from "node:fs"
+
 import { expect, layer } from "@effect/vitest"
-import { Effect } from "effect"
+import { Effect, FileSystem } from "effect"
 import { TestClock } from "effect/testing"
 
 import { alice, limitHeaders, streamedMessage } from "../support/fake-claude.ts"
@@ -925,6 +928,94 @@ layer(services)("usage", (it) => {
       const summary = yield* home.usage("summary", { range: "lifetime" })
       expect(summary.requests.total).toBe(1)
       expect(summary.tokens.output).toBe(5)
+    }),
+  )
+
+  it.effect("a usage store that cannot be opened leaves the proxy serving, and says why", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const home = yield* makeHome()
+      yield* home.seed("claude", "work")
+      const file = `${home.dataDir}/usage.sqlite`
+      yield* home.restartAfter(
+        Effect.gen(function* () {
+          for (const leftover of [file, `${file}-wal`, `${file}-shm`]) {
+            yield* fs.remove(leftover, { force: true })
+          }
+          yield* fs.writeFileString(file, "not a database, just damage\n".repeat(200))
+        }),
+      )
+
+      const answer = yield* home.claudeMessage()
+      expect(answer.status).toBe(200)
+      expect(answer.text).toContain("msg_fake")
+      const summary = yield* home.api("GET", "/api/usage/summary?range=lifetime&tz=Asia%2FTokyo")
+      expect(summary.status).toBe(500)
+      expect(summary.json.error).toContain("Usage is not recorded")
+      expect(summary.json.error).toContain(file)
+      // The damaged file is left for the owner to look at.
+      expect(yield* fs.readFileString(file)).toContain("not a database")
+    }),
+  )
+
+  it.effect(
+    "a usage store at this build's version but missing its tables leaves the proxy serving",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.seed("claude", "work")
+        const file = `${home.dataDir}/usage.sqlite`
+        yield* home.restartAfter(
+          Effect.sync(() => {
+            const before = new Database(file, { readonly: true })
+            const version = before.query<{ user_version: number }, []>("PRAGMA user_version").get()
+            before.close()
+            for (const leftover of [file, `${file}-wal`, `${file}-shm`])
+              rmSync(leftover, { force: true })
+            // A real SQLite file that claims this build's schema, its tables gone.
+            const damaged = new Database(file)
+            damaged.run(`PRAGMA user_version = ${version?.user_version ?? 0}`)
+            damaged.close()
+          }),
+        )
+
+        expect((yield* home.claudeMessage()).status).toBe(200)
+        const summary = yield* home.api("GET", "/api/usage/summary?range=lifetime&tz=Asia%2FTokyo")
+        expect(summary.status).toBe(500)
+        expect(summary.json.error).toContain("Usage is not recorded")
+      }),
+  )
+
+  it.effect("a usage store a newer build wrote is left as it is, and the proxy still serves", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome()
+      yield* home.seed("claude", "work")
+      yield* home.claudeMessage()
+      const file = `${home.dataDir}/usage.sqlite`
+      const version = () => {
+        const db = new Database(file, { readonly: true })
+        try {
+          return db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version
+        } finally {
+          db.close()
+        }
+      }
+      yield* home.restartAfter(
+        Effect.sync(() => {
+          const db = new Database(file)
+          db.run("PRAGMA user_version = 99")
+          db.close()
+        }),
+      )
+
+      const answer = yield* home.claudeMessage()
+      expect(answer.status).toBe(200)
+      const summary = yield* home.api("GET", "/api/usage/summary?range=lifetime&tz=Asia%2FTokyo")
+      expect(summary.status).toBe(500)
+      expect(summary.json.error).toContain("newer agent-proxy build")
+      // Never migrated down: the newer build opens it as it left it, its rows intact.
+      yield* home.restartAfter(Effect.void)
+      expect(version()).toBe(99)
     }),
   )
 })

@@ -187,13 +187,68 @@ export class UsageStore extends Context.Service<
         ),
       )
       const file = join(dataDir, "usage.sqlite")
-      const db = yield* Effect.acquireRelease(
-        attempt(`Could not open the usage store ${file}`, () => openDatabase(file)),
-        (opened) => Effect.sync(() => opened.close()),
+      return yield* Effect.acquireRelease(
+        // Its queries are prepared here too, so a file whose tables are not
+        // what its version says fails as one that cannot be opened.
+        attempt(`Could not open the usage store ${file}`, () => {
+          const db = openDatabase(file)
+          try {
+            return { db, store: make(db) }
+          } catch (cause) {
+            db.close()
+            throw cause
+          }
+        }),
+        (opened) => Effect.sync(() => opened.db.close()),
+      ).pipe(
+        Effect.map((opened) => opened.store),
+        // Usage is a record of the proxy's work, never a condition of it: a
+        // store that cannot be opened leaves the daemon serving without one.
+        // Logged as a warning, since `daemon start` takes an error logged
+        // during startup for a daemon that could not start.
+        Effect.catchTag("UsageStoreError", (error) => {
+          const reason = notRecorded(file, error.cause)
+          return Effect.logWarning("usage is not recorded").pipe(
+            Effect.annotateLogs({ reason }),
+            Effect.as(unavailable(reason)),
+          )
+        }),
       )
-      return make(db)
     }),
   )
+}
+
+/** A database whose schema a newer build wrote: this build does not know its tables. */
+class SchemaFromNewerBuild extends Error {
+  constructor(readonly version: number) {
+    super(`schema version ${version}, newer than this build's ${MIGRATIONS.length}`)
+  }
+}
+
+/** Why usage is not recorded, when the store at `file` could not be opened because of `cause`. */
+const notRecorded = (file: string, cause: unknown) =>
+  cause instanceof SchemaFromNewerBuild
+    ? `Usage is not recorded: ${file} was written by a newer agent-proxy build (schema version ${cause.version}; this build knows ${MIGRATIONS.length}). Run that build again to record usage; this one leaves the file as it is.`
+    : `Usage is not recorded: the usage store ${file} could not be opened (${cause instanceof Error ? cause.message : String(cause)}). The proxy serves without it. To start a new store, stop the daemon, move the file aside, and start it again.`
+
+/**
+ * The store for a database the daemon could not open: it records nothing,
+ * so no request waits on it or logs about it, and every usage question is
+ * answered with `reason`. Limit windows are kept in memory only.
+ */
+const unavailable = (reason: string) => {
+  const refused = Effect.fail(new UsageStoreError({ message: reason }))
+  return UsageStore.of({
+    record: () => Effect.void,
+    summary: () => refused,
+    series: () => refused,
+    breakdown: () => refused,
+    windows: Effect.succeed(new Map()),
+    saveWindows: () => Effect.void,
+    forgetWindows: () => Effect.void,
+    rememberAccounts: () => Effect.void,
+    rememberRemoved: () => Effect.void,
+  })
 }
 
 const attempt = <A>(message: string, run: () => A) =>
@@ -248,10 +303,14 @@ const openDatabase = (file: string) => {
   const db = new Database(file, { create: true, strict: true })
   try {
     chmodSync(file, 0o600)
-    db.run("PRAGMA journal_mode = WAL")
+    // Set first, so a lock another program holds is waited out, even by the switch to WAL.
     db.run("PRAGMA busy_timeout = 5000")
     const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()
     const from = version?.user_version ?? 0
+    // Never migrate down: a newer build would find its own steps undone, run
+    // them again, and fail. Its file is left exactly as it is.
+    if (from > MIGRATIONS.length) throw new SchemaFromNewerBuild(from)
+    db.run("PRAGMA journal_mode = WAL")
     db.transaction(() => {
       for (const [index, step] of MIGRATIONS.entries()) {
         if (index < from) continue

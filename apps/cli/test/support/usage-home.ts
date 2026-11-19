@@ -129,11 +129,15 @@ export const makeHome = (
       Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
     )
 
-    const restart = Effect.gen(function* () {
-      yield* Scope.close(scope, Exit.void)
-      scope = yield* Scope.make()
-      daemon = yield* Scope.provide(start, scope)
-    })
+    /** Stops the daemon, runs `whileStopped`, and starts another on the same data directory. */
+    const restartAfter = <E>(whileStopped: Effect.Effect<void, E>) =>
+      Effect.gen(function* () {
+        yield* Scope.close(scope, Exit.void)
+        yield* whileStopped
+        scope = yield* Scope.make()
+        daemon = yield* Scope.provide(start, scope)
+      })
+    const restart = restartAfter(Effect.void)
 
     const send = (path: string, init: RequestInit = {}) =>
       Effect.promise(async () => {
@@ -279,6 +283,9 @@ export const makeHome = (
       claude,
       codex,
       restart,
+      restartAfter,
+      /** The daemon's data directory, `agent-proxy` under `XDG_DATA_HOME`. */
+      dataDir: `${env.XDG_DATA_HOME}/agent-proxy`,
       send,
       api,
       seed,
