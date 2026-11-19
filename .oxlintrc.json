@@ -27,7 +27,13 @@
         "additionalTestBlockFunctions": ["it", "it.effect", "it.live", "it.flakyTest", "it.prop"]
       }
     ],
-    "typescript/consistent-return": "off"
+    "typescript/consistent-return": "off",
+    "react/rules-of-hooks": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-deprecated": "error",
+    "typescript/only-throw-error": "error",
+    "typescript/prefer-promise-reject-errors": "error",
+    "typescript/no-explicit-any": "error"
   },
   "overrides": [
     {
