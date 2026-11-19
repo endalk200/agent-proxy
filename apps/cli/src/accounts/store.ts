@@ -337,6 +337,8 @@ export class AccountStore extends Context.Service<
                   : `"${other.label}" is in the ${providerNames[other.provider]} pool, and an account shares a priority only within its own pool.`,
             })
           }
+          case "Placed":
+            break
         }
         const moved = placed.pool.find((other) => other.id === id) ?? account
         // The account itself first, so its own settings are never left unwritten.

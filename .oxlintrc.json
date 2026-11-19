@@ -33,7 +33,13 @@
     "typescript/no-deprecated": "error",
     "typescript/only-throw-error": "error",
     "typescript/prefer-promise-reject-errors": "error",
-    "typescript/no-explicit-any": "error"
+    "typescript/no-explicit-any": "error",
+    "typescript/switch-exhaustiveness-check": [
+      "error",
+      {
+        "considerDefaultExhaustiveForUnions": true
+      }
+    ]
   },
   "overrides": [
     {
