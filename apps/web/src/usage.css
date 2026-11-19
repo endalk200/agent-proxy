@@ -25,6 +25,7 @@
   --spark: #8b8b94;
   --meter-track: #ececef;
   --meter-ok: #71717a;
+  --meter-good: #16a34a;
   --meter-warn: #d97706;
   --meter-high: #dc2626;
 }
@@ -48,6 +49,7 @@
   --spark: #8b8b94;
   --meter-track: #26262b;
   --meter-ok: #a1a1aa;
+  --meter-good: #34d399;
   --meter-warn: #f59e0b;
   --meter-high: #f87171;
 }
@@ -546,7 +548,7 @@
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: var(--meter-ok);
+  background: var(--meter-good);
   transition:
     width 600ms var(--ease),
     background 300ms;
@@ -557,6 +559,10 @@
 .meter.is-high > span,
 .meter.is-out > span {
   background: var(--meter-high);
+}
+/* Nothing left draws no fill, so the track itself turns red. */
+.meter.is-out {
+  background: color-mix(in srgb, var(--meter-high) 35%, var(--meter-track));
 }
 
 /* A window cell: percent left and reset right on one line, the bar under

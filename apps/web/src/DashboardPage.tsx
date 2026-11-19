@@ -808,7 +808,7 @@ function LimitsCard(props: { list: AccountList; openAccount: (account: Account) 
       <CardHead
         id="dash-limits"
         title="Limit windows"
-        sub="Share used of each window, and when it resets"
+        sub="Share left of each window, and when it resets"
       >
         <a className="linkbtn is-quiet" {...pageLink("accounts")}>
           Accounts <IconArrowRight size={13} />
