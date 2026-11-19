@@ -3,9 +3,9 @@ import { age, timeText, until, weekdayText } from "./format.ts"
 import { Tip } from "./ui.tsx"
 
 /**
- * Limit windows as the pages draw them: a thin meter of the share used,
- * neutral below 70%, amber from 70%, red from 90% and "Used up" at 100%,
- * with when the window resets. Numbers older than an hour dim, and say when
+ * Limit windows as the pages draw them: a thin meter of the share left,
+ * green above 50% left, amber from 50%, red below 20% and "Used up" at none
+ * left, with when the window resets. Numbers older than an hour dim, and say when
  * they are from on hover or focus.
  */
 
@@ -14,14 +14,19 @@ export const STALE_MS = 60 * 60_000
 
 export type LimitTone = "ok" | "warn" | "high" | "out"
 
-export const limitTone = (usedPct: number): LimitTone =>
-  usedPct >= 100 ? "out" : usedPct >= 90 ? "high" : usedPct >= 70 ? "warn" : "ok"
+/** The share of a window left, 0 to 100. */
+export const leftPct = (usedPct: number) => Math.min(100, Math.max(0, 100 - usedPct))
+
+export const limitTone = (usedPct: number): LimitTone => {
+  const left = leftPct(usedPct)
+  return left <= 0 ? "out" : left < 20 ? "high" : left <= 50 ? "warn" : "ok"
+}
 
 export const isStale = (window: LimitWindow, now: number) => now - window.asOf > STALE_MS
 
-/** "41%", or "Used up". */
-export const usedText = (window: LimitWindow) =>
-  window.usedPct >= 100 ? "Used up" : `${Math.floor(window.usedPct)}%`
+/** "59% left", or "Used up". Rounds down, so it never claims more room than there is. */
+export const leftText = (window: LimitWindow) =>
+  window.usedPct >= 100 ? "Used up" : `${Math.floor(leftPct(window.usedPct))}% left`
 
 /** "resets in 2h 14m". */
 export const resetText = (window: LimitWindow, now: number) =>
@@ -75,7 +80,7 @@ export function Meter(props: { usedPct: number; size?: "sm" | "lg" }) {
   const tone = limitTone(props.usedPct)
   return (
     <span className={`meter is-${tone} ${props.size === "lg" ? "is-lg" : ""}`} aria-hidden="true">
-      <span style={{ width: `${Math.min(100, Math.max(0, props.usedPct))}%` }} />
+      <span style={{ width: `${leftPct(props.usedPct)}%` }} />
     </span>
   )
 }
@@ -91,7 +96,7 @@ export function LimitCell(props: { window: LimitWindow | undefined; now: number 
       // oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focus shows when stale numbers are from
       tabIndex={stale ? 0 : undefined}
     >
-      <span className="lim-pct">{usedText(window)}</span>
+      <span className="lim-pct">{leftText(window)}</span>
       <span className="lim-reset">{resetText(window, now)}</span>
       <Meter usedPct={window.usedPct} />
     </span>
@@ -139,9 +144,7 @@ export function LimitList(props: {
           >
             <div className="limlist-head">
               <span className="limlist-name">{column.label}</span>
-              <span className="limlist-pct">
-                {window.usedPct >= 100 ? "Used up" : `${Math.floor(window.usedPct)}% used`}
-              </span>
+              <span className="limlist-pct">{leftText(window)}</span>
             </div>
             <Meter usedPct={window.usedPct} size="lg" />
             <div className="limlist-reset">

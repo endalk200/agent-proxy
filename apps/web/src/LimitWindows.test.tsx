@@ -119,8 +119,8 @@ describe("the Accounts tables", () => {
         Account: "Work Max 20x work@example.com",
         Status: "Cooling down until 3:47 PM · in 47m",
         "5-hour": "Used up resets in 47m",
-        Weekly: "64% resets in 3d 2h",
-        "Fable weekly": "88% resets in 2d 2h",
+        Weekly: "35% left resets in 3d 2h",
+        "Fable weekly": "12% left resets in 2d 2h",
         Enabled: "",
         Actions: "",
       },
@@ -141,8 +141,8 @@ describe("the Accounts tables", () => {
         Priority: "1",
         Account: "carol Plus New sessions carol@example.com",
         Status: "Active Never used",
-        "5-hour": "12% resets in 4h 0m",
-        Weekly: "71% resets in 1d 6h",
+        "5-hour": "88% left resets in 4h 0m",
+        Weekly: "29% left resets in 1d 6h",
         Enabled: "",
         Actions: "",
       },
@@ -169,13 +169,13 @@ describe("the Accounts tables", () => {
       }),
     )
     fireEvent.click(await screen.findByRole("menuitem", { name: "Refresh limits" }))
-    await waitFor(() => expect(rowsOf(codex)[0]?.["5-hour"]).toBe("15% resets in 4h 0m"))
+    await waitFor(() => expect(rowsOf(codex)[0]?.["5-hour"]).toBe("85% left resets in 4h 0m"))
     expect(daemon.refreshes).toEqual(["c1"])
     expect(rowsOf(await table("Claude accounts"))[1]?.["5-hour"]).toBe("—")
 
     fireEvent.click(screen.getByRole("button", { name: "Refresh limits" }))
     await waitFor(async () =>
-      expect(rowsOf(await table("Claude accounts"))[1]?.["5-hour"]).toBe("3% resets in 4h 50m"),
+      expect(rowsOf(await table("Claude accounts"))[1]?.["5-hour"]).toBe("97% left resets in 4h 50m"),
     )
     expect(daemon.refreshes).toEqual(["c1", "all"])
   })
@@ -194,14 +194,14 @@ describe("the Accounts tables", () => {
     daemon.setLimits("c1", [
       { id: "five-hour", label: "5-hour", usedPct: 80, resetsAt: NOW + 4 * HOUR },
     ])
-    await waitFor(() => expect(rowsOf(codex)[0]?.["5-hour"]).toBe("80% resets in 4h 0m"))
+    await waitFor(() => expect(rowsOf(codex)[0]?.["5-hour"]).toBe("20% left resets in 4h 0m"))
     daemon.holdRefresh = false
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Refresh limits" }).hasAttribute("disabled")).toBe(
         false,
       ),
     )
-    expect(rowsOf(codex)[0]?.["5-hour"]).toBe("80% resets in 4h 0m")
+    expect(rowsOf(codex)[0]?.["5-hour"]).toBe("20% left resets in 4h 0m")
   })
 
   it("holds the Refresh limits button while the daemon reads, and says why a refresh failed", async () => {
@@ -247,15 +247,15 @@ describe("the account sheet", () => {
     const panel = within(work).getByRole("region", { name: "Limit windows" })
     expect(within(within(panel).getByRole("list")).getAllByRole("listitem").map(textOf)).toEqual([
       "5-hour Used up Resets in 47m · 3:47 PM",
-      "Weekly 64% used Resets in 3d 2h · Fri 5:00 PM",
-      "Fable weekly 88% used Resets in 2d 2h · Thu 5:00 PM",
+      "Weekly 35% left Resets in 3d 2h · Fri 5:00 PM",
+      "Fable weekly 12% left Resets in 2d 2h · Thu 5:00 PM",
     ])
     expect(textOf(panel)).toContain("As of 2 min ago")
 
     fireEvent.click(within(panel).getByRole("button", { name: "Refresh" }))
     await waitFor(() =>
       expect(within(panel).getAllByRole("listitem").map(textOf)[1]).toBe(
-        "Weekly 66% used Resets in 3d 2h · Fri 5:00 PM",
+        "Weekly 34% left Resets in 3d 2h · Fri 5:00 PM",
       ),
     )
     expect(daemon.refreshes).toEqual(["a1"])
@@ -267,8 +267,8 @@ describe("the account sheet", () => {
     await table("Codex accounts")
     const carol = within(await sheet("carol")).getByRole("region", { name: "Limit windows" })
     expect(within(carol).getAllByRole("listitem").map(textOf)).toEqual([
-      "5-hour 12% used Resets in 4h 0m · 7:00 PM · As of 1:00 PM (2 hr ago)",
-      "Weekly 71% used Resets in 1d 6h · Wed 9:00 PM · As of 1:00 PM (2 hr ago)",
+      "5-hour 88% left Resets in 4h 0m · 7:00 PM · As of 1:00 PM (2 hr ago)",
+      "Weekly 29% left Resets in 1d 6h · Wed 9:00 PM · As of 1:00 PM (2 hr ago)",
     ])
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" })
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "carol" })).toBeNull())
@@ -298,10 +298,10 @@ describe("the account sheet", () => {
     daemon.holdLimitsRead = false
 
     const codex = await table("Codex accounts")
-    expect(rowsOf(codex).map((row) => row["Weekly"])).toEqual(["71% resets in 1d 6h"])
+    expect(rowsOf(codex).map((row) => row["Weekly"])).toEqual(["29% left resets in 1d 6h"])
     const claude = await table("Claude accounts")
     await waitFor(() =>
-      expect(rowsOf(claude).map((row) => row["5-hour"])).toEqual(["30% resets in 3h 0m", "—"]),
+      expect(rowsOf(claude).map((row) => row["5-hour"])).toEqual(["70% left resets in 3h 0m", "—"]),
     )
   })
 

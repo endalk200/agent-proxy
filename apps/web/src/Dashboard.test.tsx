@@ -535,26 +535,26 @@ describe("the limit windows", () => {
     show(withLimits(threeAccounts()))
     const limits = await findCard("Limit windows")
     const claude = within(limits).getByRole("table", { name: "Claude limit windows" })
-    await waitFor(() => expect(tableOf(claude)[0]?.["5-hour"]).toBe("41% resets in 2h 14m"))
+    await waitFor(() => expect(tableOf(claude)[0]?.["5-hour"]).toBe("58% left resets in 2h 14m"))
     expect(tableOf(claude)).toEqual([
       {
         Claude: "Work , Active",
-        "5-hour": "41% resets in 2h 14m",
-        Weekly: "71% resets in 3d 2h",
-        "Fable weekly": "92% resets in 2d 2h",
+        "5-hour": "58% left resets in 2h 14m",
+        Weekly: "29% left resets in 3d 2h",
+        "Fable weekly": "7% left resets in 2d 2h",
       },
       {
         Claude: "Home , Active",
         "5-hour": "Used up resets in 47m",
-        Weekly: "35% resets in 1d 6h",
+        Weekly: "65% left resets in 1d 6h",
         "Fable weekly": "—",
       },
     ])
     expect(tableOf(within(limits).getByRole("table", { name: "Codex limit windows" }))).toEqual([
       {
         Codex: "carol , Active",
-        "5-hour": "12% resets in 4h 0m",
-        Weekly: "50% resets in 6d 0h",
+        "5-hour": "88% left resets in 4h 0m",
+        Weekly: "50% left resets in 6d 0h",
         // The spacer that lines Codex's columns up with Claude's.
         "": "",
       },
@@ -571,7 +571,7 @@ describe("the limit windows", () => {
     cell.focus()
     await screen.findByText("As of 12:00 PM (3 hr ago)")
     // Fresh numbers take no stop in the tab order.
-    expect(within(limits).getByText("41%").parentElement?.tabIndex).toBe(-1)
+    expect(within(limits).getByText("58% left").parentElement?.tabIndex).toBe(-1)
   })
 
   it("link to Accounts", async () => {
@@ -638,12 +638,12 @@ describe("live updates", () => {
     const claude = within(await findCard("Limit windows")).getByRole("table", {
       name: "Claude limit windows",
     })
-    await waitFor(() => expect(tableOf(claude)[0]?.["5-hour"]).toBe("41% resets in 2h 14m"))
+    await waitFor(() => expect(tableOf(claude)[0]?.["5-hour"]).toBe("58% left resets in 2h 14m"))
     daemon.setLimits("a1", [
       { id: "five-hour", label: "5-hour", usedPct: 44, resetsAt: NOW + 134 * MIN },
       { id: "weekly", label: "Weekly", usedPct: 72, resetsAt: NOW + 74 * HOUR },
     ])
-    await waitFor(() => expect(tableOf(claude)[0]?.["5-hour"]).toBe("44% resets in 2h 14m"))
+    await waitFor(() => expect(tableOf(claude)[0]?.["5-hour"]).toBe("56% left resets in 2h 14m"))
     // No account reports a Fable weekly window any more, so its column goes.
     expect(Object.keys(tableOf(claude)[0] ?? {})).toEqual(["Claude", "5-hour", "Weekly"])
   })
