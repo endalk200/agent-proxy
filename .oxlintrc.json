@@ -39,7 +39,8 @@
       {
         "considerDefaultExhaustiveForUnions": true
       }
-    ]
+    ],
+    "typescript/no-import-type-side-effects": "error"
   },
   "overrides": [
     {
