@@ -2,8 +2,9 @@ import { expect, type Page, test } from "@playwright/test"
 
 import { type SandboxDaemon, startSandboxDaemon } from "../support/sandbox-daemon.ts"
 
-// The dashboard as the built daemon serves it at `/`, in a sandbox, with
-// accounts seeded into the sandbox's data directory.
+// The dashboard as the built daemon serves it, the usage dashboard at `/` and
+// Accounts at `/accounts`, in a sandbox, with accounts seeded into the
+// sandbox's data directory.
 
 let daemon: SandboxDaemon
 
@@ -15,8 +16,9 @@ test.afterEach(async () => {
   await daemon.dispose()
 })
 
-const open = async (page: Page) => {
-  const response = await page.goto(daemon.address)
+/** Opens the page at `path`, as a reload or a link would. */
+const open = async (page: Page, path = "/accounts") => {
+  const response = await page.goto(new URL(path, daemon.address).href)
   expect(response?.status()).toBe(200)
   await expect(page).toHaveTitle("agent-proxy")
 }
@@ -50,7 +52,7 @@ const seedThree = async () => {
   })
 }
 
-test("shows each pool's accounts with status, plan, priority and who gets new sessions", async ({
+test("shows each pool's accounts with plan, status, priority, limit windows and who gets new sessions", async ({
   page,
 }) => {
   await seedThree()
@@ -60,10 +62,10 @@ test("shows each pool's accounts with status, plan, priority and who gets new se
   await expect(claude.getByText("New sessions go to Work")).toBeVisible()
   const rows = claude.getByRole("table", { name: "Claude accounts" }).getByRole("row")
   await expect(rows).toHaveText([
-    /#\s*Account\s*Plan\s*Status\s*Last used\s*Enabled/,
-    /^1\s*Work\s*New sessions\s*me@work\.example\s*Max 20x\s*Active\s*Never/,
-    /^2\s*Personal Max\s*me@home\.example\s*Max 5x\s*Needs sign-in\s*Sign in again\s*Never/,
-    /^3\s*Spare\s*spare@example\.com\s*Pro\s*Disabled\s*Never/,
+    /#\s*Account\s*Status\s*5-hour\s*Weekly\s*Enabled/,
+    /^1\s*Work\s*Max 20x\s*New sessions\s*me@work\.example\s*Active\s*Never used/,
+    /^2\s*Personal Max\s*Max 5x\s*me@home\.example\s*Needs sign-in\s*Sign in again/,
+    /^3\s*Spare\s*Pro\s*spare@example\.com\s*Disabled\s*Never used/,
   ])
   await expect(page.getByRole("switch", { name: "Work enabled" })).toBeChecked()
   await expect(page.getByRole("switch", { name: "Spare enabled" })).not.toBeChecked()
@@ -74,12 +76,54 @@ test("shows each pool's accounts with status, plan, priority and who gets new se
 })
 
 test("walks through the first run when the daemon holds no accounts", async ({ page }) => {
-  await open(page)
+  await open(page, "/")
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Get started")
   const steps = page.getByRole("list", { name: "Get started" })
   await expect(steps.getByRole("heading", { name: "Add an account" })).toBeVisible()
   await expect(steps.getByRole("button", { name: "Add a Claude account" })).toBeVisible()
   await expect(steps.getByRole("button", { name: "Add a Codex account" })).toBeVisible()
   await expect(page.getByRole("table")).toHaveCount(0)
+})
+
+test("opens on the usage dashboard at /, with the range in the address", async ({ page }) => {
+  await seedThree()
+  await open(page, "/?range=30d")
+
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Dashboard")
+  const nav = page.getByRole("navigation", { name: "Dashboard" })
+  await expect(nav.getByRole("link", { name: "Dashboard" })).toHaveAttribute("aria-current", "page")
+  const range = page.getByRole("group", { name: "Range" })
+  await expect(range.getByRole("button", { name: "30d" })).toHaveAttribute("aria-pressed", "true")
+  // Nothing went through the proxy in a fresh sandbox.
+  await expect(page.getByRole("region", { name: "Requests" })).toContainText("0")
+  await expect(page.getByRole("region", { name: "Token trend" })).toContainText(
+    "No priced usage in the last 30 days.",
+  )
+  await expect(
+    page.getByRole("region", { name: "Limit windows" }).getByRole("table", {
+      name: "Claude limit windows",
+    }),
+  ).toBeVisible()
+
+  await range.getByRole("button", { name: "Lifetime" }).click()
+  await expect(page).toHaveURL(/\/\?range=lifetime$/)
+})
+
+test("moves to Accounts from the sidebar, and a reload there stays on Accounts", async ({
+  page,
+}) => {
+  await seedThree()
+  await open(page, "/")
+  await page
+    .getByRole("navigation", { name: "Dashboard" })
+    .getByRole("link", { name: /^Accounts/ })
+    .click()
+  await expect(page).toHaveURL(/\/accounts$/)
+  await expect(page.getByRole("table", { name: "Claude accounts" })).toBeVisible()
+
+  await page.reload()
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Accounts")
+  await expect(page.getByRole("table", { name: "Claude accounts" })).toBeVisible()
 })
 
 test("Connect clients shows the three commands and the proxy key, masked until revealed, and copies them", async ({

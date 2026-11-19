@@ -1,18 +1,28 @@
 import { Tooltip } from "@base-ui/react/tooltip"
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 
 import "./styles.css"
+import "./usage.css"
 import { AccountSheet } from "./AccountSheet.tsx"
 import { type AccountControls, AccountsPage } from "./AccountsPage.tsx"
 import { ConnectClientsDialog } from "./ConnectClients.tsx"
 import { type Account, createDaemonClient, type OpenEventStream } from "./daemon-api.ts"
+import { DashboardPage } from "./DashboardPage.tsx"
 import { useLiveUpdates } from "./LiveUpdates.ts"
 import { accountsOf, hostOf } from "./model.ts"
 import { NoticeProvider } from "./Notices.tsx"
 import { RemoveAccountDialog } from "./RemoveAccount.tsx"
+import { usePage } from "./route.ts"
 import { Sidebar } from "./Sidebar.tsx"
 import { type SignInRequest, SignInDialog } from "./SignIn.tsx"
-import { IconPlus, IconPower } from "./ui.tsx"
+import { IconPlus, IconPower, IconRefresh, Spinner } from "./ui.tsx"
+import {
+  DEFAULT_THROTTLE,
+  isRefreshing,
+  UsageProvider,
+  type UsageThrottle,
+  useUsageFeed,
+} from "./usage.tsx"
 import { useAccountActions } from "./useAccountActions.ts"
 import { useDaemon, useNow } from "./useDaemon.ts"
 
@@ -26,11 +36,13 @@ interface DashboardProps {
   requestTimeout?: number
   reopenDelay?: number
   loginPollInterval?: number
+  usageThrottle?: UsageThrottle
 }
 
 /**
- * The dashboard: a sidebar app shell around the Accounts page, following the
- * daemon API of the daemon that serves it. Every prop exists for tests.
+ * The dashboard: a sidebar app shell around the Dashboard and Accounts
+ * pages, following the daemon API of the daemon that serves it. Every prop
+ * exists for tests.
  */
 export function App(props: DashboardProps) {
   return (
@@ -50,6 +62,7 @@ function Dashboard(props: DashboardProps) {
   )
   const [signingIn, setSigningIn] = useState<SignInRequest | undefined>()
   const live = useLiveUpdates(signingIn !== undefined)
+  const { usage, onUsage } = useUsageFeed(client, props.usageThrottle ?? DEFAULT_THROTTLE)
   const view = useDaemon(
     client,
     {
@@ -59,6 +72,7 @@ function Dashboard(props: DashboardProps) {
       reopenDelay: props.reopenDelay ?? 3000,
     },
     live.onEvent,
+    onUsage,
   )
   const actions = useAccountActions(view, client)
   // A cooldown's countdown ticks each second; otherwise times move by the minute.
@@ -74,6 +88,17 @@ function Dashboard(props: DashboardProps) {
   const failure = view.failure
   const list = view.accounts
   const sheetOpen = list?.accounts.some((account) => account.id === openId) ?? false
+  const page = usePage()
+  const firstRun = list !== undefined && list.accounts.length === 0
+  const refreshingAll = isRefreshing(usage, "*")
+
+  // Moving to another page puts focus on its title, as a page load would.
+  const shownPage = useRef(page)
+  useEffect(() => {
+    if (shownPage.current === page) return
+    shownPage.current = page
+    document.getElementById("page-title")?.focus()
+  }, [page])
 
   const controls: AccountControls = {
     readOnly: !reachable,
@@ -92,113 +117,139 @@ function Dashboard(props: DashboardProps) {
   }
 
   return (
-    <Tooltip.Provider delay={400}>
-      <div className={`app ${sheetOpen ? "has-sheet" : ""}`}>
-        <Sidebar
-          list={view.accounts}
-          info={view.info}
-          address={address}
-          reachable={reachable}
-          now={now}
-          onConnectClients={() => setConnecting(true)}
-        />
+    <UsageProvider usage={usage}>
+      <Tooltip.Provider delay={400}>
+        <div className={`app ${sheetOpen ? "has-sheet" : ""}`}>
+          <Sidebar
+            list={view.accounts}
+            info={view.info}
+            address={address}
+            reachable={reachable}
+            now={now}
+            page={page}
+            onConnectClients={() => setConnecting(true)}
+          />
 
-        <main className="main">
-          <div className="page">
-            {failure !== undefined && (
-              <output className="banner">
-                <IconPower size={16} />
-                <span>
-                  {failure.kind === "unreachable" ? (
-                    <>
-                      <b>Can't reach the daemon at {hostOf(address)}.</b> Run{" "}
-                      <code>agent-proxy daemon status</code> to see why, or{" "}
-                      <code>agent-proxy daemon start</code> to start it.
-                    </>
-                  ) : (
-                    <>
-                      <b>The daemon answered with an error.</b> {failure.message}
-                    </>
-                  )}
-                  {view.accounts !== undefined &&
-                    " This is what it last reported; it updates when the daemon answers again."}
-                </span>
-              </output>
-            )}
-
-            <header className="pagehead">
-              <div className="pagehead-text">
-                <h1 id="page-title" tabIndex={-1}>
-                  Accounts
-                </h1>
-                <p>
-                  Each client spends only its own provider's accounts. Within a pool, the
-                  highest-priority account that is Active gets new sessions.
-                </p>
-              </div>
-              {list !== undefined && list.accounts.length > 0 && (
-                <button
-                  type="button"
-                  className="btn is-primary"
-                  disabled={!reachable}
-                  onClick={() => setSigningIn({ kind: "add" })}
-                >
-                  <IconPlus size={14} />
-                  Add account
-                </button>
+          <main className="main">
+            <div className="page">
+              {failure !== undefined && (
+                <output className="banner">
+                  <IconPower size={16} />
+                  <span>
+                    {failure.kind === "unreachable" ? (
+                      <>
+                        <b>Can't reach the daemon at {hostOf(address)}.</b> Run{" "}
+                        <code>agent-proxy daemon status</code> to see why, or{" "}
+                        <code>agent-proxy daemon start</code> to start it.
+                      </>
+                    ) : (
+                      <>
+                        <b>The daemon answered with an error.</b> {failure.message}
+                      </>
+                    )}
+                    {view.accounts !== undefined &&
+                      " This is what it last reported; it updates when the daemon answers again."}
+                  </span>
+                </output>
               )}
-            </header>
 
-            {view.accounts !== undefined && (
-              <div className={`content ${reachable ? "" : "is-stale"}`}>
-                <AccountsPage
-                  list={view.accounts}
-                  now={now}
-                  address={hostOf(address)}
-                  client={client}
-                  controls={controls}
+              {page === "dashboard" && !firstRun ? (
+                <DashboardPage
+                  list={list}
+                  reachable={reachable}
+                  openId={openId}
+                  openAccount={(account) => setOpenId(account.id)}
                 />
-              </div>
-            )}
+              ) : (
+                <>
+                  <header className="pagehead">
+                    <div className="pagehead-text">
+                      <h1 id="page-title" tabIndex={-1}>
+                        {firstRun && page === "dashboard" ? "Get started" : "Accounts"}
+                      </h1>
+                      <p>
+                        {firstRun && page === "dashboard"
+                          ? "Add an account and connect a client, and this page shows what goes through the proxy."
+                          : "Each client spends only its own provider's accounts. Within a pool, the highest-priority account that is Active gets new sessions."}
+                      </p>
+                    </div>
+                    {list !== undefined && list.accounts.length > 0 && (
+                      <div className="pagehead-actions">
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={!reachable || refreshingAll}
+                          onClick={() => usage.refresh()}
+                        >
+                          {refreshingAll ? <Spinner size={13} /> : <IconRefresh size={14} />}
+                          Refresh limits
+                        </button>
+                        <button
+                          type="button"
+                          className="btn is-primary"
+                          disabled={!reachable}
+                          onClick={() => setSigningIn({ kind: "add" })}
+                        >
+                          <IconPlus size={14} />
+                          Add account
+                        </button>
+                      </div>
+                    )}
+                  </header>
+
+                  {view.accounts !== undefined && (
+                    <div className={`content ${reachable ? "" : "is-stale"}`}>
+                      <AccountsPage
+                        list={view.accounts}
+                        now={now}
+                        address={hostOf(address)}
+                        client={client}
+                        controls={controls}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </main>
+
+          <div className="sr-only" aria-live="polite">
+            {announcement}
           </div>
-        </main>
 
-        <div className="sr-only" aria-live="polite">
-          {announcement}
+          <AccountSheet
+            list={list}
+            now={now}
+            controls={controls}
+            covered={removing !== undefined || connecting || signingIn !== undefined}
+            onClose={() => setOpenId(undefined)}
+          />
+
+          <RemoveAccountDialog
+            account={removing}
+            list={list}
+            remove={actions.remove}
+            onClose={() => setRemoving(undefined)}
+          />
+
+          <SignInDialog
+            request={signingIn}
+            client={client}
+            pollInterval={props.loginPollInterval ?? 1000}
+            requestTimeout={props.requestTimeout ?? 5000}
+            onSignedIn={view.refresh}
+            rename={actions.rename}
+            onClose={() => setSigningIn(undefined)}
+          />
+
+          <ConnectClientsDialog
+            open={connecting}
+            onOpenChange={setConnecting}
+            list={view.accounts}
+            client={client}
+          />
         </div>
-
-        <AccountSheet
-          list={list}
-          now={now}
-          controls={controls}
-          covered={removing !== undefined || connecting || signingIn !== undefined}
-          onClose={() => setOpenId(undefined)}
-        />
-
-        <RemoveAccountDialog
-          account={removing}
-          list={list}
-          remove={actions.remove}
-          onClose={() => setRemoving(undefined)}
-        />
-
-        <SignInDialog
-          request={signingIn}
-          client={client}
-          pollInterval={props.loginPollInterval ?? 1000}
-          requestTimeout={props.requestTimeout ?? 5000}
-          onSignedIn={view.refresh}
-          rename={actions.rename}
-          onClose={() => setSigningIn(undefined)}
-        />
-
-        <ConnectClientsDialog
-          open={connecting}
-          onOpenChange={setConnecting}
-          list={view.accounts}
-          client={client}
-        />
-      </div>
-    </Tooltip.Provider>
+      </Tooltip.Provider>
+    </UsageProvider>
   )
 }

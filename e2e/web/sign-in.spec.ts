@@ -12,6 +12,9 @@ import { type SandboxDaemon, startSandboxDaemon } from "../support/sandbox-daemo
 let providers: FakeProviders
 let daemon: SandboxDaemon
 
+/** The Accounts page the daemon serves; the dashboard is at `/`. */
+const accountsPage = () => new URL("/accounts", daemon.address).href
+
 test.beforeEach(async () => {
   providers = await startFakeProviders()
   daemon = await startSandboxDaemon({
@@ -69,7 +72,7 @@ const rowOf = (table: Locator, email: string) => table.getByRole("row").filter({
 test("adds a Claude account through the sign-in tab's redirect, with the label entered", async ({
   page,
 }) => {
-  await page.goto(daemon.address)
+  await page.goto(accountsPage())
   const tab = await addAccount(page, "Claude")
   const dialog = page.getByRole("dialog", { name: "Sign in to Claude" })
   await expect(dialog.getByText("Waiting for you to sign in…")).toBeVisible()
@@ -92,7 +95,7 @@ test("adds a Claude account through the sign-in tab's redirect, with the label e
 })
 
 test("adds a Codex account with a pasted callback URL", async ({ page }) => {
-  await page.goto(daemon.address)
+  await page.goto(accountsPage())
   const tab = await addAccount(page, "Codex")
   // Signing in on another machine: this browser's tab is not used.
   await tab.close()
@@ -136,7 +139,7 @@ test("signs an account in again, which is Active again in place with no duplicat
     providerAccountId: "acct-bob:org-bob",
     needsSignIn: true,
   })
-  await page.goto(daemon.address)
+  await page.goto(accountsPage())
   const table = page.getByRole("table", { name: "Claude accounts" })
   await expect(rowOf(table, "bob@example.com")).toContainText("Needs sign-in")
 
@@ -162,7 +165,7 @@ test("signs an account in again, which is Active again in place with no duplicat
 test("cancelling the dialog cancels the login, so its redirect no longer reaches the daemon", async ({
   page,
 }) => {
-  await page.goto(daemon.address)
+  await page.goto(accountsPage())
   const tab = await addAccount(page, "Claude")
   const dialog = page.getByRole("dialog", { name: "Sign in to Claude" })
   await expect(dialog.getByText("Waiting for you to sign in…")).toBeVisible()
@@ -194,7 +197,7 @@ const insidePhone = async (locator: Locator) => {
 
 test("the sign-in dialog fits a phone screen", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto(daemon.address)
+  await page.goto(accountsPage())
   await page.getByRole("button", { name: "Add account" }).click()
   const pick = page.getByRole("dialog", { name: "Add an account" })
   await insidePhone(pick)

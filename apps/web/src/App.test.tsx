@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { App } from "./App.tsx"
 import { account, type FakeDaemon, fakeDaemon } from "./test/fake-daemon.ts"
@@ -8,6 +8,8 @@ import { rowsOf } from "./test/queries.ts"
 // The dashboard against a fake daemon API, found the way a user (or a screen
 // reader) finds things: by ARIA role and accessible name.
 
+// These tests drive the Accounts page, which lives at `/accounts`.
+beforeEach(() => window.history.replaceState(null, "", "/accounts"))
 afterEach(cleanup)
 
 const show = (daemon: FakeDaemon) =>
@@ -16,7 +18,7 @@ const show = (daemon: FakeDaemon) =>
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString()
 
 describe("accounts page", () => {
-  it("shows each pool's accounts in priority order with status, plan, and who gets new sessions", async () => {
+  it("shows each pool's accounts in priority order with plan, status, last use, and who gets new sessions", async () => {
     show(
       fakeDaemon({
         accounts: [
@@ -53,31 +55,33 @@ describe("accounts page", () => {
     expect(within(claude).getByText(/New sessions go to/).textContent).toBe(
       "New sessions go to Work",
     )
+    // Each plan sits beside its label and each last use under the status, so
+    // the limit windows get their own columns.
     expect(rowsOf(within(claude).getByRole("table", { name: "Claude accounts" }))).toEqual([
       {
         Priority: "1",
-        Account: "Work New sessions me@work.example",
-        Plan: "Max 20x",
-        Status: "Active",
-        "Last used": "4 min ago",
+        Account: "Work Max 20x New sessions me@work.example",
+        Status: "Active Used 4 min ago",
+        "5-hour": "—",
+        Weekly: "—",
         Enabled: "",
         Actions: "",
       },
       {
         Priority: "2",
-        Account: "Personal Max me@home.example",
-        Plan: "Max 5x",
+        Account: "Personal Max Max 5x me@home.example",
         Status: "Needs sign-in Sign in again",
-        "Last used": "Never",
+        "5-hour": "—",
+        Weekly: "—",
         Enabled: "",
         Actions: "",
       },
       {
         Priority: "3",
-        Account: "Spare spare@example.com",
-        Plan: "Pro",
-        Status: "Disabled",
-        "Last used": "Never",
+        Account: "Spare Pro spare@example.com",
+        Status: "Disabled Never used",
+        "5-hour": "—",
+        Weekly: "—",
         Enabled: "",
         Actions: "",
       },
@@ -127,12 +131,11 @@ describe("accounts page", () => {
     expect(
       rowsOf(within(codex).getByRole("table", { name: "Codex accounts" })).map((row) => [
         row["Account"],
-        row["Plan"],
         row["Status"],
       ]),
     ).toEqual([
-      ["carol New sessions carol@example.com", "Pro", "Active"],
-      ["dave dave@example.com", "Plus", "Needs sign-in Sign in again"],
+      ["carol Pro New sessions carol@example.com", "Active Never used"],
+      ["dave Plus dave@example.com", "Needs sign-in Sign in again"],
     ])
     const claude = screen.getByRole("region", { name: "Claude" })
     expect(rowsOf(within(claude).getByRole("table", { name: "Claude accounts" }))).toHaveLength(1)
@@ -205,6 +208,8 @@ describe("sidebar", () => {
 
 describe("first run", () => {
   it("walks through adding an account and connecting clients while the daemon holds none", async () => {
+    // The guide stands in for the dashboard at `/` until there is an account.
+    window.history.replaceState(null, "", "/")
     show(fakeDaemon())
     const steps = await screen.findByRole("list", { name: "Get started" })
     expect(
@@ -223,6 +228,7 @@ describe("first run", () => {
       within(steps).getByRole("button", { name: `Copy ${command}` })
     }
     within(steps).getByText("127.0.0.1:8318")
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Get started")
     expect(screen.queryByRole("table")).toBeNull()
     expect(screen.queryByRole("list", { name: "Pools" })).toBeNull()
   })

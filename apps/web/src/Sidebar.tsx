@@ -4,11 +4,13 @@ import type { ReactElement } from "react"
 
 import type { AccountList, DaemonInfo } from "./daemon-api.ts"
 import { clockText, countdown, hostOf, poolState, providerNames, uptimeText } from "./model.ts"
+import { type Page, pageLink } from "./route.ts"
 import { type ThemeChoice, useTheme } from "./theme.ts"
 import {
   copyText,
   IconCheck,
   IconCopy,
+  IconGauge,
   IconLaptop,
   IconLink,
   IconMonitor,
@@ -21,8 +23,8 @@ import {
 } from "./ui.tsx"
 
 /**
- * The app shell's sidebar: the daemon switcher, the pages (only Accounts is
- * built), the pool strip, Connect clients, and the theme.
+ * The app shell's sidebar: the daemon switcher, the pages (Dashboard and
+ * Accounts), the pool strip, Connect clients, and the theme.
  */
 export function Sidebar(props: {
   list: AccountList | undefined
@@ -30,9 +32,15 @@ export function Sidebar(props: {
   address: string
   reachable: boolean
   now: number
+  page: Page
   onConnectClients: () => void
 }) {
   const { list } = props
+  const link = (page: Page) => ({
+    ...pageLink(page),
+    className: `nav-item ${props.page === page ? "is-on" : ""}`,
+    "aria-current": props.page === page ? ("page" as const) : undefined,
+  })
   const needSignIn = list?.accounts.filter((a) => a.status === "needs-sign-in").length ?? 0
   return (
     <nav className="side" aria-label="Dashboard">
@@ -45,7 +53,15 @@ export function Sidebar(props: {
 
       <ul className="nav">
         <li>
-          <a className="nav-item is-on" href="/" aria-current="page">
+          <a {...link("dashboard")}>
+            <span className="nav-icon">
+              <IconGauge size={15} />
+            </span>
+            <span className="nav-label">Dashboard</span>
+          </a>
+        </li>
+        <li>
+          <a {...link("accounts")}>
             <span className="nav-icon">
               <IconUsers size={15} />
             </span>

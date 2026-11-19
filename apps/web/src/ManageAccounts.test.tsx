@@ -1,5 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { App } from "./App.tsx"
 import { account, type FakeDaemon, fakeDaemon } from "./test/fake-daemon.ts"
@@ -9,6 +9,8 @@ import { rowsOf } from "./test/queries.ts"
 // applies each change the way the daemon does. A change counts as made when
 // the daemon holds it and the page shows it.
 
+// These tests drive the Accounts page, which lives at `/accounts`.
+beforeEach(() => window.history.replaceState(null, "", "/accounts"))
 afterEach(cleanup)
 
 /** Work (1, gets new sessions), Home (2) and Spare (3, disabled), all Claude. */
@@ -181,6 +183,27 @@ describe("drag to reorder", () => {
     expect(stored(daemon)).toEqual(["1 Home", "2 Spare (off)", "3 Work"])
   })
 
+  it("does not open the sheet of the row a drag is dropped on", async () => {
+    const daemon = threeAccounts()
+    const table = await show(daemon)
+
+    fireEvent.pointerDown(within(table).getByRole("button", { name: "Reorder Spare" }), {
+      button: 0,
+      pointerId: 1,
+    })
+    fireEvent.pointerOver(rowOf(table, "Home")!)
+    fireEvent.pointerUp(document, { pointerId: 1 })
+    // The browser follows the release with a click on the row now under it.
+    fireEvent.click(within(rowOf(table, "Spare")!).getByText("spare@example.com"))
+    await waitFor(() => expect(stored(daemon)).toEqual(["1 Work", "2 Spare (off)", "3 Home"]))
+    expect(screen.queryByRole("dialog")).toBeNull()
+
+    // A click of its own still opens it.
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    fireEvent.click(within(rowOf(table, "Spare")!).getByText("spare@example.com"))
+    expect(await screen.findByRole("dialog", { name: "Spare" })).toBeTruthy()
+  })
+
   it("leaves the order alone when the drag is cancelled with Escape or dropped where it began", async () => {
     const daemon = threeAccounts()
     const table = await show(daemon)
@@ -228,7 +251,7 @@ describe("row menu", () => {
       within(menu)
         .getAllByRole("menuitem")
         .map((item) => `${item.textContent}${item.hasAttribute("data-disabled") ? " (off)" : ""}`),
-    ).toEqual(["Open details", "Rename", "Move up (off)", "Move down", "Remove…"])
+    ).toEqual(["Open details", "Rename", "Refresh limits", "Move up (off)", "Move down", "Remove…"])
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Move down" }))
     await waitFor(() => expect(poolLine()).toBe("New sessions go to Home"))
     expect(stored(daemon)).toEqual(["1 Home", "2 Work", "3 Spare (off)"])
@@ -344,7 +367,7 @@ describe("account sheet", () => {
       within(home)
         .getAllByRole("tab")
         .map((tab) => tab.textContent),
-    ).toEqual(["Overview", "ActivityPlanned", "UsagePlanned"])
+    ).toEqual(["Overview", "ActivityPlanned"])
     const facts = within(home).getByRole("tabpanel", { name: "Overview" })
     expect(
       Object.fromEntries(
@@ -366,11 +389,6 @@ describe("account sheet", () => {
         .map((item) => item.textContent),
     ).toEqual(["1WorkActive", "2HomeActive", "3SpareDisabled"])
     within(home).getByRole("button", { name: "Remove…" })
-
-    fireEvent.click(within(home).getByRole("tab", { name: "Usage Planned" }))
-    expect(within(home).getByRole("tabpanel", { name: "Usage Planned" }).textContent).toContain(
-      "Usage for Home is planned.",
-    )
   })
 
   it("swaps to another row's account, and closes with Escape, handing focus back to the row", async () => {
@@ -550,6 +568,22 @@ describe("review fixes", () => {
     await waitFor(() => expect(daemon.changes).toHaveLength(2))
     await waitFor(() => expect(stored(daemon)).toEqual(["1 Spare (off)", "2 Work", "3 Home"]))
     await waitFor(() => expect(labels(table)).toEqual(["Spare", "Work", "Home"]))
+  })
+
+  it("keeps a double-clicked label's field focused, though the first click opened the sheet", async () => {
+    const daemon = threeAccounts()
+    const table = await show(daemon)
+
+    // The first click opens the sheet, which focuses itself a frame later;
+    // the second click of the double-click lands before that frame.
+    fireEvent.click(within(table).getByText("Work"))
+    expect(screen.getByRole("dialog", { name: "Work" })).toBeTruthy()
+    await Promise.resolve()
+    fireEvent.doubleClick(within(table).getByText("Work"))
+    const input = within(table).getByRole("textbox", { name: "Label for Work" })
+    expect(document.activeElement).toBe(input)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(document.activeElement).toBe(input)
   })
 
   it("does not write back a label left untouched while the daemon renamed it", async () => {

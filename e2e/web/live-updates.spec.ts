@@ -8,6 +8,9 @@ import { type SandboxDaemon, startSandboxDaemon } from "../support/sandbox-daemo
 
 let daemon: SandboxDaemon
 
+/** The Accounts page the daemon serves; the dashboard is at `/`. */
+const accountsPage = () => new URL("/accounts", daemon.address).href
+
 test.beforeEach(async () => {
   daemon = await startSandboxDaemon()
   await daemon.seed({
@@ -33,7 +36,7 @@ test.afterEach(async () => {
 test("an account disabled from the CLI shows on the open page within a second", async ({
   page,
 }) => {
-  await page.goto(daemon.address)
+  await page.goto(accountsPage())
   const claude = page.getByRole("region", { name: "Claude" })
   await expect(claude.getByText("New sessions go to Work")).toBeVisible()
 
@@ -55,7 +58,7 @@ test("an account disabled from the CLI shows on the open page within a second", 
 
 test("follows the daemon through a restart", async ({ page }) => {
   await daemon.keepPort()
-  await page.goto(daemon.address)
+  await page.goto(accountsPage())
   const claude = page.getByRole("region", { name: "Claude" })
   await expect(claude.getByText("New sessions go to Work")).toBeVisible()
 

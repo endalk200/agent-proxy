@@ -4,6 +4,7 @@ import { Tabs } from "@base-ui/react/tabs"
 import { type ReactNode, useEffect, useId, useRef, useState } from "react"
 
 import { type AccountControls, LabelInput } from "./AccountsPage.tsx"
+import { AccountLimitsPanel, AccountWeek } from "./AccountUsage.tsx"
 import type { Account, AccountList } from "./daemon-api.ts"
 import {
   accountsOf,
@@ -19,7 +20,6 @@ import {
 } from "./model.ts"
 import {
   IconActivity,
-  IconChart,
   IconChevronDown,
   IconChevronUp,
   IconClock,
@@ -73,6 +73,19 @@ export function AccountSheet(props: {
   // Opening focuses the sheet itself, so a screen reader names it before its
   // controls, and no control's tooltip pops up uninvited.
   const popup = useRef<HTMLDivElement>(null)
+  const isOpen = open !== undefined
+  // A frame after it opens, unless a rename the owner just started in the
+  // table has the focus: a double-click's first click opens the sheet, and
+  // its second can land before that frame. Deciding when the frame comes,
+  // not when the sheet opens, keeps the field focused either way.
+  useEffect(() => {
+    if (!isOpen) return
+    const frame = requestAnimationFrame(() => {
+      if (document.activeElement?.classList.contains("who-rename") === true) return
+      popup.current?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [isOpen])
 
   return (
     <Dialog.Root
@@ -100,14 +113,9 @@ export function AccountSheet(props: {
         <Dialog.Popup
           ref={popup}
           className="sheet"
-          // A rename the owner just started in the table (a quick double-click
-          // opens the sheet first) keeps its field focused; otherwise the
-          // sheet takes focus itself, as always.
-          initialFocus={() =>
-            document.activeElement?.classList.contains("who-rename") === true
-              ? false
-              : popup.current
-          }
+          // The sheet focuses itself (see the effect above), not Base UI,
+          // which would decide what to focus before a double-click finishes.
+          initialFocus={false}
           finalFocus={
             returnFocus && account !== undefined
               ? () => openerOf(account.id) ?? document.getElementById("page-title")
@@ -224,13 +232,12 @@ function SheetBody(props: {
             <Tabs.Tab className="tab" value="activity">
               Activity<span className="tag">Planned</span>
             </Tabs.Tab>
-            <Tabs.Tab className="tab" value="usage">
-              Usage<span className="tag">Planned</span>
-            </Tabs.Tab>
             <Tabs.Indicator className="tabs-indicator" />
           </Tabs.List>
 
           <Tabs.Panel className="tab-panel" value="overview">
+            <AccountLimitsPanel account={account} pool={pool} readOnly={readOnly} now={props.now} />
+            <AccountWeek account={account} now={props.now} />
             <dl className="facts">
               <div>
                 <dt>Priority</dt>
@@ -342,30 +349,6 @@ function SheetBody(props: {
             <Planned icon={<IconActivity size={18} />}>
               <b>Activity for {account.label} is planned.</b> Status changes, cooldowns and edits
               will show up here.
-            </Planned>
-          </Tabs.Panel>
-
-          <Tabs.Panel className="tab-panel" value="usage">
-            <div className="usage-skel" aria-hidden="true">
-              <div className="usage-tiles">
-                <div>
-                  <i />
-                  <b />
-                </div>
-                <div>
-                  <i />
-                  <b />
-                </div>
-              </div>
-              <div className="usage-bars">
-                {Array.from({ length: 18 }, (_, i) => (
-                  <span key={i} style={{ height: `${20 + ((i * 41) % 75)}%` }} />
-                ))}
-              </div>
-            </div>
-            <Planned icon={<IconChart size={18} />}>
-              <b>Usage for {account.label} is planned.</b> Tokens, requests, and how much of its
-              plan's limit is left will show here.
             </Planned>
           </Tabs.Panel>
         </Tabs.Root>

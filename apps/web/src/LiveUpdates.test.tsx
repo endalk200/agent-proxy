@@ -17,6 +17,8 @@ const NOW = Date.parse("2026-11-17T06:00:00Z")
 const inMinutes = (minutes: number) => new Date(NOW + minutes * 60_000).toISOString()
 
 beforeEach(() => {
+  // These tests drive the Accounts page, which lives at `/accounts`.
+  window.history.replaceState(null, "", "/accounts")
   vi.setSystemTime(NOW)
 })
 
@@ -45,6 +47,8 @@ const show = async (daemon: FakeDaemon) => {
       openEvents={daemon.openEvents}
       checkInterval={60_000}
       reopenDelay={20}
+      // A sign-in's status is polled quickly, so it never races a query's timeout.
+      loginPollInterval={20}
     />,
   )
   return screen.findByRole("table", { name: "Claude accounts" })
@@ -105,7 +109,7 @@ describe("a status the daemon changes", () => {
     expect(await notice("Work is back")).toBe(
       "Work is back Its cooldown ended, so it's in the Claude pool again.",
     )
-    expect(statusOf(table, "Work")).toBe("Active")
+    expect(statusOf(table, "Work")).toBe("Active Never used")
     expect(rowOf(table, "Work").dataset["flash"]).toBe("active")
     expect(poolLine()).toBe("New sessions go to Work")
   })
@@ -187,8 +191,8 @@ describe("an account serving a request", () => {
     daemon.update("a2", { lastUsedAt: new Date(NOW - 4 * 60_000).toISOString() })
 
     await waitFor(() =>
-      expect(rowsOf(table).find((row) => row["Account"]?.startsWith("Home"))?.["Last used"]).toBe(
-        "4 min ago",
+      expect(rowsOf(table).find((row) => row["Account"]?.startsWith("Home"))?.["Status"]).toBe(
+        "Active Used 4 min ago",
       ),
     )
     expect(notices()).toEqual([])
@@ -222,7 +226,7 @@ describe("a change made on this page", () => {
     const table = await show(daemon)
 
     fireEvent.click(screen.getByRole("switch", { name: "Work enabled" }))
-    await waitFor(() => expect(statusOf(table, "Work")).toBe("Disabled"))
+    await waitFor(() => expect(statusOf(table, "Work")).toBe("Disabled Never used"))
     daemon.update("a2", { status: "needs-sign-in" })
     await notice("Home needs sign-in")
 
@@ -271,7 +275,7 @@ describe("when the event stream drops", () => {
     daemon.reachable = true
 
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull())
-    expect(statusOf(table, "Work")).toBe("Disabled")
+    expect(statusOf(table, "Work")).toBe("Disabled Never used")
     expect(poolLine()).toBe("New sessions go to Home")
     expect(daemon.streams).toBe(1)
 
@@ -290,6 +294,6 @@ describe("when the event stream drops", () => {
       account({ id: "a1", label: "Work", priority: 1, enabled: false, status: "disabled" }),
       account({ id: "a2", label: "Home", priority: 2 }),
     ]
-    await waitFor(() => expect(statusOf(table, "Work")).toBe("Disabled"))
+    await waitFor(() => expect(statusOf(table, "Work")).toBe("Disabled Never used"))
   })
 })

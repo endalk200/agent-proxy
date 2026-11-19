@@ -8,6 +8,9 @@ import { type SandboxDaemon, startSandboxDaemon } from "../support/sandbox-daemo
 
 let daemon: SandboxDaemon
 
+/** The Accounts page the daemon serves; the dashboard is at `/`. */
+const accountsPage = () => new URL("/accounts", daemon.address).href
+
 test.beforeEach(async () => {
   daemon = await startSandboxDaemon()
   await daemon.seed({
@@ -67,7 +70,7 @@ const drag = async (page: Page, table: Locator, label: string, email: string) =>
 }
 
 test("reorders, toggles, renames and removes accounts, and the sheet follows", async ({ page }) => {
-  await page.goto(daemon.address)
+  await page.goto(accountsPage())
   const claude = page.getByRole("region", { name: "Claude" })
   const table = claude.getByRole("table", { name: "Claude accounts" })
   await expect(claude.getByText("New sessions go to Work")).toBeVisible()
@@ -137,7 +140,7 @@ const insidePhone = async (locator: Locator) => {
 
 test("the account sheet and the remove confirmation fit a phone screen", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto(daemon.address)
+  await page.goto(accountsPage())
   const table = page.getByRole("table", { name: "Claude accounts" })
 
   await table.getByRole("button", { name: "Home", exact: true }).click()

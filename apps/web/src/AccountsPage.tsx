@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 
 import { CommandLine, ProxyKeyRow } from "./ConnectClients.tsx"
 import type { Account, AccountList, DaemonClient, Pool, Provider } from "./daemon-api.ts"
+import { LimitCell, type WindowColumn, windowColumns } from "./limits.tsx"
 import type { Flash } from "./LiveUpdates.ts"
 import {
   accountsOf,
@@ -29,10 +30,12 @@ import {
   IconGrip,
   IconMore,
   IconPencil,
+  IconRefresh,
   IconTrash,
   ProviderMark,
   Tip,
 } from "./ui.tsx"
+import { isRefreshing, useUsage } from "./usage.tsx"
 
 const REORDER_HINT = "reorder-hint"
 
@@ -58,6 +61,9 @@ export interface AccountControls {
 /** A row's own controls, where a click does not open the sheet. */
 const ROW_CONTROLS = "button, input, a, [role=switch], [role=menu]"
 
+/** Stops a click before it reaches the page, such as the one that ends a drag. */
+const swallowClick = (event: MouseEvent) => event.stopPropagation()
+
 /** A row being dragged: account `id`, shown at index `to` of its pool. */
 interface Drag {
   readonly id: string
@@ -81,9 +87,19 @@ export function AccountsPage(props: {
   controls: AccountControls
 }) {
   const { list } = props
+  const { limits } = useUsage()
   if (list.accounts.length === 0) {
     return <FirstRun address={props.address} client={props.client} controls={props.controls} />
   }
+  // Each pool's limit-window columns, and room for the most any pool has, so
+  // the pools' tables line up.
+  const columns = new Map(
+    list.pools.map((pool) => [
+      pool.provider,
+      windowColumns(accountsOf(list, pool.provider).map((account) => limits?.get(account.id))),
+    ]),
+  )
+  const widest = Math.max(0, ...[...columns.values()].map((pool) => pool.length))
   return (
     <div className="sections">
       <p className="sr-only" id={REORDER_HINT}>
@@ -94,6 +110,8 @@ export function AccountsPage(props: {
           key={pool.provider}
           list={list}
           pool={pool}
+          columns={columns.get(pool.provider) ?? []}
+          widest={widest}
           now={props.now}
           controls={props.controls}
         />
@@ -158,6 +176,9 @@ function BlockedCallout(props: {
 function PoolSection(props: {
   list: AccountList
   pool: Pool
+  columns: ReadonlyArray<WindowColumn>
+  /** The most limit-window columns any pool has. */
+  widest: number
   now: number
   controls: AccountControls
 }) {
@@ -174,6 +195,10 @@ function PoolSection(props: {
     if (drag === undefined) return
     const drop = () => {
       setDrag(undefined)
+      // The browser follows the release with a click on the row now under
+      // the pointer, which is no request to open that row's sheet.
+      document.addEventListener("click", swallowClick, { capture: true, once: true })
+      setTimeout(() => document.removeEventListener("click", swallowClick, { capture: true }), 0)
       const from = pool.findIndex((account) => account.id === drag.id)
       const dragged = pool[from]
       if (dragged !== undefined && from !== drag.to) move(dragged, drag.to + 1)
@@ -224,14 +249,20 @@ function PoolSection(props: {
               <th scope="col" aria-label="Priority" className="col-prio">
                 #
               </th>
-              <th scope="col">Account</th>
-              <th scope="col" className="col-plan">
-                Plan
+              <th scope="col" className="col-who">
+                Account
               </th>
-              <th scope="col">Status</th>
-              <th scope="col" className="col-used">
-                Last used
+              <th scope="col" className="col-status">
+                Status
               </th>
+              {props.columns.map((column) => (
+                <th key={column.id} scope="col" className="col-lim">
+                  {column.label}
+                </th>
+              ))}
+              {Array.from({ length: props.widest - props.columns.length }, (_, i) => (
+                <th key={`pad-${i}`} aria-hidden="true" className="col-lim-pad" />
+              ))}
               <th scope="col" className="col-enabled">
                 Enabled
               </th>
@@ -250,6 +281,8 @@ function PoolSection(props: {
                   drag !== undefined && drag.to !== index && setDrag({ ...drag, to: index })
                 }
                 serving={account.id === servingId}
+                columns={props.columns}
+                pad={props.widest - props.columns.length}
                 count={accounts.length}
                 now={props.now}
                 controls={props.controls}
@@ -281,12 +314,18 @@ function AccountRow(props: {
   onDragStart: () => void
   onDragOver: () => void
   serving: boolean
+  columns: ReadonlyArray<WindowColumn>
+  /** Spacer cells after the windows, so the pools' tables line up. */
+  pad: number
   count: number
   now: number
   controls: AccountControls
 }) {
   const { account, controls } = props
   const { readOnly } = controls
+  const usage = useUsage()
+  const windows = usage.limits?.get(account.id)?.windows
+  const refreshing = isRefreshing(usage, account.id)
   const [renaming, setRenaming] = useState(false)
   // A rename ended from the keyboard hands focus back to the label's button.
   const nameButton = useRef<HTMLButtonElement>(null)
@@ -368,6 +407,9 @@ function AccountRow(props: {
             {account.label}
           </button>
         )}
+        <span className="plan plan-inline" data-weight={planWeight(account.provider, account.plan)}>
+          {account.plan}
+        </span>
         {props.serving && (
           <>
             {" "}
@@ -376,17 +418,19 @@ function AccountRow(props: {
         )}
         <span className="who-email">{account.email}</span>
       </td>
-      <td className="col-plan">
-        <span className="plan" data-weight={planWeight(account.provider, account.plan)}>
-          {account.plan}
-        </span>
-      </td>
-      <td>
+      <td className="col-status">
         <span className="status">
           <span className="sdot" aria-hidden="true" />
           {statusLabels[account.status]}
         </span>
         <CooldownEnd account={account} now={props.now} />
+        {(account.status === "active" || account.status === "disabled") && (
+          <span className="status-sub">
+            {account.lastUsedAt === null
+              ? "Never used"
+              : `Used ${lastUsedText(account.lastUsedAt, props.now)}`}
+          </span>
+        )}
         {account.status === "needs-sign-in" && (
           <button
             type="button"
@@ -399,9 +443,14 @@ function AccountRow(props: {
           </button>
         )}
       </td>
-      <td className="col-used">
-        <span className="used">{lastUsedText(account.lastUsedAt, props.now)}</span>
-      </td>
+      {props.columns.map((column) => (
+        <td key={column.id} className={`col-lim ${refreshing ? "is-refreshing" : ""}`}>
+          <LimitCell window={windows?.find((window) => window.id === column.id)} now={props.now} />
+        </td>
+      ))}
+      {Array.from({ length: props.pad }, (_, i) => (
+        <td key={`pad-${i}`} aria-hidden="true" className="col-lim-pad" />
+      ))}
       <td className="col-enabled">
         <Switch.Root
           className="switch"
@@ -486,6 +535,7 @@ function RowMenu(props: {
   onRename: () => void
 }) {
   const { account, controls } = props
+  const usage = useUsage()
   // Rename waits for the menu to close, so the menu hands focus to the label's
   // field rather than taking it back.
   const [renaming, setRenaming] = useState(false)
@@ -499,6 +549,12 @@ function RowMenu(props: {
       label: "Rename",
       icon: <IconPencil size={14} />,
       onClick: () => setRenaming(true),
+    },
+    {
+      label: "Refresh limits",
+      icon: <IconRefresh size={14} />,
+      disabled: isRefreshing(usage, account.id),
+      onClick: () => usage.refresh(account.id),
     },
     {
       label: "Move up",
