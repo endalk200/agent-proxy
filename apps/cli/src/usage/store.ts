@@ -234,11 +234,9 @@ export class UsageStore extends Context.Service<
 }
 
 /** A database whose schema a newer build wrote: this build does not know its tables. */
-class SchemaFromNewerBuild extends Error {
-  constructor(readonly version: number) {
-    super(`schema version ${version}, newer than this build's ${MIGRATIONS.length}`)
-  }
-}
+class SchemaFromNewerBuild extends Data.TaggedError("SchemaFromNewerBuild")<{
+  readonly version: number
+}> {}
 
 /** Why usage is not recorded, when the store at `file` could not be opened because of `cause`. */
 const notRecorded = (file: string, cause: unknown) =>
@@ -331,7 +329,7 @@ const openDatabase = (file: string) => {
     const from = version?.user_version ?? 0
     // Never migrate down: a newer build would find its own steps undone, run
     // them again, and fail. Its file is left exactly as it is.
-    if (from > MIGRATIONS.length) throw new SchemaFromNewerBuild(from)
+    if (from > MIGRATIONS.length) throw new SchemaFromNewerBuild({ version: from })
     db.run("PRAGMA journal_mode = WAL")
     db.transaction(() => {
       for (const [index, step] of MIGRATIONS.entries()) {
