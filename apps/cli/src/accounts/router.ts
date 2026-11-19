@@ -1,4 +1,4 @@
-import { Clock, Context, Duration, Effect, Layer } from "effect"
+import { Clock, Context, DateTime, Duration, Effect, Layer } from "effect"
 
 import { LimitWindows } from "../usage/limit-windows.ts"
 import { UsageStore } from "../usage/store.ts"
@@ -219,7 +219,7 @@ export class Router extends Context.Service<
           return Effect.logInfo("account cooling down").pipe(
             Effect.annotateLogs({
               account: account.id,
-              until: new Date(cooldown.until).toISOString(),
+              until: DateTime.formatIso(DateTime.makeUnsafe(cooldown.until)),
               window: cooldown.window ?? "rate limit",
             }),
             Effect.andThen(changes.signal),

@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun"
 import { expect, layer } from "@effect/vitest"
-import { ConfigProvider, Effect, FileSystem, Layer } from "effect"
+import { ConfigProvider, DateTime, Effect, FileSystem, Layer } from "effect"
 import { FetchHttpClient } from "effect/http"
 import { TestClock } from "effect/testing"
 
@@ -162,7 +162,7 @@ layer(services)("the credential keeper with Codex accounts", (it) => {
 
       expect(yield* home.storedCredentials).toMatchObject({
         accessToken,
-        expiresAt: new Date(exp * 1000).toISOString(),
+        expiresAt: DateTime.formatIso(DateTime.makeUnsafe(exp * 1000)),
       })
     }),
   )

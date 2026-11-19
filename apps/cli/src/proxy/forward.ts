@@ -6,7 +6,7 @@ import {
   zstdDecompressSync,
 } from "node:zlib"
 
-import { Clock, type Context, Effect, Option, Stream } from "effect"
+import { Clock, type Context, DateTime, Effect, Option, Stream } from "effect"
 import {
   Headers,
   HttpClientResponse,
@@ -232,7 +232,7 @@ const markUsed = (account: Account) =>
     const now = yield* Clock.currentTimeMillis
     const last = account.lastUsedAt === null ? undefined : Date.parse(account.lastUsedAt)
     if (last !== undefined && now - last < LAST_USED_GRANULARITY_MS) return
-    yield* (yield* AccountStore).markUsed(account.id, new Date(now).toISOString())
+    yield* (yield* AccountStore).markUsed(account.id, DateTime.formatIso(DateTime.makeUnsafe(now)))
   }).pipe(
     Effect.catchTag("AccountStoreError", (cause) =>
       Effect.logWarning("could not record when an account was last used").pipe(

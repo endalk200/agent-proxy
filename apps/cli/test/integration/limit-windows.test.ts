@@ -19,14 +19,16 @@ const json = (body: unknown, init: ResponseInit = {}) => Response.json(body, ini
 const notFound = () => json({ error: "not_found" }, { status: 404 })
 const serverError = () => json({ error: "server_error" }, { status: 500 })
 
-/** Waits in real time until `check` passes, failing after two seconds. */
+/**
+ * Waits in real time until `check` passes, failing after about two seconds.
+ * It counts tries, not time: the test clock never moves on its own.
+ */
 const eventually = <A>(read: Effect.Effect<A>, check: (value: A) => boolean) =>
   Effect.gen(function* () {
-    const deadline = Date.now() + 2000
-    for (;;) {
+    for (let tries = 1; ; tries++) {
       const value = yield* read
       if (check(value)) return value
-      if (Date.now() > deadline) {
+      if (tries >= 200) {
         throw new Error(`still not as expected: ${JSON.stringify(value)}`)
       }
       yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)))

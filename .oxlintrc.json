@@ -27,7 +27,22 @@
         "additionalTestBlockFunctions": ["it", "it.effect", "it.live", "it.flakyTest", "it.prop"]
       }
     ],
-    "typescript/consistent-return": "off"
+    "typescript/consistent-return": "off",
+    "react/rules-of-hooks": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/no-deprecated": "error",
+    "typescript/only-throw-error": "error",
+    "typescript/prefer-promise-reject-errors": "error",
+    "typescript/no-explicit-any": "error",
+    "typescript/switch-exhaustiveness-check": [
+      "error",
+      {
+        "considerDefaultExhaustiveForUnions": true
+      }
+    ],
+    "typescript/no-import-type-side-effects": "error",
+    "effecttsgo/global-date-in-effect": "error",
+    "effecttsgo/extends-native-error": "error"
   },
   "overrides": [
     {
@@ -37,7 +52,8 @@
         "browser": true
       },
       "rules": {
-        "react/react-in-jsx-scope": "off"
+        "react/react-in-jsx-scope": "off",
+        "effecttsgo/extends-native-error": "off"
       }
     },
     {

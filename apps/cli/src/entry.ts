@@ -8,7 +8,7 @@ import { Dashboard, type DashboardSource } from "./daemon/dashboard.ts"
 import { Launchd } from "./launchd.ts"
 import { Processes } from "./processes.ts"
 import { ProviderEndpoints } from "./providers/endpoints.ts"
-import { type RuntimeInfo } from "./runtime-info.ts"
+import type { RuntimeInfo } from "./runtime-info.ts"
 
 /**
  * Runs the CLI as this process, with the real platform services, so tests can
