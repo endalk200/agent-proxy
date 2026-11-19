@@ -1,6 +1,12 @@
-import { brotliDecompressSync, gunzipSync, inflateSync, zstdDecompressSync } from "node:zlib"
+import {
+  brotliDecompressSync,
+  constants,
+  gunzipSync,
+  inflateSync,
+  zstdDecompressSync,
+} from "node:zlib"
 
-import { Clock, type Context, Effect, Option } from "effect"
+import { Clock, type Context, Effect, Option, Stream } from "effect"
 import {
   Headers,
   HttpClientResponse,
@@ -13,7 +19,11 @@ import { type Account, type Provider, providerNames } from "../accounts/account.
 import { CredentialKeeper } from "../accounts/keeper.ts"
 import { type Cooldown, Router } from "../accounts/router.ts"
 import { AccountStore } from "../accounts/store.ts"
-import type { UpstreamApi } from "../providers/upstream.ts"
+import { AccountEvents } from "../daemon/account-events.ts"
+import type { ProxiedRequest, UpstreamApi } from "../providers/upstream.ts"
+import { LimitWindows } from "../usage/limit-windows.ts"
+import { UsageStore } from "../usage/store.ts"
+import { type ClientName, noTokens, type TokenCounts, type UsageStatus } from "../usage/usage.ts"
 import { ProxyKey } from "./proxy-key.ts"
 
 /**
@@ -25,6 +35,11 @@ import { ProxyKey } from "./proxy-key.ts"
  * account cools down and the request goes to the next account; nothing has
  * reached the client yet, so it never notices. Any other answer streams back
  * as it arrives, and is never retried once it has started.
+ *
+ * Every answer's limit-window headers update the account's limit windows.
+ * A generation request is also recorded as usage once its response ends:
+ * a copy of the body is read for the provider's usage events as it streams
+ * by, and the bytes the client gets are never changed (ADR-0006, ADR-0009).
  */
 
 /** What went wrong, for a provider's own error shape. */
@@ -74,12 +89,28 @@ const presentedKey = (headers: Headers.Headers) => {
  */
 const NOT_RELAYED = ["connection", "keep-alive", "transfer-encoding", "content-length"]
 
-/** The provider's response, streamed to the client as it arrives. */
-const relay = (upstream: HttpClientResponse.HttpClientResponse) =>
-  HttpServerResponse.stream(upstream.stream, {
+/**
+ * The provider's response, streamed to the client as it arrives. `ended`
+ * gets the body's usage-bearing part as text once the stream ends, however
+ * it ends: in full, cut off upstream, or because the client went away.
+ */
+const relay = (
+  upstream: HttpClientResponse.HttpClientResponse,
+  ended?: (body: string) => Effect.Effect<void>,
+) => {
+  const tap = usageTap(upstream.headers["content-encoding"])
+  const stream =
+    ended === undefined
+      ? upstream.stream
+      : upstream.stream.pipe(
+          Stream.tap((chunk) => Effect.sync(() => tap.push(chunk))),
+          Stream.onExit(() => Effect.suspend(() => ended(tap.text()))),
+        )
+  return HttpServerResponse.stream(stream, {
     status: upstream.status,
     headers: Headers.removeMany(upstream.headers, NOT_RELAYED),
   })
+}
 
 /**
  * Drops a response the client will not get, freeing its connection. The body
@@ -102,11 +133,14 @@ interface BufferedAnswer {
 
 const decoder = new TextDecoder()
 
+/** Decompresses as much of a body as arrived, so a stream cut off midway still yields its start. */
+const PARTIAL = { finishFlush: constants.Z_SYNC_FLUSH }
+
 /**
  * A buffered body as text, undone from its `content-encoding` first: the
  * proxy asks providers not to decompress, so the client gets their bytes as
- * sent, but a limit has to be read to be classified. A body that cannot be
- * decoded counts as unreadable.
+ * sent, but a limit has to be read to be classified, and usage to be
+ * recorded. A body that cannot be decoded counts as unreadable.
  */
 const bodyText = (body: Uint8Array, encoding: string | undefined): string | undefined => {
   try {
@@ -117,11 +151,13 @@ const bodyText = (body: Uint8Array, encoding: string | undefined): string | unde
         return decoder.decode(body)
       case "gzip":
       case "x-gzip":
-        return decoder.decode(gunzipSync(body))
+        return decoder.decode(gunzipSync(body, PARTIAL))
       case "deflate":
-        return decoder.decode(inflateSync(body))
+        return decoder.decode(inflateSync(body, PARTIAL))
       case "br":
-        return decoder.decode(brotliDecompressSync(body))
+        return decoder.decode(
+          brotliDecompressSync(body, { finishFlush: constants.BROTLI_OPERATION_FLUSH }),
+        )
       case "zstd":
         return decoder.decode(zstdDecompressSync(body))
       default:
@@ -129,6 +165,35 @@ const bodyText = (body: Uint8Array, encoding: string | undefined): string | unde
     }
   } catch {
     return undefined
+  }
+}
+
+/**
+ * A copy of a streamed body, kept only as far as its usage needs. A body as
+ * sent (no `content-encoding`) is decoded as it streams by, and of its
+ * server-sent events only those that mention `"usage"` are kept, so a long
+ * answer's text deltas are never held. A compressed body is kept whole and
+ * decoded at the end.
+ */
+const usageTap = (encoding: string | undefined) => {
+  const plain = ["", "identity"].includes(encoding?.trim().toLowerCase() ?? "")
+  if (!plain) {
+    const chunks: Array<Uint8Array> = []
+    return {
+      push: (chunk: Uint8Array) => void chunks.push(chunk),
+      text: () => bodyText(Buffer.concat(chunks), encoding) ?? "",
+    }
+  }
+  const streaming = new TextDecoder()
+  const kept: Array<string> = []
+  let pending = ""
+  return {
+    push: (chunk: Uint8Array) => {
+      const blocks = (pending + streaming.decode(chunk, { stream: true })).split(/\r?\n\r?\n/)
+      pending = blocks.pop() ?? ""
+      for (const block of blocks) if (block.includes('"usage"')) kept.push(block)
+    },
+    text: () => [...kept, pending + streaming.decode()].join("\n\n"),
   }
 }
 
@@ -173,8 +238,53 @@ const markUsed = (account: Account) =>
     ),
   )
 
-/** The handler that proxies a request to `provider`. */
-export const forward = <I>({ provider, upstream, error, coolingDown }: ProxiedProvider<I>) => {
+/** The `model` a request's JSON body asks for, read without changing the body; `unknown` when it names none. */
+const modelOf = (request: ProxiedRequest) => {
+  try {
+    const body: unknown = JSON.parse(decoder.decode(request.body))
+    const model =
+      typeof body === "object" && body !== null && "model" in body ? body.model : undefined
+    return typeof model === "string" && model.trim() !== "" ? model.trim() : "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
+/**
+ * The client a request came from (spike #6). opencode's Claude path runs
+ * Claude Code through the Agent SDK, which says so in its `User-Agent`;
+ * its Codex path sends its own session header.
+ */
+const clientOf = (headers: Headers.Headers): ClientName => {
+  const agent = headers["user-agent"]?.toLowerCase() ?? ""
+  if (
+    agent.startsWith("opencode") ||
+    agent.includes("agent-sdk") ||
+    headers["x-opencode-session-id"]
+  ) {
+    return "opencode"
+  }
+  if (agent.startsWith("claude-cli/")) return "claude-code"
+  // An app that embeds Codex (T3 Code says "T3") renames its User-Agent, but
+  // Codex still sends its own headers on every request.
+  if (agent.startsWith("codex_") || headers["x-codex-window-id"]) return "codex"
+  return "other"
+}
+
+const isSuccess = (status: number) => status >= 200 && status < 300
+
+/** Records nothing: a route that does not record usage. */
+const recordNothing = () => Effect.void
+
+/**
+ * The handler that proxies a request to `provider`. With `recordsUsage`,
+ * each request it serves is recorded as usage: only generation requests
+ * spend usage, so token counting and the like are not.
+ */
+export const forward = <I>(
+  { provider, upstream, error, coolingDown }: ProxiedProvider<I>,
+  { recordsUsage }: { readonly recordsUsage: boolean } = { recordsUsage: false },
+) => {
   const name = providerNames[provider]
   /**
    * Key errors are 401s: after a 401 Claude Code runs its `apiKeyHelper` again
@@ -202,108 +312,201 @@ export const forward = <I>({ provider, upstream, error, coolingDown }: ProxiedPr
 
   const unreadable = error(400, "invalid_request", "agent-proxy: could not read the request.")
 
-  return Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest
-    const method = request.method
-    if (!HttpMethod.isHttpMethod(method)) return unreadable
-    const presented = presentedKey(request.headers)
-    if (presented === undefined) return noKey
-    if (!(yield* (yield* ProxyKey).matches(presented))) return wrongKey
+  return Effect.suspend(() => {
+    // The account the request last went to, which a failure is recorded against.
+    let lastAccount: Account | undefined
+    let record: (
+      accountId: string,
+      status: UsageStatus,
+      tokens?: TokenCounts,
+    ) => Effect.Effect<void> = recordNothing
+    // Whether this request's row is recorded, or left to the relayed body to record.
+    let settled = false
+    const recordFailure = Effect.suspend(() =>
+      lastAccount === undefined ? Effect.void : record(lastAccount.id, "failed"),
+    )
 
-    const proxied = {
-      method,
-      url: request.url,
-      headers: request.headers,
-      body: new Uint8Array(yield* request.arrayBuffer),
-    }
-    const keeper = yield* CredentialKeeper
-    const router = yield* Router
-    const api = yield* upstream
-    const session = api.sessionOf(proxied)
-    const send = (account: Account, accessToken: string) => api.send(proxied, account, accessToken)
+    return Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest
+      const startedAt = yield* Clock.currentTimeMillis
+      const method = request.method
+      if (!HttpMethod.isHttpMethod(method)) return unreadable
+      const presented = presentedKey(request.headers)
+      if (presented === undefined) return noKey
+      if (!(yield* (yield* ProxyKey).matches(presented))) return wrongKey
 
-    /**
-     * The provider's answer to the request sent as `account`, or none when the
-     * account turns out unable to serve: its tokens cannot be refreshed.
-     */
-    const attempt = Effect.fnUntraced(function* (account: Account) {
-      const credentials = yield* keeper.credentialsFor(account)
-      if (Option.isNone(credentials)) return Option.none()
-      const answer = yield* send(account, credentials.value.accessToken)
-      if (answer.status !== 401) return Option.some(answer)
+      const proxied = {
+        method,
+        url: request.url,
+        headers: request.headers,
+        body: new Uint8Array(yield* request.arrayBuffer),
+      }
+      const keeper = yield* CredentialKeeper
+      const router = yield* Router
+      const api = yield* upstream
+      const limits = yield* LimitWindows
+      const session = api.sessionOf(proxied)
+      if (recordsUsage) {
+        const usage = yield* UsageStore
+        const events = yield* AccountEvents
+        const model = modelOf(proxied)
+        const client = clientOf(proxied.headers)
+        // A store that cannot record never fails or holds up the response.
+        record = (accountId, status, tokens = noTokens) =>
+          Effect.gen(function* () {
+            settled = true
+            const at = yield* Clock.currentTimeMillis
+            yield* usage.record({
+              at,
+              provider,
+              accountId,
+              model,
+              client,
+              session,
+              status,
+              latencyMs: at - startedAt,
+              tokens,
+            })
+            yield* events.usageRecorded({ at, provider, accountId, model, client, status, tokens })
+          }).pipe(
+            Effect.catchTag("UsageStoreError", (cause) =>
+              Effect.logWarning("could not record usage").pipe(
+                Effect.annotateLogs({ account: accountId, cause: cause.message }),
+              ),
+            ),
+          )
+      }
+      /** Records the limit windows an answer's headers report. */
+      const observeWindows = (account: Account, headers: Headers.Headers) =>
+        Effect.gen(function* () {
+          const now = yield* Clock.currentTimeMillis
+          const windows = api.windowsOf(headers, now)
+          if (windows.length > 0) yield* limits.observe(account.id, windows, "header", now)
+        })
+      /** Records what a relayed answer spent once its body has gone by. */
+      const spent = (account: Account, response: HttpClientResponse.HttpClientResponse) =>
+        recordsUsage
+          ? (body: string) => {
+              if (!isSuccess(response.status)) return record(account.id, "failed")
+              const usage = api.usageOf(body)
+              return record(account.id, usage.complete ? "success" : "incomplete", usage.tokens)
+            }
+          : undefined
+      const send = (account: Account, accessToken: string) =>
+        api.send(proxied, account, accessToken)
 
-      // The provider rejected the token: refresh once and retry on the same account.
-      // A 401 that comes back after this is the account's to own: the caller
-      // moves on to the next account (spec #5: refresh once, then fail over).
-      const retry = yield* keeper.credentialsAfterRejection(account, credentials.value.accessToken)
-      if (Option.isSome(retry) && retry.value.accessToken === credentials.value.accessToken) {
-        return Option.some(answer)
-      }
-      yield* discard(answer)
-      if (Option.isNone(retry)) return Option.none()
-      return Option.some(yield* send(account, retry.value.accessToken))
-    })
+      /**
+       * The provider's answer to the request sent as `account`, or none when the
+       * account turns out unable to serve: its tokens cannot be refreshed.
+       */
+      const attempt = Effect.fnUntraced(function* (account: Account) {
+        const credentials = yield* keeper.credentialsFor(account)
+        if (Option.isNone(credentials)) return Option.none()
+        const answer = yield* send(account, credentials.value.accessToken)
+        if (answer.status !== 401) return Option.some(answer)
 
-    // Accounts this request found limited or unable to serve.
-    const tried = new Set<string>()
-    // The last limit answer, read in full: when its account is the first to
-    // be free again, the client gets the provider's own answer.
-    let limited: { readonly accountId: string; readonly answer: BufferedAnswer } | undefined
-    // The last account's rejection of its token even after a refresh: the
-    // client gets it only when no other account can take the request.
-    let rejected: BufferedAnswer | undefined
-    for (;;) {
-      const choice = yield* router.choose(provider, session, tried)
-      if (choice._tag === "CoolingDown") {
-        return limited?.accountId === choice.accountId && limited.answer.body !== undefined
-          ? replay(limited.answer)
-          : coolingDown(choice.cooldown, yield* Clock.currentTimeMillis)
-      }
-      if (choice._tag === "Unavailable") {
-        return rejected?.body !== undefined ? replay(rejected) : noAccount(choice.accounts)
-      }
-      const account = choice.account
-      tried.add(account.id)
+        // The provider rejected the token: refresh once and retry on the same account.
+        // A 401 that comes back after this is the account's to own: the caller
+        // moves on to the next account (spec #5: refresh once, then fail over).
+        const retry = yield* keeper.credentialsAfterRejection(
+          account,
+          credentials.value.accessToken,
+        )
+        if (Option.isSome(retry) && retry.value.accessToken === credentials.value.accessToken) {
+          return Option.some(answer)
+        }
+        yield* discard(answer)
+        if (Option.isNone(retry)) return Option.none()
+        return Option.some(yield* send(account, retry.value.accessToken))
+      })
 
-      const answer = yield* attempt(account)
-      if (Option.isNone(answer)) continue
-      const response = answer.value
-      if (response.status === 401) {
-        rejected = { status: 401, headers: response.headers, body: yield* readLimitBody(response) }
-        continue
+      // Accounts this request found limited or unable to serve.
+      const tried = new Set<string>()
+      // The last limit answer, read in full: when its account is the first to
+      // be free again, the client gets the provider's own answer.
+      let limited: { readonly accountId: string; readonly answer: BufferedAnswer } | undefined
+      // The last account's rejection of its token even after a refresh: the
+      // client gets it only when no other account can take the request.
+      let rejected: { readonly accountId: string; readonly answer: BufferedAnswer } | undefined
+      for (;;) {
+        const choice = yield* router.choose(provider, session, tried)
+        if (choice._tag === "CoolingDown") {
+          yield* record(choice.accountId, "limited")
+          return limited?.accountId === choice.accountId && limited.answer.body !== undefined
+            ? replay(limited.answer)
+            : coolingDown(choice.cooldown, yield* Clock.currentTimeMillis)
+        }
+        if (choice._tag === "Unavailable") {
+          if (rejected?.answer.body === undefined) {
+            yield* recordFailure
+            return noAccount(choice.accounts)
+          }
+          // The client is shown this account's rejection, so it is the one recorded.
+          yield* record(rejected.accountId, "failed")
+          return replay(rejected.answer)
+        }
+        const account = choice.account
+        tried.add(account.id)
+        lastAccount = account
+
+        const answer = yield* attempt(account)
+        if (Option.isNone(answer)) continue
+        const response = answer.value
+        yield* observeWindows(account, response.headers)
+        if (response.status === 401) {
+          rejected = {
+            accountId: account.id,
+            answer: {
+              status: 401,
+              headers: response.headers,
+              body: yield* readLimitBody(response),
+            },
+          }
+          continue
+        }
+        // Only a 429 is read before the client gets it: it may say the account hit a limit.
+        const buffered: BufferedAnswer =
+          response.status === 429
+            ? { status: 429, headers: response.headers, body: yield* readLimitBody(response) }
+            : { status: response.status, headers: response.headers, body: undefined }
+        const signal = api.limitsOf(
+          {
+            ...buffered,
+            body:
+              buffered.body === undefined
+                ? undefined
+                : bodyText(buffered.body, buffered.headers["content-encoding"]),
+          },
+          yield* Clock.currentTimeMillis,
+        )
+        yield* router.record(account, session, signal, choice.seen)
+        if (signal._tag === "Within") {
+          yield* markUsed(account)
+          settled = true
+          return buffered.body === undefined
+            ? relay(response, spent(account, response))
+            : replay(buffered)
+        }
+        if (buffered.body === undefined) yield* discard(response)
+        limited = { accountId: account.id, answer: buffered }
       }
-      // Only a 429 is read before the client gets it: it may say the account hit a limit.
-      const buffered: BufferedAnswer =
-        response.status === 429
-          ? { status: 429, headers: response.headers, body: yield* readLimitBody(response) }
-          : { status: response.status, headers: response.headers, body: undefined }
-      const signal = api.limitsOf(
-        {
-          ...buffered,
-          body:
-            buffered.body === undefined
-              ? undefined
-              : bodyText(buffered.body, buffered.headers["content-encoding"]),
-        },
-        yield* Clock.currentTimeMillis,
-      )
-      yield* router.record(account, session, signal, choice.seen)
-      if (signal._tag === "Within") {
-        yield* markUsed(account)
-        return buffered.body === undefined ? relay(response) : replay(buffered)
-      }
-      if (buffered.body === undefined) yield* discard(response)
-      limited = { accountId: account.id, answer: buffered }
-    }
-  }).pipe(
-    Effect.catchTags({
-      AccountStoreError: (cause) => Effect.succeed(error(500, "server", cause.message)),
-      ProviderUnreachable: (cause) =>
-        Effect.logWarning(`could not reach ${name}`).pipe(
-          Effect.annotateLogs({ cause: String(cause.cause) }),
-          Effect.as(error(502, "server", cause.message)),
-        ),
-      HttpServerError: () => Effect.succeed(unreadable),
-    }),
-  )
+    }).pipe(
+      Effect.catchTags({
+        AccountStoreError: (cause) =>
+          recordFailure.pipe(Effect.as(error(500, "server", cause.message))),
+        ProviderUnreachable: (cause) =>
+          Effect.logWarning(`could not reach ${name}`).pipe(
+            Effect.annotateLogs({ cause: String(cause.cause) }),
+            Effect.andThen(recordFailure),
+            Effect.as(error(502, "server", cause.message)),
+          ),
+        HttpServerError: () => Effect.succeed(unreadable),
+      }),
+      // A client that goes away before any answer still sent its request,
+      // which the provider may have started on.
+      Effect.onInterrupt(() =>
+        settled || lastAccount === undefined ? Effect.void : record(lastAccount.id, "incomplete"),
+      ),
+    )
+  })
 }

@@ -1,13 +1,15 @@
 import { Clock, Context, Duration, Effect, Layer } from "effect"
 
+import { LimitWindows } from "../usage/limit-windows.ts"
 import { type Account, type AccountStatus, accountStatus, type Provider } from "./account.ts"
 import { AccountChanges } from "./changes.ts"
 import { AccountStore, type AccountStoreError } from "./store.ts"
 
 /**
  * The router (ADR-0003): chooses which account of a pool serves each
- * request, and keeps what that takes in memory only: each session's account,
- * each account's cooldown, and each account's headroom.
+ * request, and keeps what that takes in memory only: each session's account
+ * and each account's cooldown. Headroom comes from the limit windows the
+ * daemon knows, the same ones the dashboard shows.
  *
  * - A session goes to its bound account while that account is Active and the
  *   session has not been idle for an hour.
@@ -21,8 +23,8 @@ import { AccountStore, type AccountStoreError } from "./store.ts"
 
 /** What a provider's answer says about the account's limits, as its adapter reads it. */
 export type LimitSignal =
-  /** Not limited. `headroom` is the share of its tightest window left, 0 to 1, when the answer says. */
-  | { readonly _tag: "Within"; readonly headroom: number | undefined }
+  /** Not limited. */
+  | { readonly _tag: "Within" }
   /** A short rate limit, such as per minute: retry after `retryAfterMs`. */
   | { readonly _tag: "RateLimited"; readonly retryAfterMs: number }
   /**
@@ -107,7 +109,7 @@ export class Router extends Context.Service<
     ) => Effect.Effect<Choice, AccountStoreError>
     /**
      * Records what `account`'s answer said: a limit cools the account down;
-     * any other answer binds `session` to it and notes its headroom.
+     * any other answer binds `session` to it.
      */
     readonly record: (
       account: Account,
@@ -123,9 +125,9 @@ export class Router extends Context.Service<
     Effect.gen(function* () {
       const store = yield* AccountStore
       const changes = yield* AccountChanges
+      const limits = yield* LimitWindows
       const bindings = new Map<string, Binding>()
       const cooldowns = new Map<string, Cooldown>()
-      const headroom = new Map<string, number>()
 
       const coolingAt = (now: number) => (account: Account) => {
         const cooldown = cooldowns.get(account.id)
@@ -134,6 +136,7 @@ export class Router extends Context.Service<
 
       const viewAt = (now: number): RoutingView => {
         const cooling = coolingAt(now)
+        const headroom = (account: Account) => limits.headroom(account.id, now) ?? 1
         const status = (account: Account) => accountStatus(account, cooling(account) !== undefined)
         return {
           status,
@@ -144,10 +147,7 @@ export class Router extends Context.Service<
           newSessions: (accounts, provider) =>
             accounts
               .filter((account) => account.provider === provider && status(account) === "active")
-              .toSorted(
-                (a, b) =>
-                  a.priority - b.priority || (headroom.get(b.id) ?? 1) - (headroom.get(a.id) ?? 1),
-              )[0],
+              .toSorted((a, b) => a.priority - b.priority || headroom(b) - headroom(a))[0],
         }
       }
 
@@ -218,7 +218,6 @@ export class Router extends Context.Service<
         const now = yield* Clock.currentTimeMillis
         switch (signal._tag) {
           case "Within": {
-            if (signal.headroom !== undefined) headroom.set(account.id, signal.headroom)
             for (const [key, binding] of bindings) {
               if (now - binding.at >= SESSION_IDLE_MS) bindings.delete(key)
             }

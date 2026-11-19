@@ -11,6 +11,7 @@ import { type ErrorKind, forward, untilText } from "./forward.ts"
  *
  * - `POST /v1/messages` and `POST /v1/messages/count_tokens`, query string
  *   and all, go to Claude as the highest-priority Active Claude account.
+ *   Only messages are recorded as usage.
  * - `HEAD /api/hello`, Claude Code's startup check, is answered here without
  *   the proxy key, which it does not send.
  */
@@ -67,18 +68,22 @@ const anthropicCoolingDown = (cooldown: Cooldown, now: number) => {
   )
 }
 
-const toClaude = forward({
+const claude = {
   provider: "claude",
   upstream: ClaudeApi,
   error: anthropicError,
   coolingDown: anthropicCoolingDown,
-})
+} as const
+
+/** Messages spend usage, so they are recorded; counting tokens spends none. */
+const toClaude = forward(claude, { recordsUsage: true })
+const toClaudeUnrecorded = forward(claude)
 
 /** Adds the routes to `router`. */
 export const claudeRoutes = (router: HttpRouter.HttpRouter) =>
   Effect.all([
     router.add("POST", "/v1/messages", toClaude),
-    router.add("POST", "/v1/messages/count_tokens", toClaude),
+    router.add("POST", "/v1/messages/count_tokens", toClaudeUnrecorded),
     // HEAD requests are served by GET routes.
     router.add("GET", "/api/hello", HttpServerResponse.empty({ status: 200 })),
   ])

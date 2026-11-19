@@ -10,6 +10,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
  * person. Tokens last long enough that the daemon never refreshes them during
  * a test.
  *
+ * Each provider's usage endpoint answers limit windows, and its API answers
+ * a short streamed message or response with usage events and limit headers,
+ * so the daemon never reaches a real provider and its usage dashboard has
+ * something to show. Both answer any bearer token, seeded ones included.
+ *
  * It runs on Node's HTTP server, so Playwright (under Node) and verification
  * runs (under Bun) can both start it.
  */
@@ -94,6 +99,160 @@ const readBody = async (request: IncomingMessage): Promise<string> => {
 const send = (response: ServerResponse, status: number, body: unknown) => {
   response.writeHead(status, { "content-type": "application/json" })
   response.end(JSON.stringify(body))
+}
+
+/** How used each token's windows are: a little different per token, the same every time. */
+const usedFor = (token: string) => {
+  let hash = 0
+  for (const char of token) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  return { fiveHour: 5 + (hash % 90), weekly: 10 + ((hash >>> 8) % 80) }
+}
+
+const HOUR_MS = 60 * 60 * 1000
+
+/** Claude's usage endpoint: 5-hour, weekly and a Fable weekly window. */
+const claudeUsage = (token: string) => {
+  const used = usedFor(token)
+  const now = Date.now()
+  return {
+    five_hour: { utilization: used.fiveHour, resets_at: new Date(now + 2 * HOUR_MS).toISOString() },
+    seven_day: { utilization: used.weekly, resets_at: new Date(now + 80 * HOUR_MS).toISOString() },
+    limits: [
+      {
+        kind: "weekly_scoped",
+        is_active: true,
+        scope: { model: { display_name: "Fable" } },
+        utilization: Math.min(100, used.weekly + 15),
+        resets_at: new Date(now + 80 * HOUR_MS).toISOString(),
+      },
+    ],
+  }
+}
+
+/** The Codex usage endpoint: 5-hour and weekly windows. */
+const codexUsage = (token: string) => {
+  const used = usedFor(token)
+  const now = Math.floor(Date.now() / 1000)
+  return {
+    rate_limit: {
+      primary_window: {
+        used_percent: used.fiveHour,
+        limit_window_seconds: 18_000,
+        reset_at: now + 7200,
+      },
+      secondary_window: {
+        used_percent: used.weekly,
+        limit_window_seconds: 604_800,
+        reset_at: now + 288_000,
+      },
+    },
+  }
+}
+
+const sseOf = (events: ReadonlyArray<Readonly<Record<string, unknown>>>) =>
+  events
+    .map((event) => `event: ${String(event["type"])}\ndata: ${JSON.stringify(event)}\n\n`)
+    .join("")
+
+/** A streamed Claude message with usage events, for `model`. */
+const claudeMessage = (model: string) => {
+  const input = 200 + Math.floor(Math.random() * 800)
+  const usage = {
+    input_tokens: input,
+    cache_read_input_tokens: input * 20,
+    cache_creation_input_tokens: input * 2,
+  }
+  return sseOf([
+    {
+      type: "message_start",
+      message: {
+        id: "msg_fake",
+        type: "message",
+        role: "assistant",
+        model,
+        content: [],
+        // Half the cache write goes to the 1-hour cache, which only `message_start` splits out.
+        usage: {
+          ...usage,
+          cache_creation: { ephemeral_5m_input_tokens: input, ephemeral_1h_input_tokens: input },
+          output_tokens: 1,
+        },
+      },
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "Hello from the fake." },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn" },
+      usage: { ...usage, output_tokens: 50 + Math.floor(Math.random() * 400) },
+    },
+    { type: "message_stop" },
+  ])
+}
+
+/** A streamed Codex response with usage, for `model`. */
+const codexResponse = (model: string) => {
+  const input = 2000 + Math.floor(Math.random() * 6000)
+  return sseOf([
+    { type: "response.created", response: { id: "resp_fake", model, status: "in_progress" } },
+    { type: "response.output_text.delta", delta: "Hello from the fake." },
+    {
+      type: "response.completed",
+      response: {
+        id: "resp_fake",
+        model,
+        status: "completed",
+        usage: {
+          input_tokens: input,
+          input_tokens_details: { cached_tokens: Math.floor(input * 0.8) },
+          output_tokens: 300,
+          output_tokens_details: { reasoning_tokens: 120 },
+        },
+      },
+    },
+  ])
+}
+
+/** The limit headers each provider's answers carry, for `token`'s windows. */
+const limitHeaders = (provider: FakeProvider, token: string): Record<string, string> => {
+  const used = usedFor(token)
+  const now = Math.floor(Date.now() / 1000)
+  return provider === "claude"
+    ? {
+        "anthropic-ratelimit-unified-status": "allowed",
+        "anthropic-ratelimit-unified-5h-utilization": String(used.fiveHour / 100),
+        "anthropic-ratelimit-unified-5h-reset": String(now + 7200),
+        "anthropic-ratelimit-unified-7d-utilization": String(used.weekly / 100),
+        "anthropic-ratelimit-unified-7d-reset": String(now + 288_000),
+      }
+    : {
+        "x-codex-primary-used-percent": String(used.fiveHour),
+        "x-codex-primary-window-minutes": "300",
+        "x-codex-primary-reset-at": String(now + 7200),
+        "x-codex-secondary-used-percent": String(used.weekly),
+        "x-codex-secondary-window-minutes": "10080",
+        "x-codex-secondary-reset-at": String(now + 288_000),
+      }
+}
+
+/** The `model` a request body names. */
+const modelIn = (body: string, fallback: string) => {
+  try {
+    const parsed: unknown = JSON.parse(body)
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      "model" in parsed &&
+      typeof parsed.model === "string"
+      ? parsed.model
+      : fallback
+  } catch {
+    return fallback
+  }
 }
 
 /** The fake sign-in page: a link per person who can sign in, and Deny. */
@@ -186,8 +345,27 @@ export const startFakeProviders = async (port = 0): Promise<FakeProviders> => {
               : null
         return exchange(provider, code, response)
       }
+      const bearer = request.headers.authorization?.replace(/^Bearer /, "") ?? ""
+      if (request.method === "GET" && action === "usage") {
+        return send(response, 200, provider === "claude" ? claudeUsage(bearer) : codexUsage(bearer))
+      }
+      if (
+        request.method === "POST" &&
+        (url.pathname === "/claude/v1/messages" ||
+          url.pathname === "/codex/backend-api/codex/responses")
+      ) {
+        const body = await readBody(request)
+        response.writeHead(200, {
+          "content-type": "text/event-stream",
+          ...limitHeaders(provider, bearer),
+        })
+        return response.end(
+          provider === "claude"
+            ? claudeMessage(modelIn(body, "claude-sonnet-4-5"))
+            : codexResponse(modelIn(body, "gpt-5.4")),
+        )
+      }
       if (request.method === "GET" && action === "profile") {
-        const bearer = request.headers.authorization?.replace(/^Bearer /, "") ?? ""
         const person = tokens.get(bearer)
         return person === undefined
           ? send(response, 401, { error: "unauthorized" })
@@ -205,14 +383,18 @@ export const startFakeProviders = async (port = 0): Promise<FakeProviders> => {
     origin,
     endpoints: JSON.stringify({
       claude: {
+        apiBaseUrl: `${origin}/claude`,
         authorizeUrl: `${origin}/claude/authorize`,
         tokenUrl: `${origin}/claude/token`,
         profileUrl: `${origin}/claude/profile`,
+        usageUrl: `${origin}/claude/usage`,
         callbackPort: 0,
       },
       codex: {
+        apiBaseUrl: `${origin}/codex`,
         authorizeUrl: `${origin}/codex/authorize`,
         tokenUrl: `${origin}/codex/token`,
+        usageUrl: `${origin}/codex/usage`,
         callbackPort: 0,
       },
     }),

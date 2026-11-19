@@ -2,6 +2,8 @@ import { Schema } from "effect"
 
 import { type Account, AccountStatus, Provider } from "../accounts/account.ts"
 import type { RoutingView } from "../accounts/router.ts"
+import type { AccountLimits } from "../usage/limit-windows.ts"
+import type { ClientName, TokenCounts, UsageStatus } from "../usage/usage.ts"
 
 /**
  * The daemon API's JSON shapes, shared by the daemon that serves them and the
@@ -112,6 +114,32 @@ export const AccountEvent = Schema.Union([
   }),
 ])
 export type AccountEvent = typeof AccountEvent.Type
+
+/**
+ * A proxied request finished and was recorded, on `GET /api/events`: when it
+ * ended, which account served it, and what it spent.
+ */
+export interface UsageRecorded {
+  readonly type: "usage-recorded"
+  readonly usage: {
+    readonly at: number
+    readonly provider: Provider
+    readonly accountId: string
+    readonly model: string
+    readonly client: ClientName
+    readonly status: UsageStatus
+    readonly tokens: TokenCounts
+  }
+}
+
+/** One account's limit windows changed, on `GET /api/events`; `limits` is all of them as they are now. */
+export interface LimitsChanged {
+  readonly type: "limits-changed"
+  readonly limits: AccountLimits
+}
+
+/** Every message on `GET /api/events` after the snapshot. */
+export type DaemonEvent = AccountEvent | UsageRecorded | LimitsChanged
 
 /** The fields of an account view that make a `settings-changed` event when they change. */
 const settingsChanged = (before: AccountView, after: AccountView) =>

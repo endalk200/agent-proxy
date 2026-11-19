@@ -97,6 +97,30 @@ layer(
     }),
   )
 
+  it.effect("serves index.html for the dashboard's own pages, so a reload of one works", () =>
+    Effect.gen(function* () {
+      for (const source of [
+        (built: string) => [built],
+        (built: string): DashboardSource => ({
+          _tag: "Embedded",
+          files: { "index.html": `${built}/index.html` },
+        }),
+      ]) {
+        const daemon = yield* makeDaemon(source)
+        for (const path of ["/accounts", "/accounts?range=30d"]) {
+          const page = yield* get(`${daemon.address}${path}`)
+          expect({ path, status: page.status, body: page.body }).toEqual({
+            path,
+            status: 200,
+            body: INDEX,
+          })
+          expect(page.contentType).toMatch(/^text\/html/)
+          expect(page.cacheControl).toBe("no-cache")
+        }
+      }
+    }),
+  )
+
   it.effect("serves the dashboard's hashed assets with their type, cached for good", () =>
     Effect.gen(function* () {
       const daemon = yield* makeDaemon((built) => [built])

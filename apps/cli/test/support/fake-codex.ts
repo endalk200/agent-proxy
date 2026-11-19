@@ -106,6 +106,57 @@ const answerResponse: ApiHandler = () =>
     { headers: { ...codexHeaders, "content-type": "text/event-stream" } },
   )
 
+/** A streamed response whose `response.completed` carries `usage`, as the Codex backend sends it. */
+export const streamedResponse = (usage: {
+  readonly input: number
+  readonly cached: number
+  readonly output: number
+  readonly reasoning: number
+}) =>
+  [
+    { type: "response.created", response: { id: "resp_fake", status: "in_progress" } },
+    { type: "response.output_text.delta", delta: "Hello." },
+    {
+      type: "response.completed",
+      response: {
+        id: "resp_fake",
+        status: "completed",
+        usage: {
+          input_tokens: usage.input,
+          input_tokens_details: { cached_tokens: usage.cached },
+          output_tokens: usage.output,
+          output_tokens_details: { reasoning_tokens: usage.reasoning },
+          total_tokens: usage.input + usage.output,
+        },
+      },
+    },
+  ]
+    .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+    .join("")
+
+/** What the Codex usage endpoint answers by default: the same windows as `codexHeaders`. */
+export const usageAnswer = {
+  plan_type: "pro",
+  rate_limit: {
+    allowed: true,
+    limit_reached: false,
+    primary_window: {
+      used_percent: 12,
+      limit_window_seconds: 18_000,
+      reset_after_seconds: 3600,
+      reset_at: 1_795_000_000,
+    },
+    secondary_window: {
+      used_percent: 34,
+      limit_window_seconds: 604_800,
+      reset_after_seconds: 86_400,
+      reset_at: 1_795_500_000,
+    },
+  },
+}
+
+const answerUsageDefault: ApiHandler = () => json(usageAnswer)
+
 /** How the fake answers one refresh request instead of refreshing. */
 type RefreshTrouble =
   | { readonly _tag: "Drop" }
@@ -141,6 +192,10 @@ export interface FakeCodex {
   readonly omitExpiresIn: () => void
   /** Later access tokens last `seconds` from when they are issued. */
   readonly issueTokensLasting: (seconds: number) => void
+  /** The requests the usage endpoint received so far, oldest first. */
+  readonly usageRequests: () => ReadonlyArray<ApiRequest>
+  /** Answers every later usage endpoint request with `handler`; the default answers `usageAnswer`. */
+  readonly answerUsageWith: (handler: ApiHandler) => void
 }
 
 /** Starts the fake on a free loopback port until the scope closes. */
@@ -158,6 +213,8 @@ export const fakeCodex = Effect.gen(function* () {
   const refreshRequests: Array<string> = []
   const refreshWaiters: Array<{ readonly count: number; readonly resolve: () => void }> = []
   let refreshTrouble: RefreshTrouble | undefined
+  const usageRequests: Array<ApiRequest> = []
+  let answerUsage: ApiHandler = answerUsageDefault
 
   /** Answers with a new token pair for `owner`, as both the exchange and a refresh do. */
   const issueTokens = (owner: CodexUser) => {
@@ -320,6 +377,15 @@ export const fakeCodex = Effect.gen(function* () {
           if (url.pathname.startsWith("/backend-api/codex/")) {
             return api(request, url)
           }
+          if (request.method === "GET" && url.pathname === "/backend-api/wham/usage") {
+            usageRequests.push({
+              method: request.method,
+              path: url.pathname + url.search,
+              headers: Object.fromEntries(request.headers),
+              body: "",
+            })
+            return answerUsage(request)
+          }
           return json({ error: "not_found" }, 404)
         },
       }),
@@ -333,6 +399,7 @@ export const fakeCodex = Effect.gen(function* () {
       apiBaseUrl: origin,
       authorizeUrl: `${origin}/oauth/authorize`,
       tokenUrl: `${origin}/oauth/token`,
+      usageUrl: `${origin}/backend-api/wham/usage`,
       callbackPort: 0,
     },
     signInAs: (next) => {
@@ -367,6 +434,10 @@ export const fakeCodex = Effect.gen(function* () {
     },
     issueTokensLasting: (seconds) => {
       lifetimeSeconds = seconds
+    },
+    usageRequests: () => [...usageRequests],
+    answerUsageWith: (handler) => {
+      answerUsage = handler
     },
   }
   return fake

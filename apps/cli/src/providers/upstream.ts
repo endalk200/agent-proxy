@@ -11,6 +11,7 @@ import {
 
 import { type Account, type Provider, providerNames } from "../accounts/account.ts"
 import type { LimitSignal } from "../accounts/router.ts"
+import type { ObservedWindow, TokenCounts } from "../usage/usage.ts"
 
 /**
  * What every provider adapter's upstream half shares: sending a client's
@@ -56,7 +57,37 @@ export interface UpstreamApi {
    * could be read.
    */
   readonly limitsOf: (answer: ProviderAnswer, now: number) => LimitSignal
+  /** The limit windows the answer's headers report, `now` being the time in epoch milliseconds. */
+  readonly windowsOf: (headers: Headers.Headers, now: number) => ReadonlyArray<ObservedWindow>
+  /**
+   * What a generation request spent, from the provider's own usage events in
+   * the response body, read in full and decoded. `complete` is true when the
+   * body reached its final usage event.
+   */
+  readonly usageOf: (body: string) => SpentTokens
+  /**
+   * Reads `account`'s limit windows from the provider's usage endpoint: the
+   * daemon's own read-only request, never a client's.
+   */
+  readonly readWindows: (
+    account: Account,
+    accessToken: string,
+    now: number,
+  ) => Effect.Effect<WindowsRead>
 }
+
+/** What a response body says its request spent. */
+export interface SpentTokens {
+  readonly tokens: TokenCounts
+  readonly complete: boolean
+}
+
+/** How a read of a provider's usage endpoint went. */
+export type WindowsRead =
+  | { readonly _tag: "Read"; readonly windows: ReadonlyArray<ObservedWindow> }
+  /** The provider asked the daemon to wait `retryAfterMs` before reading again. */
+  | { readonly _tag: "Busy"; readonly retryAfterMs: number }
+  | { readonly _tag: "Failed"; readonly reason: string }
 
 /** A provider's answer as its adapter judges its limits. */
 export interface ProviderAnswer {
@@ -81,11 +112,100 @@ export const retryAfterMs = (headers: Headers.Headers, now: number): number => {
   return Number.isNaN(date) ? 60_000 : Math.max(0, date - now)
 }
 
-/** The headroom left by the most used of `usedShares` (each 0 to 1), or none when none is known. */
-export const headroomOf = (usedShares: ReadonlyArray<number | undefined>): number | undefined => {
-  const known = usedShares.filter((share) => share !== undefined)
-  return known.length === 0 ? undefined : Math.min(1, Math.max(0, 1 - Math.max(...known)))
+export type Json = Readonly<Record<string, unknown>>
+
+export const asObject = (value: unknown): Json | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value))
+    : undefined
+
+/** `text` parsed as a JSON object, if it is one. */
+export const parseObject = (text: string): Json | undefined => {
+  try {
+    return asObject(JSON.parse(text))
+  } catch {
+    return undefined
+  }
 }
+
+export const finite = (value: unknown) =>
+  typeof value === "number" && Number.isFinite(value) ? value : undefined
+
+/** A share used, 0 to 1, from a value that may stray a little outside it. */
+export const shareOf = (value: number) => Math.min(1, Math.max(0, value))
+
+/**
+ * The JSON objects a response body carries: each server-sent event's data,
+ * or the body itself when it is one JSON object. Anything unreadable is skipped.
+ */
+export const bodyEvents = (body: string): ReadonlyArray<Json> => {
+  const whole = body.trimStart().startsWith("{") ? parseObject(body) : undefined
+  if (whole !== undefined) return [whole]
+  return body.split(/\r?\n\r?\n/).flatMap((block) => {
+    const data = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+    const event = data === "" ? undefined : parseObject(data)
+    return event === undefined ? [] : [event]
+  })
+}
+
+/**
+ * A limit window's id from its length in minutes: 5 hours, a week, or about
+ * a month. Any other length is not a window the dashboard knows.
+ */
+export const windowIdOfMinutes = (minutes: number | undefined) =>
+  minutes === undefined
+    ? undefined
+    : minutes === 300
+      ? "five-hour"
+      : minutes === 7 * 24 * 60
+        ? "weekly"
+        : minutes >= 28 * 24 * 60 && minutes <= 31 * 24 * 60
+          ? "monthly"
+          : undefined
+
+/** How long a read of a usage endpoint may take. */
+const READ_TIMEOUT = "30 seconds"
+
+/**
+ * GETs a provider's usage endpoint at `url` with `headers`, and reads its
+ * windows from the JSON answer with `parse`, which returns none for a shape
+ * it does not know.
+ */
+export const readUsageEndpoint = (
+  http: HttpClient.HttpClient,
+  url: string,
+  headers: Readonly<Record<string, string>>,
+  now: number,
+  parse: (body: Json) => ReadonlyArray<ObservedWindow> | undefined,
+): Effect.Effect<WindowsRead> =>
+  Effect.gen(function* () {
+    const response = yield* HttpClientRequest.get(url).pipe(
+      HttpClientRequest.setHeaders({ accept: "application/json", ...headers }),
+      http.execute,
+      Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+    )
+    if (response.status === 429) {
+      return { _tag: "Busy", retryAfterMs: retryAfterMs(response.headers, now) } as const
+    }
+    if (response.status !== 200) {
+      return { _tag: "Failed", reason: `HTTP ${response.status}` } as const
+    }
+    const body = asObject(yield* response.json)
+    const windows = body === undefined ? undefined : parse(body)
+    return windows === undefined
+      ? ({ _tag: "Failed", reason: "an answer of an unknown shape" } as const)
+      : ({ _tag: "Read", windows } as const)
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: READ_TIMEOUT,
+      orElse: () => Effect.succeed({ _tag: "Failed", reason: "no answer in time" } as const),
+    }),
+    Effect.catch((cause) => Effect.succeed({ _tag: "Failed", reason: cause.message } as const)),
+  )
 
 /**
  * Bun's fetch options for passthrough: a compressed body stays as it arrived,

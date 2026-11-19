@@ -45,7 +45,7 @@ The requests that went through the proxy and the tokens each one spent, as the p
 _Avoid_: Traffic, stats, metrics, consumption
 
 **Token kinds**:
-The four disjoint parts of a request's tokens: uncached input, cache read, cache write, and output. Reasoning is part of output, not a fifth kind.
+The four disjoint parts of a request's tokens: uncached input, cache read, cache write, and output. Reasoning is part of output, and a cache write is to Claude's 5-minute or 1-hour cache; neither is a fifth kind.
 _Avoid_: Prompt tokens, completion tokens, cached tokens
 
 **Cache hit rate**:
@@ -53,7 +53,7 @@ The share of all input tokens (uncached input, cache read, and cache write) that
 _Avoid_: Cache rate, hit ratio
 
 **Equivalent cost**:
-What usage would have cost at the provider's API list prices. The owner pays flat subscriptions, so it measures what the subscriptions are worth, not what was billed. A model with no known price is **unpriced** and left out of totals.
+What usage would have cost at the provider's API list prices. The owner pays flat subscriptions, so it measures what the subscriptions are worth, not what was billed. A write to Claude's 1-hour cache is priced at twice the input price, the 5-minute cache's at its own rate. A model with no known price is **unpriced** and left out of totals.
 _Avoid_: Cost, spend, billing
 
 ### Clients

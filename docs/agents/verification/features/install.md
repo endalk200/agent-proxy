@@ -50,4 +50,4 @@ The sandbox's `HOME` stands in for the owner's, so `install-local` installs into
 - `install-local` runs `bun run build`, which bakes in the checkout's commit, so it always rebuilds (the CLI build is not cached).
 - `install-local` restarts the daemon its own environment finds; run it in the shell whose `XDG_*` and `AGENT_PROXY_CONFIG` the daemon uses.
 - In `verify shell`, run the sandbox's own `"$HOME/.local/bin/agent-proxy" uninstall`, never a bare `agent-proxy uninstall`: `PATH` is inherited, so the bare name may be the real install, which `uninstall` refuses to delete there.
-- `uninstall` deletes the binary it runs as. Run `bun run install-local` again to reinstall; accounts and the proxy key are still there.
+- `uninstall` deletes the binary it runs as. Run `bun run install-local` again to reinstall; accounts, usage and the proxy key are still there.

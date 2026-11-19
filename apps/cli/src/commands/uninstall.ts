@@ -68,7 +68,7 @@ export const uninstallCommand = Command.make(
             ]),
         "- removes the launch agent, if it is installed, and stops the daemon",
         `- deletes ${binary}`,
-        "- keeps your accounts, the proxy key, the config and the logs",
+        "- keeps your accounts, usage, the proxy key, the config and the logs",
         "",
       ].join("\n"),
     )
@@ -105,7 +105,7 @@ export const uninstallCommand = Command.make(
       [
         "",
         "Kept, so a reinstall needs no sign-in:",
-        `  accounts and the proxy key  ${data}`,
+        `  accounts, usage, proxy key  ${data}`,
         `  logs                        ${state}`,
         `  config                      ${config}`,
         `Remove them with: rm -rf ${[data, state, config].map(word).join(" ")}`,
@@ -114,6 +114,6 @@ export const uninstallCommand = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Remove agent-proxy: disconnects every client, removes the launch agent, stops the daemon and deletes the binary; keeps accounts, config and logs",
+    "Remove agent-proxy: disconnects every client, removes the launch agent, stops the daemon and deletes the binary; keeps accounts, usage, config and logs",
   ),
 )

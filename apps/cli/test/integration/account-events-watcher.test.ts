@@ -7,9 +7,11 @@ import { AccountChanges } from "../../src/accounts/changes.ts"
 import { Router } from "../../src/accounts/router.ts"
 import { AccountStore, AccountStoreError } from "../../src/accounts/store.ts"
 import { AccountEvents } from "../../src/daemon/account-events.ts"
+import { LimitWindows } from "../../src/usage/limit-windows.ts"
+import { UsageStore } from "../../src/usage/store.ts"
 
-// `AccountEvents` on its own, under the test clock: the store, the router and
-// the change signal are fakes, so a test decides exactly what the watcher
+// `AccountEvents` on its own, under the test clock: the store, the router,
+// the limit windows and the change signal are fakes, so a test decides exactly what the watcher
 // reads and when, and counts how often it reads.
 
 const account = (id: string, label: string): Account => ({
@@ -76,6 +78,32 @@ const fakes = (options: {
         Layer.succeed(
           AccountChanges,
           AccountChanges.of({ signal: Effect.void, next: options.next ?? Effect.never }),
+        ),
+        // Limit windows that never change.
+        Layer.succeed(
+          LimitWindows,
+          LimitWindows.of({
+            observe: () => unused,
+            forget: () => unused,
+            known: () => [],
+            headroom: () => undefined,
+            subscribe: Effect.succeed(Effect.never),
+          }),
+        ),
+        // A usage store that only remembers the accounts' names.
+        Layer.succeed(
+          UsageStore,
+          UsageStore.of({
+            record: () => unused,
+            summary: () => unused,
+            series: () => unused,
+            breakdown: () => unused,
+            windows: unused,
+            saveWindows: () => unused,
+            forgetWindows: () => unused,
+            rememberAccounts: () => Effect.void,
+            rememberRemoved: () => unused,
+          }),
         ),
       ),
     ),

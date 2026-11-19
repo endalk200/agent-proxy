@@ -1,9 +1,11 @@
-import { Effect } from "effect"
+import { Clock, Effect } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
 import { Router } from "../accounts/router.ts"
 import { AccountStore } from "../accounts/store.ts"
 import { Logins } from "../logins/logins.ts"
+import { LimitWindows } from "../usage/limit-windows.ts"
+import { UsageStore } from "../usage/store.ts"
 import { StartLogin, SubmitCallback, toAccountList, toAccountView, UpdateAccount } from "./api.ts"
 import { apiError, type LocalOnly } from "./http.ts"
 
@@ -13,7 +15,8 @@ import { apiError, type LocalOnly } from "./http.ts"
  * - `GET /api/accounts` lists accounts with their status, and which account
  *   gets each pool's new sessions.
  * - `PATCH /api/accounts/:id` changes an account's label, priority or enabled.
- * - `DELETE /api/accounts/:id` removes an account.
+ * - `DELETE /api/accounts/:id` removes an account and its limit windows; its
+ *   usage stays, under the name the account had.
  * - `POST /api/logins` starts a login; `GET /api/logins/:id` polls it.
  * - `POST /api/logins/:id/callback` finishes it with a pasted callback URL.
  * - `DELETE /api/logins/:id` cancels it.
@@ -72,6 +75,17 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
       localOnly(
         Effect.gen(function* () {
           const account = yield* (yield* AccountStore).remove(yield* pathId)
+          yield* (yield* LimitWindows).forget(account.id)
+          // Its usage stays, under the name it had when removed.
+          yield* (yield* UsageStore)
+            .rememberRemoved(account, yield* Clock.currentTimeMillis)
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("could not remember a removed account's name").pipe(
+                  Effect.annotateLogs({ account: account.id, cause: error.message }),
+                ),
+              ),
+            )
           const routing = yield* (yield* Router).view
           return HttpServerResponse.jsonUnsafe(toAccountView(account, routing))
         }).pipe(
