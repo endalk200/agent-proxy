@@ -1,10 +1,17 @@
+import { isIP } from "node:net"
+
 import { Effect, Option } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 
 /** Helpers shared by the daemon API's routes. */
 
+/**
+ * True when `ip` is a loopback address. Only an IP literal is one: a name
+ * such as `127.evil.example` merely looks like one, and a page that rebinds
+ * it to loopback must still be refused.
+ */
 const isLoopback = (ip: string) =>
-  ip === "::1" || ip.startsWith("127.") || ip.startsWith("::ffff:127.")
+  isIP(ip) !== 0 && (ip === "::1" || ip.startsWith("127.") || ip.startsWith("::ffff:127."))
 
 /**
  * True when a peer at `ip` is this machine: a loopback address, or the

@@ -215,6 +215,19 @@ layer(
       })
       expect(rebound.status).toBe(403)
       expect(rebound.body).not.toContain("ap-")
+      // A name that only looks like a loopback address is a name all the same,
+      // even from its own page.
+      const port = new URL(daemon.address).port
+      for (const name of ["127.evil.example", "127.0.0.1.evil.example", "::ffff:127.evil"]) {
+        const lookalike = `${name.includes(":") ? `[${name}]` : name}:${port}`
+        const read = yield* raw(daemon.address, "GET", "/api/key", { host: lookalike })
+        expect({ name, status: read.status }).toEqual({ name, status: 403 })
+        const rotated = yield* raw(daemon.address, "POST", "/api/key/rotate", {
+          host: lookalike,
+          origin: `http://${lookalike}`,
+        })
+        expect({ name, status: rotated.status }).toEqual({ name, status: 403 })
+      }
       // A cross-site form post carries its page's Origin.
       for (const origin of ["https://evil.example", "null", "http://localhost:5173"]) {
         const posted = yield* raw(daemon.address, "POST", "/api/key/rotate", { host, origin })
