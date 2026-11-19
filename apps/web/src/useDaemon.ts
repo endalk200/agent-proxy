@@ -79,7 +79,9 @@ const explains = (own: OwnChange, event: AccountEvent): boolean => {
   return (
     (kept("label") || settings.label === after.label) &&
     (kept("enabled") || settings.enabled === after.enabled) &&
-    (kept("priority") || settings.priority !== undefined) &&
+    (kept("priority") ||
+      settings.priority !== undefined ||
+      settings.sharePriorityWith !== undefined) &&
     // Turning an account off or on moves its status to or from Disabled, and
     // hides or shows a cooldown still running, which the daemon reports only
     // while it decides the status.
@@ -216,6 +218,12 @@ export const useDaemon = (
           }
           if (message.type === "usage-recorded" || message.type === "limits-changed") {
             handleUsage.current(message)
+            return
+          }
+          if (message.type === "pools-changed") {
+            if (confirmed.current === undefined) return
+            confirmed.current = { ...confirmed.current, pools: message.pools }
+            show()
             return
           }
           if (confirmed.current === undefined) return

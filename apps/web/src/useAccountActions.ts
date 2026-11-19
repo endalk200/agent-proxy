@@ -1,7 +1,7 @@
 import { useMemo, useRef } from "react"
 
 import type { Account, AccountSettings, DaemonClient, DaemonFailure } from "./daemon-api.ts"
-import { withSettings } from "./model.ts"
+import { type Placement, withSettings } from "./model.ts"
 import { useNotify } from "./Notices.tsx"
 import { asFailure, type Daemon } from "./useDaemon.ts"
 
@@ -14,8 +14,8 @@ import { asFailure, type Daemon } from "./useDaemon.ts"
 export interface AccountActions {
   readonly setEnabled: (account: Account, enabled: boolean) => void
   readonly rename: (account: Account, label: string) => void
-  /** Moves `account` to `priority` in its pool, 1 first. */
-  readonly move: (account: Account, priority: number) => void
+  /** Moves `account` within its pool, to a priority of its own or one it shares. */
+  readonly move: (account: Account, placement: Placement) => void
   /** Removes `account`; resolves true once the daemon no longer holds it. */
   readonly remove: (account: Account) => Promise<boolean>
 }
@@ -57,7 +57,7 @@ export const useAccountActions = (daemon: Daemon, client: DaemonClient): Account
       setEnabled: (account, enabled) =>
         update(account, { enabled }, enabled ? "enable" : "disable"),
       rename: (account, label) => update(account, { label }, "rename"),
-      move: (account, priority) => update(account, { priority }, "move"),
+      move: (account, placement) => update(account, placement, "move"),
       remove: (account) =>
         change(
           (list) => list,
