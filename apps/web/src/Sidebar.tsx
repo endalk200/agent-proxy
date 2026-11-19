@@ -71,7 +71,7 @@ export function Sidebar(props: {
   const needSignIn = list?.accounts.filter((a) => a.status === "needs-sign-in").length ?? 0
   return (
     <SidebarRoot collapsible="icon" mobileFinalFocus={mobileFinalFocus}>
-      <SidebarHeader className="h-14 justify-center border-b border-sidebar-border px-3">
+      <SidebarHeader className="h-14 justify-center border-b border-sidebar-border px-3 group-data-[collapsible=icon]:px-1">
         <Brand />
       </SidebarHeader>
 
@@ -170,14 +170,9 @@ export function Sidebar(props: {
 /** The product's mark and name. */
 function Brand() {
   return (
-    <div className="flex items-center gap-2.5 overflow-hidden">
-      <span
-        aria-hidden="true"
-        className="grid size-8 shrink-0 place-items-center rounded-md bg-primary font-mono text-sm font-bold text-primary-foreground"
-      >
-        ap
-      </span>
-      <span className="flex min-w-0 flex-col leading-tight group-data-[collapsible=icon]:hidden">
+    <div className="flex items-center gap-2.5 overflow-hidden group-data-[collapsible=icon]:justify-center">
+      <img src="/agent-proxy.svg" alt="" width={32} height={32} className="shrink-0" />
+      <span className="flex min-w-0 flex-col leading-tight group-data-[collapsible=icon]:sr-only">
         <span className="truncate text-sm font-semibold tracking-wide">agent-proxy</span>
         <span className="truncate text-xs text-muted-foreground">Subscriptions, one endpoint</span>
       </span>
