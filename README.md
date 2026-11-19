@@ -89,10 +89,12 @@ Agents follow the same flow through the runbook in `docs/agents/verification/REA
 ```sh
 agent-proxy daemon start     # run it in the background; returns once it is ready
 agent-proxy daemon status    # pid, address, uptime, build and logs; or why it is down (--json for scripts)
-agent-proxy daemon stop      # SIGTERM, then wait for it to exit
+agent-proxy daemon stop      # SIGTERM; it finishes the requests in flight, then exits
 agent-proxy daemon restart   # stop it, if it runs, and start it again
 agent-proxy daemon run       # or run it in the foreground
 ```
+
+A stopping daemon, as on `stop`, `restart` or an update, first finishes the requests in flight, still serving new ones meanwhile, so a client mid-turn is never cut off. It waits at most 10 minutes; run `daemon stop` again to cut them off and stop within seconds.
 
 The daemon keeps its lock, state file (`daemon.json`, with its pid and the port it bound), and logs in `$XDG_STATE_HOME/agent-proxy/`, by default `~/.local/state/agent-proxy/`. One daemon runs per state directory. `--log-level debug` sets how much it logs. `daemon.log` holds one JSON object per line, and at 10 MB becomes `daemon.log.1`, replacing the one before. Whatever the daemon prints itself, such as a crash before its logger starts, goes to `daemon.stderr.log`. When the daemon is not running, `daemon status` exits 1 and still says where the logs are, how the launch agent stands, and the last error the daemon logged.
 

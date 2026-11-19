@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs"
 import {
   Config,
   Console,
+  Duration,
   Effect,
   FileSystem,
   Option,
@@ -20,6 +21,7 @@ import { lockedBy, readStateFile, stateFiles } from "../daemon/state.ts"
 import { isSupervised, Launchd, plist, SUPERVISED_VARIABLE } from "../launchd.ts"
 import { displayPath, resolveStateDir } from "../paths.ts"
 import { type LaunchedProcess, Processes } from "../processes.ts"
+import { DrainLimit } from "../proxy/in-flight.ts"
 import { RuntimeInfo } from "../runtime-info.ts"
 import { asUserError, ExitCode, userError } from "./errors.ts"
 
@@ -173,8 +175,13 @@ const lastLoggedError = (logFile: string) =>
 const POLL = Schedule.spaced("100 millis")
 /** How long `start` waits for a launched daemon to answer /healthz: 10 seconds. */
 const READY_TIMEOUT_TRIES = 100
-/** How long `stop` waits for the daemon to exit after SIGTERM: 15 seconds. */
-const STOP_TIMEOUT_TRIES = 150
+/** How long `stop` waits before saying it is waiting for the requests in flight: a second. */
+const STOP_NOTICE_TRIES = 10
+/**
+ * How much longer than the drain limit `stop` waits for the daemon to exit:
+ * enough for it to stop serving once the requests in flight are done.
+ */
+const STOP_MARGIN_MS = 30_000
 
 /**
  * Waits until a daemon has written the state file and answers `/healthz`:
@@ -235,18 +242,29 @@ const runningDaemon = fetchDaemonInfo.pipe(
   Effect.mapError(asUserError),
 )
 
-/** Stops `info`'s daemon with SIGTERM and waits for it to exit. */
+/**
+ * Stops `info`'s daemon with SIGTERM and waits for it to exit. The daemon
+ * first finishes the requests in flight, up to the drain limit, so this can
+ * take minutes while clients are mid-turn; a second SIGTERM stops it at once.
+ */
 const stopDaemon = (info: DaemonInfo) =>
   Effect.gen(function* () {
     const processes = yield* Processes
+    const limit = Duration.fromInputUnsafe(yield* DrainLimit)
     yield* processes.signal(info.pid, "SIGTERM").pipe(Effect.mapError(asUserError))
-    const exited = yield* processes.isAlive(info.pid).pipe(
-      Effect.repeat({ schedule: POLL, until: (alive) => !alive, times: STOP_TIMEOUT_TRIES }),
-      Effect.map((alive) => !alive),
+    const exitedWithin = (tries: number) =>
+      processes.isAlive(info.pid).pipe(
+        Effect.repeat({ schedule: POLL, until: (alive) => !alive, times: tries }),
+        Effect.map((alive) => !alive),
+      )
+    if (yield* exitedWithin(STOP_NOTICE_TRIES)) return
+    yield* Console.error(
+      `Waiting for the daemon (pid ${info.pid}) to finish the requests in flight, at most ${Duration.format(limit)}. To cut them off and stop within seconds, run \`agent-proxy daemon stop\` again.`,
     )
-    if (!exited) {
+    const tries = Math.ceil((Duration.toMillis(limit) + STOP_MARGIN_MS) / 100)
+    if (!(yield* exitedWithin(tries))) {
       return yield* userError(
-        `The daemon (pid ${info.pid}) is still running 15 seconds after SIGTERM.`,
+        `The daemon (pid ${info.pid}) is still running ${Duration.format(Duration.sum(limit, Duration.millis(STOP_MARGIN_MS)))} after SIGTERM.`,
       )
     }
   })
@@ -516,9 +534,13 @@ const install = Command.make(
     }
     environment[SUPERVISED_VARIABLE] = "1"
 
-    // Installing again reloads the agent, which repoints it after the binary moves.
+    // Installing again reloads the agent, which repoints it after the binary
+    // moves. The running daemon is stopped first, with SIGTERM, so it finishes
+    // the requests in flight: launchd's own stop kills it 20 seconds in.
+    const wasSupervised = (yield* agentState).installed
+    const stopped = yield* stopRunningDaemon
     yield* launchd.bootout.pipe(Effect.mapError(asUserError))
-    const handedOver = yield* stopRunningDaemon
+    const handedOver = wasSupervised ? Option.none<number>() : stopped
     const logOffset = yield* logSize(files.log)
     yield* launchd
       .writePlist(plist({ program: runtime.binary.value.path, environment, output: files.stderr }))
@@ -534,7 +556,7 @@ const install = Command.make(
         `Stopped the daemon that ran without it (pid ${handedOver.value}), so the launch agent runs it from now on.`,
       )
     }
-    const ready = yield* awaitReady({ launched: Option.none(), previous: handedOver, logOffset })
+    const ready = yield* awaitReady({ launched: Option.none(), previous: stopped, logOffset })
     yield* Console.log(startedLine("started", { ...ready, supervised: true }))
   }),
 ).pipe(
