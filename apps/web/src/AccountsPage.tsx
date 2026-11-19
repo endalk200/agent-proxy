@@ -94,9 +94,9 @@ export interface AccountControls {
 /** Limit window columns: off when the pool's card is narrow (a phone), where a row is priority, account, status and actions. */
 const WIDE = "@max-[40rem]/pool:hidden"
 /** The Enabled column: off unless the card is wide, as when the account sheet takes the page's right side. */
-const ENABLED = "@max-[60rem]/pool:hidden"
+const ENABLED = "@max-[54rem]/pool:hidden"
 /** The blank columns that line a pool's windows up with a wider pool's: dropped with Enabled. */
-const PAD = "@max-[60rem]/pool:hidden"
+const PAD = "@max-[54rem]/pool:hidden"
 
 /** A row's own controls, where a click does not open the sheet. */
 const ROW_CONTROLS = "button, input, a, [role=switch], [role=menu]"

@@ -142,7 +142,11 @@ export function Sidebar(props: {
             <SidebarMenuButton
               tooltip="Connect clients"
               className="h-9"
-              onClick={props.onConnectClients}
+              onClick={() => {
+                // On a phone the drawer gives way to the dialog rather than sitting under it.
+                if (isMobile) setOpenMobile(false)
+                props.onConnectClients()
+              }}
             >
               <Link aria-hidden="true" />
               <span>Connect clients</span>

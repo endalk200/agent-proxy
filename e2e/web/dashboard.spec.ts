@@ -179,6 +179,8 @@ test("Connect clients fits a phone screen, every copy button inside the dialog",
   await seedThree()
   await open(page)
 
+  // On a phone the sidebar is a drawer behind the top bar's toggle.
+  await page.getByRole("button", { name: "Toggle Sidebar" }).click()
   await page.getByRole("button", { name: "Connect clients" }).click()
   const dialog = page.getByRole("dialog", { name: "Connect clients" })
   const frame = await dialog.boundingBox()
