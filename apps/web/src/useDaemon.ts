@@ -9,6 +9,7 @@ import {
   DaemonCallError,
   type DaemonFailure,
   type DaemonInfo,
+  type UsageEvent,
 } from "./daemon-api.ts"
 import { applyEvent } from "./model.ts"
 
@@ -105,12 +106,15 @@ const explains = (own: OwnChange, event: AccountEvent): boolean => {
  *   again.
  *
  * `onEvent` hears each change as it arrives, with whether this dashboard
- * made it through `change`.
+ * made it through `change`. `onUsage` hears each usage and limit-window event,
+ * and `opened` each time the stream starts again, since events it missed
+ * meanwhile are gone.
  */
 export const useDaemon = (
   client: DaemonClient,
   timing: DaemonTiming,
   onEvent: (event: AccountEvent, own: boolean) => void,
+  onUsage: (event: UsageEvent | { readonly type: "opened" }) => void = () => {},
 ): Daemon => {
   const [view, setView] = useState<DaemonView>({
     accounts: undefined,
@@ -128,9 +132,11 @@ export const useDaemon = (
   /** Bumped as each change settles. */
   const settles = useRef(0)
   const handleEvent = useRef(onEvent)
+  const handleUsage = useRef(onUsage)
   useEffect(() => {
     handleEvent.current = onEvent
-  }, [onEvent])
+    handleUsage.current = onUsage
+  }, [onEvent, onUsage])
   const refreshNow = useRef<() => void>(() => {})
   const { checkInterval, requestTimeout, reopenDelay } = timing
 
@@ -205,6 +211,11 @@ export const useDaemon = (
             // A reconnection may be to a restarted daemon: its info changed.
             snapshots += 1
             if (snapshots > 1) void check()
+            handleUsage.current({ type: "opened" })
+            return
+          }
+          if (message.type === "usage-recorded" || message.type === "limits-changed") {
+            handleUsage.current(message)
             return
           }
           if (confirmed.current === undefined) return

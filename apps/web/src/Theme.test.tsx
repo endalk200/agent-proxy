@@ -47,6 +47,8 @@ const choose = async (name: string) => {
 }
 
 beforeEach(() => {
+  // These tests drive the Accounts page, which lives at `/accounts`.
+  window.history.replaceState(null, "", "/accounts")
   localStorage.clear()
   delete document.documentElement.dataset["theme"]
 })

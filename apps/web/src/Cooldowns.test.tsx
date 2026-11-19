@@ -15,6 +15,8 @@ const NOW = Date.parse("2026-11-17T06:00:00Z")
 const inMinutes = (minutes: number) => new Date(NOW + minutes * 60_000).toISOString()
 
 beforeEach(() => {
+  // These tests drive the Accounts page, which lives at `/accounts`.
+  window.history.replaceState(null, "", "/accounts")
   vi.setSystemTime(NOW)
 })
 
@@ -50,7 +52,7 @@ describe("an account cooling down", () => {
 
     expect(rowsOf(await claudeTable()).map((row) => row["Status"])).toEqual([
       "Cooling down until 3:47 PM · in 47m",
-      "Active",
+      "Active Never used",
     ])
     vi.setSystemTime(NOW + 60_000)
     await waitFor(
@@ -183,6 +185,9 @@ describe("a status this dashboard does not know", () => {
       }),
     )
 
-    expect(rowsOf(await claudeTable()).map((row) => row["Status"])).toEqual(["Unknown", "Active"])
+    expect(rowsOf(await claudeTable()).map((row) => row["Status"])).toEqual([
+      "Unknown",
+      "Active Never used",
+    ])
   })
 })

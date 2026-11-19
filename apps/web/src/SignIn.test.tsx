@@ -25,7 +25,11 @@ const tabs = (blocked = false) => {
   })
 }
 
-beforeEach(() => tabs())
+beforeEach(() => {
+  tabs()
+  // These tests drive the Accounts page, which lives at `/accounts`.
+  window.history.replaceState(null, "", "/accounts")
+})
 
 afterEach(() => {
   cleanup()
@@ -117,9 +121,9 @@ describe("add an account", () => {
 
     await waitFor(() =>
       expect(labels(table)).toEqual([
-        "Work New sessions work@example.com",
-        "Home home@example.com",
-        "Lab lab@example.com",
+        "Work Pro New sessions work@example.com",
+        "Home Pro home@example.com",
+        "Lab Pro lab@example.com",
       ]),
     )
     expect(stored(daemon)).toEqual([
@@ -171,7 +175,7 @@ describe("add an account", () => {
     fireEvent.submit(label)
 
     const table = await screen.findByRole("table", { name: "Codex accounts" })
-    await waitFor(() => expect(labels(table)).toEqual(["Work New sessions carol@example.com"]))
+    await waitFor(() => expect(labels(table)).toEqual(["Work Pro New sessions carol@example.com"]))
     expect(stored(daemon)).toEqual(["codex 1 Work active"])
     expect(opened).toEqual([login.authorizeUrl])
   })
@@ -239,8 +243,8 @@ describe("sign in again", () => {
 
     await waitFor(() => expect(textOf(status)).toContain("Active"))
     expect(statuses(table)).toEqual([
-      "Work New sessions work@example.com: Active",
-      "Home home@example.com: Active",
+      "Work Pro New sessions work@example.com: Active Never used",
+      "Home Pro home@example.com: Active Never used",
     ])
     expect(stored(daemon)).toEqual(["claude 1 Work active", "claude 2 Home active"])
     expect(daemon.changes).toEqual([])
@@ -262,7 +266,7 @@ describe("sign in again", () => {
     daemon.signInAs = { providerAccountId: "acct-plus", email: "plus@example.com", plan: "Plus" }
     show(daemon)
     const table = await screen.findByRole("table", { name: "Codex accounts" })
-    expect(statuses(table)).toEqual(["Plus plus@example.com: Needs sign-in Sign in again"])
+    expect(statuses(table)).toEqual(["Plus Pro plus@example.com: Needs sign-in Sign in again"])
 
     fireEvent.click(within(table).getByRole("button", { name: "Sign in again to Plus" }))
     const dialog = await screen.findByRole("dialog", { name: "Sign in again to Plus" })
@@ -273,7 +277,9 @@ describe("sign in again", () => {
     const done = await screen.findByRole("dialog", { name: "Plus is signed in again" })
     fireEvent.click(within(done).getByRole("button", { name: "Done" }))
     await waitFor(() =>
-      expect(statuses(table)).toEqual(["Plus New sessions plus@example.com: Active"]),
+      expect(statuses(table)).toEqual([
+        "Plus Plus New sessions plus@example.com: Active Never used",
+      ]),
     )
     expect(screen.queryByRole("dialog", { name: "Plus" })).toBeNull()
   })

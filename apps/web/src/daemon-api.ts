@@ -116,7 +116,169 @@ export type AccountEvent =
     }
 
 /** A message on the daemon's event stream: the accounts as they are when it opens, then each change. */
-export type StreamMessage = { readonly type: "snapshot"; readonly list: AccountList } | AccountEvent
+export type StreamMessage =
+  | { readonly type: "snapshot"; readonly list: AccountList }
+  | AccountEvent
+  | UsageEvent
+
+// --------------------------------------------------------------------- usage
+
+/**
+ * The four disjoint token kinds, plus two parts of them not added to totals:
+ * the cache write to Claude's 1-hour cache, and reasoning, part of output.
+ */
+export interface TokenCounts {
+  readonly uncached: number
+  readonly cacheRead: number
+  readonly cacheWrite: number
+  /** The part of `cacheWrite` written to the 1-hour cache. */
+  readonly cacheWrite1h: number
+  readonly output: number
+  readonly reasoning: number
+}
+
+/** Every token a request spent: the four token kinds, reasoning being part of output. */
+export const totalTokens = (tokens: TokenCounts): number =>
+  tokens.uncached + tokens.cacheRead + tokens.cacheWrite + tokens.output
+
+export interface RequestCounts {
+  readonly total: number
+  readonly success: number
+  readonly failed: number
+  readonly limited: number
+  readonly incomplete: number
+}
+
+export type UsageStatus = "success" | "failed" | "limited" | "incomplete"
+export type ClientName = "claude-code" | "codex" | "opencode" | "other"
+
+/** A range the owner picks; `custom` carries calendar days, `YYYY-MM-DD`, both inclusive. */
+export type UsageRange =
+  | { readonly key: "6h" | "24h" | "7d" | "30d" | "90d" | "lifetime" }
+  | { readonly key: "custom"; readonly from: string; readonly to: string }
+
+export type RangeKey = UsageRange["key"]
+
+/** What every `/api/usage/*` route answers about. */
+export interface UsageQuery {
+  readonly range: UsageRange
+  /** The viewer's IANA time zone: calendar days and day buckets follow it. */
+  readonly tz: string
+  /** Narrows every number to one account. */
+  readonly accountId?: string
+}
+
+/** One point of the KPI sparklines: a whole number of chart buckets. */
+export interface SparkPoint {
+  readonly t: number
+  readonly requests: number
+  readonly tokens: number
+  readonly cacheHitRate: number | null
+  readonly costUsd: number
+}
+
+/** `GET /api/usage/summary`. */
+export interface UsageSummary {
+  /** The range resolved to whole buckets, epoch ms; `to` is the end of the current bucket. */
+  readonly from: number
+  readonly to: number
+  readonly requests: RequestCounts
+  readonly tokens: TokenCounts
+  /** cache read ÷ all input; null with no input. */
+  readonly cacheHitRate: number | null
+  /** Equivalent cost of the priced models, at API list prices. */
+  readonly costUsd: number
+  readonly unpricedModels: ReadonlyArray<string>
+  readonly spark: ReadonlyArray<SparkPoint>
+}
+
+/** What a series measures: total tokens, or equivalent cost in USD. */
+export type SeriesMetric = "tokens" | "cost"
+
+/** `GET /api/usage/series?by=model&metric=…`: tokens or equivalent cost per bucket, split by model. */
+export interface UsageSeries {
+  readonly from: number
+  readonly to: number
+  /** Nominal; a day bucket follows calendar days, so read each bucket's `t`. */
+  readonly bucketMs: number
+  readonly metric: SeriesMetric
+  /** Models with some of `metric` in the range, the most first; an unpriced model has no cost. */
+  readonly keys: ReadonlyArray<string>
+  readonly buckets: ReadonlyArray<{
+    readonly t: number
+    readonly values: Readonly<Record<string, number>>
+  }>
+}
+
+export type BreakdownBy = "model" | "account"
+
+/** A breakdown row's account, as the daemon last knew it. */
+export interface BreakdownAccount {
+  readonly provider: Provider
+  readonly label: string
+  readonly email: string
+  readonly plan: string
+  /** When it was removed, epoch milliseconds; null while it is held. */
+  readonly removedAt: number | null
+}
+
+export interface BreakdownRow {
+  /** A model id, or an account id, possibly a removed account's. */
+  readonly key: string
+  readonly requests: RequestCounts
+  readonly tokens: TokenCounts
+  readonly totalTokens: number
+  /** Null when wholly unpriced. */
+  readonly costUsd: number | null
+  readonly partlyUnpriced: boolean
+  /** Share of all tokens in the range, 0–1. */
+  readonly share: number
+  /** A `by=account` row's account; null when the daemon never knew its name, and for a `by=model` row. */
+  readonly account: BreakdownAccount | null
+}
+
+/** `GET /api/usage/breakdown`. */
+export interface UsageBreakdown {
+  readonly from: number
+  readonly to: number
+  readonly by: BreakdownBy
+  /** Most tokens first. */
+  readonly rows: ReadonlyArray<BreakdownRow>
+}
+
+/** One limit window of an account, as its provider last reported it. */
+export interface LimitWindow {
+  /** `five-hour`, `weekly`, `monthly`, or `weekly:<Model>` for a per-model weekly window. */
+  readonly id: string
+  readonly label: string
+  /** Share used, 0–100. */
+  readonly usedPct: number
+  readonly resetsAt: number
+  readonly asOf: number
+}
+
+/** `GET /api/limits`: one per account the daemon holds. */
+export interface AccountLimits {
+  readonly accountId: string
+  /** The newest window's `asOf`; null when never observed. */
+  readonly asOf: number | null
+  readonly windows: ReadonlyArray<LimitWindow>
+}
+
+/** A request the proxy finished, as `usage-recorded` reports it. */
+export interface UsageRecord {
+  readonly at: number
+  readonly provider: Provider
+  readonly accountId: string
+  readonly model: string
+  readonly client: ClientName
+  readonly status: UsageStatus
+  readonly tokens: TokenCounts
+}
+
+export type UsageEvent =
+  | { readonly type: "usage-recorded"; readonly usage: UsageRecord }
+  | { readonly type: "limits-changed"; readonly limits: AccountLimits }
 
 /** What the dashboard does as its event stream opens, carries a message, or fails. */
 export interface StreamHandlers {
@@ -158,6 +320,16 @@ export interface DaemonClient {
   readonly submitCallback: (id: string, url: string) => Promise<Login>
   /** `DELETE /api/logins/:id`: cancels a waiting login. */
   readonly cancelLogin: (id: string) => Promise<Login>
+  /** `GET /api/usage/summary`. */
+  readonly usageSummary: (query: UsageQuery) => Promise<UsageSummary>
+  /** `GET /api/usage/series?by=model&metric=…`, tokens when `metric` is left out. */
+  readonly usageSeries: (query: UsageQuery, metric?: SeriesMetric) => Promise<UsageSeries>
+  /** `GET /api/usage/breakdown?by=…`. */
+  readonly usageBreakdown: (query: UsageQuery, by: BreakdownBy) => Promise<UsageBreakdown>
+  /** `GET /api/limits`. */
+  readonly limits: () => Promise<ReadonlyArray<AccountLimits>>
+  /** `POST /api/limits/refresh`: reads fresh limit windows for one account, or all; answers every account's. */
+  readonly refreshLimits: (accountId?: string) => Promise<ReadonlyArray<AccountLimits>>
 }
 
 // ------------------------------------------------------------------ decoding
@@ -236,10 +408,163 @@ const decodeAccountList = (value: unknown): AccountList => {
   return { accounts: array(json["accounts"]).map(decodeAccount), pools: decodePools(json["pools"]) }
 }
 
+const number = (value: unknown): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new Unreadable()
+  return value
+}
+const nullableNumber = (value: unknown): number | null => (value === null ? null : number(value))
+const boolean = (value: unknown): boolean => {
+  if (typeof value !== "boolean") throw new Unreadable()
+  return value
+}
+const USAGE_STATUSES: ReadonlyArray<UsageStatus> = ["success", "failed", "limited", "incomplete"]
+const CLIENT_NAMES: ReadonlyArray<ClientName> = ["claude-code", "codex", "opencode", "other"]
+
+const decodeTokens = (value: unknown): TokenCounts => {
+  const json = object(value)
+  return {
+    uncached: number(json["uncached"]),
+    cacheRead: number(json["cacheRead"]),
+    cacheWrite: number(json["cacheWrite"]),
+    cacheWrite1h: number(json["cacheWrite1h"]),
+    output: number(json["output"]),
+    reasoning: number(json["reasoning"]),
+  }
+}
+
+const decodeRequests = (value: unknown): RequestCounts => {
+  const json = object(value)
+  return {
+    total: number(json["total"]),
+    success: number(json["success"]),
+    failed: number(json["failed"]),
+    limited: number(json["limited"]),
+    incomplete: number(json["incomplete"]),
+  }
+}
+
+const decodeSummary = (value: unknown): UsageSummary => {
+  const json = object(value)
+  return {
+    from: number(json["from"]),
+    to: number(json["to"]),
+    requests: decodeRequests(json["requests"]),
+    tokens: decodeTokens(json["tokens"]),
+    cacheHitRate: nullableNumber(json["cacheHitRate"]),
+    costUsd: number(json["costUsd"]),
+    unpricedModels: array(json["unpricedModels"]).map(string),
+    spark: array(json["spark"]).map((point) => {
+      const fields = object(point)
+      return {
+        t: number(fields["t"]),
+        requests: number(fields["requests"]),
+        tokens: number(fields["tokens"]),
+        cacheHitRate: nullableNumber(fields["cacheHitRate"]),
+        costUsd: number(fields["costUsd"]),
+      }
+    }),
+  }
+}
+
+const decodeSeries = (value: unknown): UsageSeries => {
+  const json = object(value)
+  return {
+    from: number(json["from"]),
+    to: number(json["to"]),
+    bucketMs: number(json["bucketMs"]),
+    metric: oneOf(["tokens", "cost"], json["metric"]),
+    keys: array(json["keys"]).map(string),
+    buckets: array(json["buckets"]).map((bucket) => {
+      const fields = object(bucket)
+      return {
+        t: number(fields["t"]),
+        values: Object.fromEntries(
+          Object.entries(object(fields["values"])).map(([key, v]) => [key, number(v)]),
+        ),
+      }
+    }),
+  }
+}
+
+const decodeBreakdownAccount = (value: unknown): BreakdownAccount => {
+  const json = object(value)
+  return {
+    provider: oneOf(["claude", "codex"] as const, json["provider"]),
+    label: string(json["label"]),
+    email: string(json["email"]),
+    plan: string(json["plan"]),
+    removedAt: nullableNumber(json["removedAt"]),
+  }
+}
+
+const decodeBreakdown = (value: unknown): UsageBreakdown => {
+  const json = object(value)
+  return {
+    from: number(json["from"]),
+    to: number(json["to"]),
+    by: oneOf(["model", "account"] as const, json["by"]),
+    rows: array(json["rows"]).map((row) => {
+      const fields = object(row)
+      return {
+        key: string(fields["key"]),
+        requests: decodeRequests(fields["requests"]),
+        tokens: decodeTokens(fields["tokens"]),
+        totalTokens: number(fields["totalTokens"]),
+        costUsd: nullableNumber(fields["costUsd"]),
+        partlyUnpriced: boolean(fields["partlyUnpriced"]),
+        share: number(fields["share"]),
+        account:
+          fields["account"] === undefined || fields["account"] === null
+            ? null
+            : decodeBreakdownAccount(fields["account"]),
+      }
+    }),
+  }
+}
+
+const decodeAccountLimits = (value: unknown): AccountLimits => {
+  const json = object(value)
+  return {
+    accountId: string(json["accountId"]),
+    asOf: nullableNumber(json["asOf"]),
+    windows: array(json["windows"]).map((window) => {
+      const fields = object(window)
+      return {
+        id: string(fields["id"]),
+        label: string(fields["label"]),
+        usedPct: number(fields["usedPct"]),
+        resetsAt: number(fields["resetsAt"]),
+        asOf: number(fields["asOf"]),
+      }
+    }),
+  }
+}
+
+const decodeLimits = (value: unknown): ReadonlyArray<AccountLimits> =>
+  array(value).map(decodeAccountLimits)
+
+const decodeUsageRecord = (value: unknown): UsageRecord => {
+  const json = object(value)
+  return {
+    at: number(json["at"]),
+    provider: oneOf(PROVIDERS, json["provider"]),
+    accountId: string(json["accountId"]),
+    model: string(json["model"]),
+    // A client a newer daemon names counts as another client.
+    client: CLIENT_NAMES.find((name) => name === json["client"]) ?? "other",
+    status: oneOf(USAGE_STATUSES, json["status"]),
+    tokens: decodeTokens(json["tokens"]),
+  }
+}
+
 const decodeStreamMessage = (value: unknown): StreamMessage => {
   const json = object(value)
   const pools = () => decodePools(json["pools"])
   switch (json["type"]) {
+    case "usage-recorded":
+      return { type: "usage-recorded", usage: decodeUsageRecord(json["usage"]) }
+    case "limits-changed":
+      return { type: "limits-changed", limits: decodeAccountLimits(json["limits"]) }
     case "snapshot":
       return { type: "snapshot", list: decodeAccountList(json) }
     case "added":
@@ -295,6 +620,19 @@ const errorMessage = (value: unknown): string | undefined => {
 }
 
 // -------------------------------------------------------------------- client
+
+/** The query string of a `/api/usage/*` call. */
+const usageParams = (query: UsageQuery, extra: Readonly<Record<string, string>> = {}) => {
+  const params = new URLSearchParams({ range: query.range.key })
+  if (query.range.key === "custom") {
+    params.set("from", query.range.from)
+    params.set("to", query.range.to)
+  }
+  params.set("tz", query.tz)
+  if (query.accountId !== undefined) params.set("account", query.accountId)
+  for (const [key, value] of Object.entries(extra)) params.set(key, value)
+  return params.toString()
+}
 
 const accountPath = (id: string) => `/api/accounts/${encodeURIComponent(id)}`
 const loginPath = (id: string) => `/api/logins/${encodeURIComponent(id)}`
@@ -392,5 +730,16 @@ export const createDaemonClient = (
     submitCallback: (id, url) =>
       call(`${loginPath(id)}/callback`, decodeLogin, { method: "POST", body: { url } }),
     cancelLogin: (id) => call(loginPath(id), decodeLogin, { method: "DELETE" }),
+    usageSummary: (query) => call(`/api/usage/summary?${usageParams(query)}`, decodeSummary),
+    usageSeries: (query, metric = "tokens") =>
+      call(`/api/usage/series?${usageParams(query, { by: "model", metric })}`, decodeSeries),
+    usageBreakdown: (query, by) =>
+      call(`/api/usage/breakdown?${usageParams(query, { by })}`, decodeBreakdown),
+    limits: () => call("/api/limits", decodeLimits),
+    refreshLimits: (accountId) =>
+      call("/api/limits/refresh", decodeLimits, {
+        method: "POST",
+        body: accountId === undefined ? {} : { accountId },
+      }),
   }
 }

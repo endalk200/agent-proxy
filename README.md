@@ -2,7 +2,7 @@
 
 A command-line tool that runs as a background daemon, with a browser client for watching and controlling it.
 
-The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | restart | status`), supervises it with launchd on macOS (`daemon install | uninstall`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code, Codex and opencode at the daemon and back (`agent-proxy connect | disconnect claude-code | codex | opencode`), reports its setup (`info`), and removes itself (`uninstall`). The daemon serves Claude Code from your Claude accounts, Codex from your Codex (ChatGPT) accounts, opencode from both, and a dashboard of your accounts that updates live at its own address (`http://127.0.0.1:8318/` by default).
+The application is early. The CLI runs the daemon (`agent-proxy daemon run | start | stop | restart | status`), supervises it with launchd on macOS (`daemon install | uninstall`), adds, lists, and manages Claude and Codex accounts (`agent-proxy accounts`), prints the proxy key (`agent-proxy key`), points Claude Code, Codex and opencode at the daemon and back (`agent-proxy connect | disconnect claude-code | codex | opencode`), reports its setup (`info`), and removes itself (`uninstall`). The daemon serves Claude Code from your Claude accounts, Codex from your Codex (ChatGPT) accounts, opencode from both, and a live dashboard of your usage, limit windows and accounts at its own address (`http://127.0.0.1:8318/` by default).
 
 ## Requirements
 
@@ -227,7 +227,7 @@ opencode reads the key file when it loads its config, so after `agent-proxy key 
 
 ## Sessions and limits
 
-A session stays on one account, so the provider's prompt cache keeps working (ADR-0003). The daemon knows a session by what the client sends: Claude Code's `x-claude-code-session-id` (its subagents send their parent's), Codex's `session-id`, or, from opencode, the body's `prompt_cache_key`. A session's first request goes to the highest-priority Active account of its pool; accounts that share a priority, which happens only when a change was interrupted, go to the one with the most headroom left in its usage windows. The session then stays on that account until the account stops being Active or the session sits idle for an hour. A request that names no session is routed afresh every time. Sessions live in memory only.
+A session stays on one account, so the provider's prompt cache keeps working (ADR-0003). The daemon knows a session by what the client sends: Claude Code's `x-claude-code-session-id` (its subagents send their parent's), Codex's `session-id`, or, from opencode, the body's `prompt_cache_key`. A session's first request goes to the highest-priority Active account of its pool; accounts that share a priority, which happens only when a change was interrupted, go to the one with the most room left in its tightest 5-hour or weekly limit window, as the dashboard shows it (see [Usage and limit windows](#usage-and-limit-windows)). The session then stays on that account until the account stops being Active or the session sits idle for an hour. A request that names no session is routed afresh every time. Sessions live in memory only.
 
 When an account hits a limit, the daemon cools it down for as long as the provider says:
 
@@ -236,6 +236,16 @@ When an account hits a limit, the daemon cools it down for as long as the provid
 - any other 429, such as a per-minute rate limit, for its `Retry-After` only.
 
 If nothing has reached the client yet, the request goes straight to the next account and the session moves with it, so the client never notices. A failure after the answer has started streaming reaches the client as it is. When every account in the pool is cooling down, the client gets the provider's own limit answer with the earliest reset: Claude Code shows the limit and when it resets, and Codex shows its usage-limit message. When every account needs sign-in or is disabled, the client gets a 400 saying so at once. Cooldowns live in memory; after a restart, the next limit answer starts them again.
+
+## Usage and limit windows
+
+The dashboard's home page shows what went through the proxy over a range you pick (6 hours to lifetime, or two calendar days of your choosing): requests and how many succeeded, tokens by kind (uncached input, cache read, cache write and output, with reasoning counted in output), the cache hit rate, and the equivalent cost, which is what the same usage would have cost at the providers' API list prices (a write to Claude's 1-hour cache at twice the input price). A model with no known price is listed as unpriced and left out of that cost. Breakdowns by model and by account, and every account's limit windows, sit below.
+
+The daemon records one row per Claude message and Codex response in `$XDG_DATA_HOME/agent-proxy/usage.sqlite`, readable only by you, and keeps every row (`docs/adr/0009-*`). Token counts are the provider's own, read from a copy of each response as it streams to the client, which still gets the provider's bytes unchanged. A request that fails, hits a limit, or ends early because its client went away is recorded too, with the tokens seen so far. A removed account's usage stays in the totals, under the name it had when you removed it.
+
+Limit windows are Claude's 5-hour, weekly and per-model weekly (such as Fable) windows, and Codex's 5-hour and weekly ones: how much of each is used and when it resets. The daemon reads them from the headers of every answer, and from each provider's usage endpoint at startup, when you add an account, every 30 minutes, just after a window resets, and when you click **Refresh limits**. It reads one account at a time, skips accounts that need sign-in or are disabled, and waits as long as a provider asks (up to an hour) after a 429. When a read fails, the last-known numbers stay, and the dashboard dims any older than an hour. The last-known windows are kept in the same file, so a restarted daemon still shows them.
+
+Prices come from a snapshot of [models.dev](https://models.dev) in `apps/cli/src/usage/price-table.ts`; the daemon never fetches them. Run `bun apps/cli/scripts/update-prices.ts` to refresh it.
 
 ## Configuration
 

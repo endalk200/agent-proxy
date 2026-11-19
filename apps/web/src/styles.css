@@ -643,7 +643,8 @@ a.linkbtn {
   padding: 36px 44px 96px;
 }
 .page {
-  max-width: 1080px;
+  /* Wide enough for the dashboard's cards and the limit-window columns. */
+  max-width: 1360px;
   margin: 0 auto;
 }
 .pagehead {
@@ -845,15 +846,12 @@ a.linkbtn {
   width: 48px;
   padding-left: 14px;
 }
-.accounts .col-plan {
-  width: 96px;
+.accounts th.col-who {
+  width: 260px;
 }
 /* Room for "Needs sign-in" and its Sign in again button on one line. */
-.accounts th:nth-child(4) {
-  width: 236px;
-}
-.accounts .col-used {
-  width: 112px;
+.accounts th.col-status {
+  width: 196px;
 }
 .accounts .col-enabled {
   width: 76px;
@@ -998,9 +996,7 @@ a.linkbtn {
   box-shadow: inset 0 0 0 1.5px var(--faint);
 }
 .row.is-disabled .col-who,
-.row.is-disabled .plan,
-.row.is-disabled .prio,
-.row.is-disabled .used {
+.row.is-disabled .prio {
   /* Dimmed, but still readable: the status column says Disabled. */
   opacity: 0.75;
 }
@@ -1064,13 +1060,6 @@ a.linkbtn {
     background-color: var(--flash-soft);
     box-shadow: inset 3px 0 0 var(--flash);
   }
-}
-
-.used {
-  font-size: 12.5px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 .switch {
@@ -1215,25 +1204,26 @@ a.linkbtn {
   opacity: 0.6;
 }
 
-/* Narrow tables drop "Last used" first, then "Plan", rather than overflow. */
-@container (max-width: 760px) {
-  .accounts .col-used {
-    display: none;
+/* Narrow tables give the limit windows the room: the Enabled switch goes
+   first (the sheet keeps it; the status says Disabled) and each window cell
+   stacks, then the plan badge. */
+@container (max-width: 1000px) {
+  .accounts th.col-who {
+    width: 220px;
   }
-  /* Sign in again wraps under the status rather than squeeze the accounts. */
-  .accounts th:nth-child(4) {
-    width: 170px;
+  .accounts th.col-status {
+    width: 160px;
   }
 }
-@container (max-width: 560px) {
-  .accounts .col-plan {
-    display: none;
+@container (max-width: 860px) {
+  .accounts th.col-who {
+    width: 180px;
   }
-  .accounts th:nth-child(4) {
-    width: 124px;
+  .accounts th.col-status {
+    width: 128px;
   }
   .accounts .col-enabled {
-    width: 68px;
+    display: none;
   }
   .accounts .col-prio {
     width: 40px;
@@ -1247,14 +1237,25 @@ a.linkbtn {
     display: none;
   }
 }
-/* Phones: the switch goes too; the status already says Disabled. */
-@container (max-width: 400px) {
-  .accounts .col-enabled {
+@container (max-width: 640px) {
+  .accounts .plan-inline {
     display: none;
   }
-  .accounts th:nth-child(4) {
-    width: 116px;
+  .accounts th.col-who {
+    width: 140px;
   }
+}
+/* Phones: the limit windows leave the table for the account sheet. */
+@container (max-width: 480px) {
+  .accounts .col-lim,
+  .accounts .col-lim-pad {
+    display: none;
+  }
+  .accounts th.col-who {
+    width: auto;
+  }
+}
+@container (max-width: 400px) {
   .accounts td,
   .accounts th {
     padding: 0 6px;
@@ -2324,51 +2325,6 @@ a.linkbtn {
   font-weight: 560;
   color: var(--text-2);
 }
-.usage-skel {
-  display: grid;
-  gap: 10px;
-  opacity: 0.7;
-  mask-image: linear-gradient(to bottom, #000 50%, transparent);
-}
-.usage-tiles {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.usage-tiles > div {
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.usage-tiles i,
-.usage-tiles b {
-  display: block;
-  width: 60%;
-  height: 9px;
-  border-radius: 4px;
-  background: var(--subtle);
-}
-.usage-tiles b {
-  width: 40%;
-  height: 16px;
-  margin-top: 10px;
-  background: var(--border);
-}
-.usage-bars {
-  display: flex;
-  align-items: flex-end;
-  gap: 5px;
-  height: 110px;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.usage-bars span {
-  flex: 1;
-  border-radius: 3px 3px 0 0;
-  background: var(--subtle);
-}
-
 /* --------------------------------------------------------------- notices */
 
 .notices {

@@ -1,4 +1,12 @@
-import type { OpenEventStream } from "../daemon-api.ts"
+import type {
+  AccountLimits,
+  ClientName,
+  LimitWindow,
+  OpenEventStream,
+  BreakdownAccount,
+  TokenCounts,
+  UsageStatus,
+} from "../daemon-api.ts"
 
 /**
  * A fake daemon API for component tests: it answers the routes the dashboard
@@ -18,6 +26,12 @@ import type { OpenEventStream } from "../daemon-api.ts"
  * provider's redirect reaching the daemon (`redirect`) or the dashboard posts
  * a callback URL, then signs in `signInAs`, updating the account the daemon
  * already holds for that identity or adding one at the bottom of its pool.
+ *
+ * Usage follows the daemon's routes too: `usage` holds the recorded requests,
+ * which `/api/usage/*` add up over a range resolved to whole buckets in the
+ * test's time zone, priced by `prices`. `limits` holds each account's last
+ * known limit windows; a refresh reads `providerLimits`, as the daemon reads
+ * each provider's usage endpoint. `record` and `setLimits` stream their event.
  */
 
 export interface FakeAccount {
@@ -98,6 +112,55 @@ export const callbackUrl = (login: FakeLogin, params: Record<string, string> = {
   return url.toString()
 }
 
+/** A request the proxy finished, as the daemon records it. */
+export interface FakeUsageRow {
+  readonly at: number
+  readonly provider: "claude" | "codex"
+  readonly accountId: string
+  readonly model: string
+  readonly client: ClientName
+  readonly status: UsageStatus
+  readonly tokens: TokenCounts
+}
+
+/** A successful Claude request now with no tokens; `overrides` sets what a test cares about. */
+export const usageRow = (
+  overrides: Partial<Omit<FakeUsageRow, "tokens">> & { tokens?: Partial<TokenCounts> },
+): FakeUsageRow => ({
+  at: Date.now(),
+  provider: "claude",
+  accountId: "a1",
+  model: "claude-opus-5-5",
+  client: "claude-code",
+  status: "success",
+  ...overrides,
+  tokens: {
+    uncached: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cacheWrite1h: 0,
+    output: 0,
+    reasoning: 0,
+    ...overrides.tokens,
+  },
+})
+
+/** An account since removed, as the daemon remembers it. */
+export interface FormerAccount extends BreakdownAccount {
+  readonly id: string
+}
+
+/** USD per million tokens; a missing cache rate falls back to the input rate. */
+export interface FakePrice {
+  readonly input: number
+  readonly output: number
+  readonly cacheRead?: number
+  readonly cacheWrite?: number
+}
+
+/** A limit window as a provider reports it, before the daemon stamps when. */
+export type FakeWindow = Omit<LimitWindow, "asOf"> & { readonly asOf?: number }
+
 export interface FakeDaemon {
   /** Serves the daemon API; hand it to the dashboard as its `fetch`. */
   readonly fetch: typeof fetch
@@ -151,6 +214,30 @@ export interface FakeDaemon {
   readonly redirect: () => void
   /** The latest waiting login ends without signing in, as `status`, with `error` for a failure. */
   readonly endLogin: (status: "failed" | "expired" | "cancelled", error?: string) => void
+  /** Every request recorded, in any order; setting it streams nothing. */
+  usage: Array<FakeUsageRow>
+  /** Accounts removed whose names the daemon remembers; removing an account adds it. */
+  formerAccounts: Array<FormerAccount>
+  /** List prices by model id; a model left out is unpriced. */
+  prices: Record<string, FakePrice>
+  /** Each account's last known limit windows; setting it streams nothing. */
+  limits: Array<AccountLimits>
+  /** What each account's provider usage endpoint reports when read; an account left out fails its read. */
+  providerLimits: Record<string, ReadonlyArray<FakeWindow>>
+  /** Records a request the proxy finished, and streams `usage-recorded`. */
+  readonly record: (row: FakeUsageRow) => void
+  /** Sets account `accountId`'s limit windows (each `asOf` now unless given), and streams `limits-changed`. */
+  readonly setLimits: (accountId: string, windows: ReadonlyArray<FakeWindow>) => void
+  /** Each `/api/usage/*` call the dashboard made, as "summary?range=7d&tz=…". */
+  readonly usageCalls: Array<string>
+  /** Each `POST /api/limits/refresh`, as "all" or the account id. */
+  readonly refreshes: Array<string>
+  /** While true, `POST /api/limits/refresh` waits until it is set false again. */
+  holdRefresh: boolean
+  /** While true, `GET /api/limits` waits until it is set false again, then answers the limits as they are then. */
+  holdLimitsRead: boolean
+  /** How long each `/api/usage/*` answer takes, in milliseconds; it answers what it held when asked. */
+  usageDelayMs: number
 }
 
 const json = (body: unknown, status = 200) =>
@@ -266,16 +353,31 @@ export const fakeDaemon = (
       }
     }, RECONNECT_MS)
 
+  const broadcast = (event: StreamEvent) => {
+    for (const stream of streams) {
+      if (stream.live && !stalled) stream.data(JSON.stringify(event))
+    }
+  }
+
   /** Holds `accounts` from now on, and streams how they moved. */
   const commit = (accounts: ReadonlyArray<FakeAccount>) => {
     const before = daemon.accounts
     daemon.accounts = accounts
     daemon.pools = poolsOf(accounts)
-    for (const event of eventsBetween(before, accounts, daemon.pools)) {
-      for (const stream of streams) {
-        if (stream.live && !stalled) stream.data(JSON.stringify(event))
-      }
+    for (const event of eventsBetween(before, accounts, daemon.pools)) broadcast(event)
+  }
+
+  /** Holds `windows` as account `accountId`'s limits, and streams the change. */
+  const holdLimits = (accountId: string, windows: ReadonlyArray<FakeWindow>) => {
+    const now = Date.now()
+    const stamped = windows.map((window) => ({ ...window, asOf: window.asOf ?? now }))
+    const limits: AccountLimits = {
+      accountId,
+      asOf: stamped.length === 0 ? null : Math.max(...stamped.map((window) => window.asOf)),
+      windows: stamped,
     }
+    daemon.limits = [...daemon.limits.filter((held) => held.accountId !== accountId), limits]
+    broadcast({ type: "limits-changed", limits })
   }
 
   const daemon: FakeDaemon = {
@@ -331,6 +433,25 @@ export const fakeDaemon = (
     forget: (id) => {
       remove(id)
     },
+    usage: [],
+    formerAccounts: [],
+    prices: {},
+    limits: [],
+    providerLimits: {},
+    usageCalls: [],
+    refreshes: [],
+    holdRefresh: false,
+    holdLimitsRead: false,
+    usageDelayMs: 0,
+    record: (row) => {
+      daemon.usage.push(row)
+      const { at, provider, accountId, model, client, status, tokens } = row
+      broadcast({
+        type: "usage-recorded",
+        usage: { at, provider, accountId, model, client, status, tokens },
+      })
+    },
+    setLimits: holdLimits,
     logins: [],
     signInAs: { providerAccountId: "acct-new", email: "new@example.com", plan: "Max 5x" },
     loginRefusal: undefined,
@@ -381,6 +502,25 @@ export const fakeDaemon = (
           return json({ error: daemon.rejection.message }, daemon.rejection.status)
         }
         return method === "PATCH" ? update(accountId, body) : remove(accountId)
+      }
+      if (url.pathname.startsWith("/api/usage/")) {
+        const answer = usageCall(url)
+        if (daemon.usageDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, daemon.usageDelayMs))
+        }
+        return answer
+      }
+      if (url.pathname === "/api/limits" && method === "GET") {
+        // Read before waiting: an answer reflects the moment the request arrived.
+        const answer = limitsList()
+        await new Promise<void>((resolve) => {
+          const wait = () => (daemon.holdLimitsRead ? setTimeout(wait, 5) : resolve())
+          wait()
+        })
+        return json(answer)
+      }
+      if (url.pathname === "/api/limits/refresh" && method === "POST") {
+        return refreshCall(typeof init?.body === "string" ? init.body : "{}")
       }
       switch (url.pathname) {
         case "/api/accounts":
@@ -565,9 +705,184 @@ export const fakeDaemon = (
     return signIn(login)
   }
 
+  /** Every account's limits, in the order the daemon holds its accounts. */
+  function limitsList(): ReadonlyArray<AccountLimits> {
+    return daemon.accounts.map(
+      (held) =>
+        daemon.limits.find((limits) => limits.accountId === held.id) ?? {
+          accountId: held.id,
+          asOf: null,
+          windows: [],
+        },
+    )
+  }
+
+  async function refreshCall(body: string): Promise<Response> {
+    const fields: Record<string, unknown> = { ...JSON.parse(body === "" ? "{}" : body) }
+    const accountId = typeof fields["accountId"] === "string" ? fields["accountId"] : undefined
+    if (accountId !== undefined && !daemon.accounts.some((held) => held.id === accountId)) {
+      return json({ error: `No account ${accountId}.` }, 404)
+    }
+    daemon.refreshes.push(accountId ?? "all")
+    for (const held of daemon.accounts) {
+      if (accountId !== undefined && held.id !== accountId) continue
+      // A read that fails leaves the last known windows as they were.
+      const read = daemon.providerLimits[held.id]
+      if (read !== undefined) holdLimits(held.id, read)
+    }
+    // The reads are done; the answer is on its way, held as long as the test says.
+    const answer = limitsList()
+    await new Promise<void>((resolve) => {
+      const wait = () => (daemon.holdRefresh ? setTimeout(wait, 5) : resolve())
+      wait()
+    })
+    return json(answer)
+  }
+
+  function usageCall(url: URL): Response {
+    daemon.usageCalls.push(`${url.pathname.replace("/api/usage/", "")}${url.search}`)
+    const range = resolveRange(url.searchParams, daemon.usage)
+    if (range === undefined) return json({ error: "Bad range." }, 400)
+    const accountId = url.searchParams.get("account")
+    const rows = daemon.usage.filter(
+      (row) =>
+        row.at >= range.from &&
+        row.at < range.to &&
+        (accountId === null || row.accountId === accountId),
+    )
+    const bucketOf = (at: number) => range.starts.findLastIndex((start) => start <= at)
+    switch (url.pathname) {
+      case "/api/usage/summary": {
+        const group = Math.ceil(range.starts.length / 24)
+        const spark = range.starts.flatMap((t, i) => {
+          if (i % group !== 0) return []
+          const inPoint = rows.filter((row) => {
+            const bucket = bucketOf(row.at)
+            return bucket >= i && bucket < i + group
+          })
+          const sum = sumOf(inPoint, daemon.prices)
+          return [
+            {
+              t,
+              requests: inPoint.length,
+              tokens: totalOf(sum.tokens),
+              cacheHitRate: hitRateOf(sum.tokens),
+              costUsd: sum.costUsd,
+            },
+          ]
+        })
+        const sum = sumOf(rows, daemon.prices)
+        return json({
+          from: range.from,
+          to: range.to,
+          requests: sum.requests,
+          tokens: sum.tokens,
+          cacheHitRate: hitRateOf(sum.tokens),
+          costUsd: sum.costUsd,
+          unpricedModels: [
+            ...new Set(rows.map((row) => row.model).filter((model) => !(model in daemon.prices))),
+          ],
+          spark,
+        })
+      }
+      case "/api/usage/series": {
+        if (url.searchParams.get("by") !== "model") return json({ error: "Bad by." }, 400)
+        const metric = url.searchParams.get("metric") ?? "tokens"
+        if (metric !== "tokens" && metric !== "cost") return json({ error: "Bad metric." }, 400)
+        const valueOf = (row: FakeUsageRow) => {
+          if (metric === "tokens") return totalOf(row.tokens)
+          const price = daemon.prices[row.model]
+          return price === undefined ? 0 : costOf(row, price)
+        }
+        const byModel = new Map<string, number>()
+        for (const row of rows) {
+          byModel.set(row.model, (byModel.get(row.model) ?? 0) + valueOf(row))
+        }
+        const keys = [...byModel]
+          .filter(([, total]) => total > 0)
+          .toSorted((a, b) => b[1] - a[1])
+          .map(([model]) => model)
+        return json({
+          from: range.from,
+          to: range.to,
+          bucketMs: range.bucketMs,
+          metric,
+          keys,
+          buckets: range.starts.map((t, i) => {
+            const values: Record<string, number> = {}
+            for (const row of rows) {
+              const value = valueOf(row)
+              if (bucketOf(row.at) === i && value > 0) {
+                values[row.model] = (values[row.model] ?? 0) + value
+              }
+            }
+            return { t, values }
+          }),
+        })
+      }
+      case "/api/usage/breakdown": {
+        const by = url.searchParams.get("by")
+        if (by !== "model" && by !== "account") return json({ error: "Bad by." }, 400)
+        const groups = new Map<string, Array<FakeUsageRow>>()
+        for (const row of rows) {
+          const key = by === "model" ? row.model : row.accountId
+          groups.set(key, [...(groups.get(key) ?? []), row])
+        }
+        const all = totalOf(sumOf(rows, daemon.prices).tokens)
+        const out = [...groups].map(([key, group]) => {
+          const sum = sumOf(group, daemon.prices)
+          const priced = group.filter((row) => row.model in daemon.prices)
+          const unpriced = group.filter(
+            (row) => !(row.model in daemon.prices) && totalOf(row.tokens) > 0,
+          )
+          const totalTokens = totalOf(sum.tokens)
+          return {
+            key,
+            requests: sum.requests,
+            tokens: sum.tokens,
+            totalTokens,
+            costUsd: priced.length === 0 ? null : sum.costUsd,
+            partlyUnpriced: priced.length > 0 && unpriced.length > 0,
+            share: all === 0 ? 0 : totalTokens / all,
+            account: by === "account" ? accountOf(key) : undefined,
+          }
+        })
+        return json({
+          from: range.from,
+          to: range.to,
+          by,
+          rows: out.toSorted((a, b) => b.totalTokens - a.totalTokens),
+        })
+      }
+      default:
+        return json({ error: "Not found" }, 404)
+    }
+  }
+
+  /** Account `id` as a breakdown names it: held, or remembered since its removal. */
+  function accountOf(id: string): BreakdownAccount | null {
+    const held = daemon.accounts.find((candidate) => candidate.id === id)
+    if (held !== undefined) {
+      const { provider, label, email, plan } = held
+      return { provider, label, email, plan, removedAt: null }
+    }
+    const former = daemon.formerAccounts.findLast((candidate) => candidate.id === id)
+    if (former === undefined) return null
+    const { provider, label, email, plan, removedAt } = former
+    return { provider, label, email, plan, removedAt }
+  }
+
   function remove(id: string): Response {
     const removed = daemon.accounts.find((held) => held.id === id)
     if (removed === undefined) return json({ error: `No held ${id}.` }, 404)
+    daemon.formerAccounts.push({
+      id,
+      provider: removed.provider,
+      label: removed.label,
+      email: removed.email,
+      plan: removed.plan,
+      removedAt: Date.now(),
+    })
     const accounts = daemon.accounts.filter((held) => held.id !== id)
     commit(
       renumbered(
@@ -581,4 +896,132 @@ export const fakeDaemon = (
   }
 
   return daemon
+}
+
+// --------------------------------------------------------------------- usage
+
+const HOUR = 3_600_000
+const DAY = 24 * HOUR
+
+/** Local midnight of the day `t` falls in, in the time zone the tests run in. */
+const startOfDay = (t: number) => {
+  const day = new Date(t)
+  day.setHours(0, 0, 0, 0)
+  return day.getTime()
+}
+const addDays = (t: number, days: number) => {
+  const day = new Date(t)
+  day.setDate(day.getDate() + days)
+  return day.getTime()
+}
+const parseDay = (day: string) => {
+  const [y, m, d] = day.split("-").map(Number)
+  return new Date(y ?? 0, (m ?? 1) - 1, d ?? 1).getTime()
+}
+
+interface Resolved {
+  readonly from: number
+  readonly to: number
+  readonly bucketMs: number
+  /** Each bucket's start, oldest first. */
+  readonly starts: ReadonlyArray<number>
+}
+
+/** Whole buckets of `bucketMs` from `first` up to `end`; days follow the calendar. */
+const bucketsBetween = (first: number, end: number, bucketMs: number): Resolved => {
+  const starts: Array<number> = []
+  for (let t = first; t < end; t = bucketMs >= DAY ? addDays(t, 1) : t + bucketMs) starts.push(t)
+  return { from: first, to: end, bucketMs, starts }
+}
+
+/** The range a usage call asks for, resolved as the daemon does: whole buckets ending with the current one. */
+const resolveRange = (
+  params: URLSearchParams,
+  usage: ReadonlyArray<FakeUsageRow>,
+): Resolved | undefined => {
+  const now = Date.now()
+  const key = params.get("range") ?? "7d"
+  const recent = (bucketMs: number, count: number) => {
+    const today = startOfDay(now)
+    const current =
+      bucketMs >= DAY ? today : today + Math.floor((now - today) / bucketMs) * bucketMs
+    const first = bucketMs >= DAY ? addDays(today, 1 - count) : current - (count - 1) * bucketMs
+    return bucketsBetween(first, bucketMs >= DAY ? addDays(today, 1) : current + bucketMs, bucketMs)
+  }
+  switch (key) {
+    case "6h":
+      return recent(15 * 60_000, 24)
+    case "24h":
+      return recent(HOUR, 24)
+    case "7d":
+      return recent(3 * HOUR, 56)
+    case "30d":
+      return recent(DAY, 30)
+    case "90d":
+      return recent(DAY, 90)
+    case "lifetime": {
+      const first = Math.min(now, ...usage.map((row) => row.at))
+      return bucketsBetween(startOfDay(first), addDays(startOfDay(now), 1), DAY)
+    }
+    case "custom": {
+      const from = params.get("from")
+      const to = params.get("to")
+      const day = /^\d{4}-\d{2}-\d{2}$/
+      if (from === null || to === null || !day.test(from) || !day.test(to) || from > to) {
+        return undefined
+      }
+      const start = parseDay(from)
+      const end = addDays(parseDay(to), 1)
+      const days = Math.round((end - start) / DAY)
+      return bucketsBetween(start, end, days <= 2 ? HOUR : days <= 10 ? 6 * HOUR : DAY)
+    }
+    default:
+      return undefined
+  }
+}
+
+const totalOf = (tokens: TokenCounts) =>
+  tokens.uncached + tokens.cacheRead + tokens.cacheWrite + tokens.output
+
+const hitRateOf = (tokens: TokenCounts) => {
+  const input = tokens.uncached + tokens.cacheRead + tokens.cacheWrite
+  return input === 0 ? null : tokens.cacheRead / input
+}
+
+const costOf = (row: FakeUsageRow, price: FakePrice) =>
+  (row.tokens.uncached * price.input +
+    row.tokens.cacheRead * (price.cacheRead ?? price.input) +
+    (row.tokens.cacheWrite - row.tokens.cacheWrite1h) * (price.cacheWrite ?? price.input) +
+    row.tokens.cacheWrite1h * price.input * 2 +
+    row.tokens.output * price.output) /
+  1_000_000
+
+const sumOf = (rows: ReadonlyArray<FakeUsageRow>, prices: Readonly<Record<string, FakePrice>>) => {
+  const tokens = {
+    uncached: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cacheWrite1h: 0,
+    output: 0,
+    reasoning: 0,
+  }
+  const requests = { total: 0, success: 0, failed: 0, limited: 0, incomplete: 0 }
+  let costUsd = 0
+  for (const row of rows) {
+    for (const kind of [
+      "uncached",
+      "cacheRead",
+      "cacheWrite",
+      "cacheWrite1h",
+      "output",
+      "reasoning",
+    ] as const) {
+      tokens[kind] += row.tokens[kind]
+    }
+    requests.total += 1
+    requests[row.status] += 1
+    const price = prices[row.model]
+    if (price !== undefined) costUsd += costOf(row, price)
+  }
+  return { tokens, requests, costUsd }
 }

@@ -25,3 +25,14 @@ export const rowsOf = (table: HTMLElement) => {
     ),
   )
 }
+
+/** Each body row of `table` as { column header: cell text }, row headers included. */
+export const tableOf = (table: HTMLElement) => {
+  const [head, ...body] = within(table).getAllByRole("row")
+  const headers = [...(head?.children ?? [])].map(
+    (th) => th.getAttribute("aria-label") ?? textOf(th),
+  )
+  return body.map((row) =>
+    Object.fromEntries([...row.children].map((cell, index) => [headers[index], textOf(cell)])),
+  )
+}
