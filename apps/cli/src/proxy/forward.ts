@@ -255,14 +255,16 @@ const modelOf = (request: ProxiedRequest) => {
 
 /**
  * The client a request came from (spike #6). opencode's Claude path runs
- * Claude Code through the Agent SDK, which says so in its `User-Agent`;
- * its Codex path sends its own session header.
+ * Claude Code through the Agent SDK with the SDK's default entrypoint, which
+ * its `User-Agent` names as `sdk-ts`; an app that names its own entrypoint,
+ * such as T3 Code's `t3-code`, is running Claude Code. opencode's Codex path
+ * sends its own session header.
  */
 const clientOf = (headers: Headers.Headers): ClientName => {
   const agent = headers["user-agent"]?.toLowerCase() ?? ""
   if (
     agent.startsWith("opencode") ||
-    agent.includes("agent-sdk") ||
+    agent.includes("sdk-ts, agent-sdk/") ||
     headers["x-opencode-session-id"]
   ) {
     return "opencode"
