@@ -19,6 +19,8 @@
 - `daemon-install` (macOS, the installed binary only) writes `~/Library/LaunchAgents/dev.endalk200.agent-proxy.plist` and loads it: launchd runs the daemon at login and after a crash, but not after a clean stop. It refuses from source, in a verify sandbox (`HOME` is not the real home), and on Linux.
 - `daemon-supervised` with the launch agent installed: `start` and `restart` go through launchd, `stop` keeps the daemon stopped until the next start or login, and a supervised daemon refused by the lock exits 0.
 - `daemon-uninstall` stops the supervised daemon and removes the launch agent; with none installed it says so and exits `0`.
+- `daemon-usage-api` serves `GET /api/usage/summary`, `/api/usage/series`, `/api/usage/breakdown`, `GET /api/limits` and `POST /api/limits/refresh`, and adds `usage-recorded` and `limits-changed` to `GET /api/events`; the drives are in [Usage and limit windows](./usage.md). It keeps usage and limit windows in `usage.sqlite` in its data directory.
+- `daemon-dashboard-pages` serves the dashboard's `index.html` for `/` and for its pages, such as `/accounts`, so a reload of one works.
 - `config-errors` fails on a malformed config or an unknown key, naming the problem and its line, and on an `AGENT_PROXY_CONFIG` that names a missing file.
 
 ## How to get to it (user POV)
@@ -27,6 +29,7 @@
 - Run `agent-proxy daemon install` and `agent-proxy daemon uninstall` (macOS, installed binary).
 - Run `agent-proxy daemon run [--log-level <level>]` and stop it with SIGTERM or Ctrl-C.
 - Request `GET <address>/healthz`, where the address comes from `daemon status` or the state file.
+- Request `GET <address>/accounts`, and the usage and limit routes in [Usage and limit windows](./usage.md).
 - Read `$XDG_STATE_HOME/agent-proxy/daemon.json` (state file), `daemon.log` and `daemon.log.1` (logs), and `daemon.stderr.log`.
 - Edit `$XDG_CONFIG_HOME/agent-proxy/config.toml`, or point `AGENT_PROXY_CONFIG` at another file.
 
@@ -50,6 +53,7 @@ Preconditions:
 - **Stop.** Run `verify cli -- daemon stop`. Exit `0`; stdout is `agent-proxy daemon stopped (pid <pid>)`. The state file is gone, `ps -p <pid>` finds nothing, and `daemon status` exits `1` with the not-running hint. A second `daemon stop` exits `1` with the same hint.
 - **Foreground and SIGTERM.** Run `verify shell -- -c 'bun apps/cli/src/bin.ts daemon run --log-level debug & p=$!; until [ -f "$XDG_STATE_HOME/agent-proxy/daemon.json" ]; do sleep 0.1; done; kill -TERM $p; wait $p; echo "exit=$?"; ls "$XDG_STATE_HOME/agent-proxy"'`. Stdout has `agent-proxy daemon listening on http://127.0.0.1:<port> (pid <pid>)`, then `exit=0`, and the listing has no `daemon.json`.
 - **Bad config.** Run `verify shell -- -c 'printf "listen = \"127.0.0.1:0\"\nport = 8318\n" > "$TMPDIR/bad.toml"'`, then `verify cli --env AGENT_PROXY_CONFIG=.verify/runs/<id>/tmp/bad.toml -- daemon start`. Exit `1`; stderr contains `line 2: unknown key "port" (the only key is "listen")`. Repeat with `listen = "127.0.0.1:0` (no closing quote) on line 1: stderr contains `line 1: Unterminated string`. Run `verify cli --env AGENT_PROXY_CONFIG=.verify/runs/<id>/tmp/missing.toml -- daemon start`: exit `1`, stderr contains `AGENT_PROXY_CONFIG names` and `which does not exist.` After each, `daemon status` exits `1`.
+- **Dashboard pages.** After `bun run build`, with the built daemon running, `curl -s -o /dev/null -w "%{http_code} %{content_type}\n" "$a/accounts"` prints `200 text/html; charset=utf-8`, and `"$a/missing.js"` prints `404`.
 - **Compiled binary.** After `bun run build`, repeat Start, Status, and Stop with `verify cli --built`. Same results, with the commit in `version`.
 - **Install refused in the sandbox.** Run `verify cli --built -- daemon install`. Exit `1`; stderr contains ``\`daemon install\` refuses to run while HOME (<sandbox home>) is not your home directory``. Run `verify shell -- -c 'ls "$HOME/Library"'`: no such directory. Run `verify cli -- daemon install` (source): exit `1`, stderr names `bun run install-local`.
 

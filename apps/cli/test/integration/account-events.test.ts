@@ -39,12 +39,20 @@ const parseMessage = (block: string): Message => {
   return { kind: "data", json: JSON.parse(data) }
 }
 
+/** Usage and limit-window events share the stream; these tests are about accounts. */
+const isAccountMessage = (json: unknown) =>
+  typeof json !== "object" ||
+  json === null ||
+  !("type" in json) ||
+  (json.type !== "usage-recorded" && json.type !== "limits-changed")
+
 /** How long a test waits on the stream before failing, in real time. */
 const STREAM_WAIT_MS = 3000
 
 /**
  * Opens the event stream at `address`, closed when the test's scope closes.
- * `next` waits for the next message; `nextEvent` skips comments and retries.
+ * `next` waits for the next message; `nextEvent` skips comments, retries,
+ * and usage and limit-window events.
  */
 const openEvents = (address: string) =>
   Effect.acquireRelease(
@@ -90,7 +98,7 @@ const openEvents = (address: string) =>
       const nextEvent: Effect.Effect<unknown> = Effect.flatMap(next, (message) =>
         message === undefined
           ? Effect.die(new Error("the stream ended"))
-          : message.kind === "data"
+          : message.kind === "data" && isAccountMessage(message.json)
             ? Effect.succeed(message.json)
             : nextEvent,
       )

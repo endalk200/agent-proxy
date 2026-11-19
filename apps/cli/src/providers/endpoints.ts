@@ -10,6 +10,8 @@ export interface ClaudeEndpoints {
   readonly authorizeUrl: string
   readonly tokenUrl: string
   readonly profileUrl: string
+  /** The account's limit windows, read by the daemon itself, not forwarded. */
+  readonly usageUrl: string
   /** The port the login's callback listener binds on 127.0.0.1. Port 0 binds any free port. */
   readonly callbackPort: number
 }
@@ -26,6 +28,8 @@ export interface CodexEndpoints {
   readonly apiBaseUrl: string
   readonly authorizeUrl: string
   readonly tokenUrl: string
+  /** The account's limit windows, read by the daemon itself, not forwarded. */
+  readonly usageUrl: string
   /** The port the login's callback listener binds on 127.0.0.1. Port 0 binds any free port. */
   readonly callbackPort: number
 }
@@ -45,12 +49,14 @@ export const realEndpoints: Endpoints = {
     authorizeUrl: "https://claude.com/cai/oauth/authorize",
     tokenUrl: "https://platform.claude.com/v1/oauth/token",
     profileUrl: "https://api.anthropic.com/api/oauth/profile",
+    usageUrl: "https://api.anthropic.com/api/oauth/usage",
     callbackPort: 54_545,
   },
   codex: {
     apiBaseUrl: "https://chatgpt.com",
     authorizeUrl: "https://auth.openai.com/oauth/authorize",
     tokenUrl: "https://auth.openai.com/oauth/token",
+    usageUrl: "https://chatgpt.com/backend-api/wham/usage",
     // Codex's own callback port: OpenAI's OAuth client redirects only to Codex's ports.
     callbackPort: 1455,
   },
@@ -73,6 +79,7 @@ const Override = Schema.fromJsonString(
         authorizeUrl: Schema.optionalKey(Schema.String),
         tokenUrl: Schema.optionalKey(Schema.String),
         profileUrl: Schema.optionalKey(Schema.String),
+        usageUrl: Schema.optionalKey(Schema.String),
         callbackPort: Schema.optionalKey(Schema.Int),
       }),
     ),
@@ -81,6 +88,7 @@ const Override = Schema.fromJsonString(
         apiBaseUrl: Schema.optionalKey(Schema.String),
         authorizeUrl: Schema.optionalKey(Schema.String),
         tokenUrl: Schema.optionalKey(Schema.String),
+        usageUrl: Schema.optionalKey(Schema.String),
         callbackPort: Schema.optionalKey(Schema.Int),
       }),
     ),

@@ -3,11 +3,14 @@ import { type Cause, Clock, Context, Effect, Layer, Queue, Semaphore, Stream } f
 import { AccountChanges } from "../accounts/changes.ts"
 import { Router } from "../accounts/router.ts"
 import { AccountStore } from "../accounts/store.ts"
+import { LimitWindows } from "../usage/limit-windows.ts"
+import { UsageStore } from "../usage/store.ts"
 import {
-  type AccountEvent,
   accountEvents,
   type AccountList,
   type AccountSnapshot,
+  type DaemonEvent,
+  type UsageRecorded,
   toAccountList,
 } from "./api.ts"
 
@@ -18,10 +21,14 @@ const EVENT_BACKLOG = 1024
 const RETRY_AFTER_FAILURE = "1 second"
 
 /**
- * Account events for the daemon API's event stream. A watcher reads the
- * accounts again whenever the store or router signal a change, and when the
- * first running cooldown ends, which nothing writes, and publishes how the
- * list moved since it last read it. No event is kept: a subscriber gets the
+ * Events for the daemon API's event stream. A watcher reads the accounts
+ * again whenever the store or router signal a change, and when the first
+ * running cooldown ends, which nothing writes, and publishes how the list
+ * moved since it last read it. Recorded usage and changed limit windows are
+ * published as they happen. Each list read is also handed to the usage
+ * store, which keeps the names of the accounts held (a removal is recorded
+ * where it is made, with the name the account had). No event is
+ * kept: a subscriber gets the
  * accounts as the watcher last read them, then each event after. A
  * subscriber that falls more than `EVENT_BACKLOG` events behind has its
  * stream ended, so it reconnects and starts again from a snapshot, rather
@@ -30,8 +37,10 @@ const RETRY_AFTER_FAILURE = "1 second"
 export class AccountEvents extends Context.Service<
   AccountEvents,
   {
-    /** The accounts as they are now, then each change to them, for as long as it is read. */
-    readonly feed: Stream.Stream<AccountSnapshot | AccountEvent>
+    /** The accounts as they are now, then each event after, for as long as it is read. */
+    readonly feed: Stream.Stream<AccountSnapshot | DaemonEvent>
+    /** Tells every subscriber that a request's usage was recorded. */
+    readonly usageRecorded: (usage: UsageRecorded["usage"]) => Effect.Effect<void>
   }
 >()("agent-proxy/AccountEvents") {
   static readonly layer = Layer.effect(
@@ -40,9 +49,11 @@ export class AccountEvents extends Context.Service<
       const store = yield* AccountStore
       const router = yield* Router
       const changes = yield* AccountChanges
+      const limits = yield* LimitWindows
+      const usageStore = yield* UsageStore
       // Each subscriber's events wait in its own bounded queue, so one stuck
       // client can never grow the daemon's memory or hold up the others.
-      const subscribers = new Set<Queue.Queue<AccountEvent, Cause.Done>>()
+      const subscribers = new Set<Queue.Queue<DaemonEvent, Cause.Done>>()
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           for (const queue of subscribers) Queue.endUnsafe(queue)
@@ -50,7 +61,7 @@ export class AccountEvents extends Context.Service<
         }),
       )
       /** Hands `happened` to every subscriber, ending the stream of one that has fallen too far behind. */
-      const publish = (happened: ReadonlyArray<AccountEvent>) =>
+      const publish = (happened: ReadonlyArray<DaemonEvent>) =>
         Effect.sync(() => {
           for (const queue of subscribers) {
             if (!happened.every((event) => Queue.offerUnsafe(queue, event))) {
@@ -67,7 +78,41 @@ export class AccountEvents extends Context.Service<
         const accounts = yield* store.list
         return toAccountList(accounts, yield* router.view)
       })
-      let current: AccountList = yield* read.pipe(
+      /**
+       * Hands the usage store the accounts `list` holds, read from `readAt`.
+       * It writes on every read, rare as they are: a list that looks the same
+       * as the last one may follow a removal and a sign-in back that no read
+       * saw between them.
+       */
+      const remember = (list: AccountList, readAt: number) =>
+        usageStore
+          .rememberAccounts(
+            list.accounts.map(({ id, provider, label, email, plan }) => ({
+              id,
+              provider,
+              label,
+              email,
+              plan,
+            })),
+            readAt,
+          )
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("could not remember the accounts' names").pipe(
+                Effect.annotateLogs({ cause: error.message }),
+              ),
+            ),
+          )
+
+      /** Reads the accounts, and hands them to the usage store. */
+      const readAndRemember = Effect.gen(function* () {
+        const readAt = yield* Clock.currentTimeMillis
+        const list = yield* read
+        yield* remember(list, readAt)
+        return list
+      })
+
+      let current: AccountList = yield* readAndRemember.pipe(
         Effect.orElseSucceed((): AccountList => ({ accounts: [], pools: [] })),
       )
 
@@ -87,7 +132,7 @@ export class AccountEvents extends Context.Service<
 
       /** Reads the accounts and publishes how they moved since the last read; call it holding `lock`. */
       const catchUp = Effect.gen(function* () {
-        const next = yield* read
+        const next = yield* readAndRemember
         const happened = accountEvents(current, next)
         current = next
         yield* publish(happened)
@@ -123,7 +168,7 @@ export class AccountEvents extends Context.Service<
               ),
               Effect.orDie,
             )
-            const queue = yield* Queue.dropping<AccountEvent, Cause.Done>(EVENT_BACKLOG)
+            const queue = yield* Queue.dropping<DaemonEvent, Cause.Done>(EVENT_BACKLOG)
             subscribers.add(queue)
             const snapshot: AccountSnapshot = { type: "snapshot", ...current }
             return Stream.concat(Stream.make(snapshot), Stream.fromQueue(queue)).pipe(
@@ -138,7 +183,17 @@ export class AccountEvents extends Context.Service<
         ),
       )
 
-      return AccountEvents.of({ feed })
+      const nextLimits = yield* limits.subscribe
+      yield* nextLimits.pipe(
+        Effect.flatMap((changed) => publish([{ type: "limits-changed", limits: changed }])),
+        Effect.forever,
+        Effect.forkScoped,
+      )
+
+      return AccountEvents.of({
+        feed,
+        usageRecorded: (usage) => publish([{ type: "usage-recorded", usage }]),
+      })
     }),
   )
 }

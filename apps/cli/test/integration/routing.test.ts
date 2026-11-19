@@ -18,6 +18,8 @@ import { codexHeaders, fakeCodex } from "../support/fake-codex.ts"
 // see only what a client sees (which account's token reached the provider,
 // and the proxy's answers) and what the daemon API reports.
 
+const notFound = () => Response.json({ error: "not_found" }, { status: 404 })
+
 /** A daemon in a throwaway home whose Claude and Codex traffic goes to the fakes. */
 const makeHome = Effect.gen(function* () {
   // The test clock is shared by the tests in this file: each starts at the epoch.
@@ -25,6 +27,10 @@ const makeHome = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
   const claude = yield* fakeClaude
   const codex = yield* fakeCodex
+  // Headroom here comes from answers' headers alone: the usage endpoints,
+  // which the daemon reads at startup, are not there.
+  claude.answerUsageWith(notFound)
+  codex.answerUsageWith(notFound)
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-routing-" })
   yield* fs.makeDirectory(`${root}/config/agent-proxy`, { recursive: true })
   yield* fs.writeFileString(`${root}/config/agent-proxy/config.toml`, 'listen = "127.0.0.1:0"\n')

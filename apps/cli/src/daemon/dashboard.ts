@@ -6,6 +6,9 @@ import type { LocalOnly } from "./http.ts"
 /**
  * The built dashboard, served at `/` on the daemon's one listener.
  *
+ * The dashboard routes its pages in the browser, so each page's path, such
+ * as `/accounts`, is served `index.html` too: a reload or a link to one works.
+ *
  * `bun run build` builds the web client into `apps/web/dist` and embeds it in
  * the compiled binary (ADR-0008), whose entry point hands the daemon the
  * embedded files. A daemon run from source is pointed at `apps/web/dist`.
@@ -34,6 +37,9 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
 }
+
+/** The dashboard's pages other than `/`, which it routes itself; each is served `index.html`. */
+const PAGES = new Set(["accounts"])
 
 /** Vite names everything under `assets/` by its content hash, so it never changes. */
 const cacheControlFor = (relative: string) =>
@@ -81,9 +87,8 @@ const serve = Effect.gen(function* () {
   }).pipe(Effect.option)
   if (Option.isNone(pathname)) return notFound
   // Normalized, so `assets/../index.html` is looked up, and cached, as `index.html`.
-  const relative = path.normalize(
-    pathname.value === "/" ? "index.html" : pathname.value.replace(/^\/+/, ""),
-  )
+  const requested = path.normalize(pathname.value.replace(/^\/+/, "").replace(/\/+$/, ""))
+  const relative = pathname.value === "/" || PAGES.has(requested) ? "index.html" : requested
 
   const file = yield* locate(source, relative)
   if (Option.isNone(file)) return notFound

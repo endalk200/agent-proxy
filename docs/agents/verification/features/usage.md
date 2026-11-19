@@ -1,0 +1,54 @@
+# Usage and limit windows
+
+The daemon records every proxied Claude message and Codex response (time, provider, account, model, client, session, status, latency and the four token kinds) in `usage.sqlite` in its data directory, and keeps each account's last-known limit windows there too, and the name of every account it has held. It reads windows from every answer's headers and from each provider's usage endpoint (at startup, every 30 minutes, just after a window resets, and on request), one account at a time. The daemon API answers range questions about usage, lists limit windows, refreshes them, and announces both on the event stream. The dashboard that shows them is in [Web dashboard](./web-dashboard.md).
+
+## Sub-features
+
+- `usage-record` records one row per `POST /v1/messages` and `POST /backend-api/codex/responses`, with tokens from the provider's own usage events (`tokens.cacheWrite1h` is the part of `cacheWrite` Claude's `cache_creation` puts in the 1-hour cache, as `reasoning` is part of `output`), while the client gets the provider's bytes unchanged. `count_tokens`, `models` and `alpha/search` are not recorded.
+- `usage-status` records `success`, `failed` (an error answer, or the provider unreachable), `limited` (a limit answer, or every account cooling down) and `incomplete` (a 2xx stream that ended before its final usage event, or a client that went away, even before any answer), each against the account that finally answered, or whose answer the client was shown.
+- `usage-client` names the client from its `User-Agent`: `claude-code`, `codex` (also when an app embedding Codex renames the user agent, such as T3 Code's `T3`, by Codex's `x-codex-window-id` header), `opencode` (opencode's Agent SDK user agent or its session header), or `other`.
+- `usage-ranges` answers `GET /api/usage/summary`, `GET /api/usage/series?by=model&metric=tokens|cost` (tokens when left out; a cost series leaves unpriced models out and ranks `keys` by cost) and `GET /api/usage/breakdown?by=model|account` for `range=6h|24h|7d|30d|90d|lifetime` or `range=custom&from=YYYY-MM-DD&to=YYYY-MM-DD`, in the viewer's `tz`, optionally narrowed by `account=`. Ranges cover whole buckets ending with the one that holds now; a bad range or zone is a 400 saying what it expects.
+- `usage-cost` prices each model from the committed models.dev snapshot, a 1-hour cache write at twice the input price, and a whole request whose input (uncached, cache read and cache write) is over a model's long-context size, such as `gpt-6.1-sol`'s 272,000, at that tier's rates; a model with no price is listed in `unpricedModels`, has `costUsd: null` in a breakdown, and marks an account's row `partlyUnpriced`.
+- `usage-kept` keeps every row across restarts, and a removed account's rows stay in totals.
+- `usage-accounts` gives each `by=account` breakdown row an `account` (`provider`, `label`, `email`, `plan`, `removedAt`): the account as held now, or, once removed through the daemon API (or `accounts remove`), as it was named when removed, with `removedAt` set; an account file that cannot be read for a while is not taken for removed; `null` for an account the daemon never named (removed before it remembered names) and for every `by=model` row.
+- `limits-list` answers `GET /api/limits`: every account in `GET /api/accounts` order, each with `asOf` (null when never observed) and windows `five-hour`, `weekly`, `weekly:<Model>` (labelled "<Model> weekly") and `monthly`, each with `usedPct`, `resetsAt` and its own `asOf`.
+- `limits-headers` updates an account's windows from each answer's `anthropic-ratelimit-unified-{5h,7d}-*` or `x-codex-{primary,secondary}-*` headers; an answer that only confirms the numbers moves `asOf` at most once a minute.
+- `limits-headroom` breaks ties between accounts of equal priority by the room left in their tightest 5-hour, weekly or monthly window; a per-model weekly window never counts.
+- `limits-endpoint` reads Claude's `GET /api/oauth/usage` and Codex's `GET /backend-api/wham/usage` as each servable account, one at a time, at startup, as soon as an account is added, every 30 minutes, and a minute after a known window resets; after a 429 it waits for `Retry-After`, an hour at most. A failed or unreadable read leaves the last-known windows and their `asOf`.
+- `limits-refresh` answers `POST /api/limits/refresh` with `{}` (every account) or `{"accountId":"<id>"}`, once the reads finish, with every account's windows; an unknown id is a 404.
+- `limits-kept` keeps last-known windows across restarts; removing an account removes its windows.
+- `usage-events` adds `usage-recorded` (`usage`: `at`, `provider`, `accountId`, `model`, `client`, `status`, `tokens`) and `limits-changed` (`limits`: one account's windows) to `GET /api/events`.
+
+## How to get to it (user POV)
+
+- Use Claude Code, Codex or opencode through the proxy; open the dashboard at the daemon's address.
+- Request `GET <address>/api/usage/summary|series|breakdown?...`, `GET <address>/api/limits`, `POST <address>/api/limits/refresh`, and read `GET <address>/api/events`.
+- Read `$XDG_DATA_HOME/agent-proxy/usage.sqlite` (with `sqlite3`, read-only) as a second view of what was recorded.
+- Refresh the price snapshot with `bun apps/cli/scripts/update-prices.ts`.
+
+## Driving it with verify
+
+Preconditions:
+
+- `verify doctor` is all `ok`, and no daemon runs in the run.
+- Fake providers run outside the run, serving sign-in, usage endpoints (per-token windows, with a Fable weekly window for Claude) and a streamed message or response with usage events and limit headers: `bun -e 'import { startFakeProviders } from "<repo>/e2e/support/fake-providers.ts"; console.log((await startFakeProviders(51995)).endpoints)'`, kept running. Its printed JSON is `$E` below.
+- Seed Claude `a1` (Work, 1), `a2` (Home, 2) and Codex `c1` (carol, 1), all Active, as in the [accounts](./accounts.md) Seeded list with `"accessToken":"token-<id>"`, then `verify cli --built --env "AGENT_PROXY_PROVIDER_ENDPOINTS=$E" -- daemon start`. In `verify shell`, `a=$(jq -r .address "$XDG_STATE_HOME/agent-proxy/daemon.json")` and `k=$(cat "$XDG_DATA_HOME/agent-proxy/key")`.
+
+- **Startup read.** Within a second, `curl -s "$a/api/limits" | jq` lists `a1`, `a2`, `c1` in that order: each Claude account with `5-hour`, `Weekly` and `Fable weekly`, the Codex account with `5-hour` and `Weekly`, each window's `asOf` the daemon's start.
+- **Record.** `curl -sN "$a/v1/messages?beta=true" -H "x-api-key: $k" -H "user-agent: claude-cli/2.1.326 (external, cli)" -H "content-type: application/json" -d '{"model":"claude-sonnet-4-5","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}]}'` prints the fake's SSE through `message_stop`. `curl -s "$a/api/usage/summary?range=24h&tz=$(readlink /etc/localtime | sed 's|.*/zoneinfo/||')" | jq '.requests, .tokens'` shows one `success` and the token kinds the stream's `message_delta` carried. `sqlite3 -readonly "$XDG_DATA_HOME/agent-proxy/usage.sqlite" 'select account_id, model, client, status from usage'` prints `a1|claude-sonnet-4-5|claude-code|success`.
+- **Codex.** `curl -sN "$a/backend-api/codex/responses" -H "authorization: Bearer $k" -H "user-agent: codex_cli_rs/0.169.0" -H "content-type: application/json" -d '{"model":"gpt-5.4","stream":true,"input":[]}'` streams through `response.completed`; `GET /api/usage/breakdown?range=24h&by=model` has a `gpt-5.4` row whose `tokens.cacheRead` is the response's `cached_tokens` and whose `tokens.uncached` is `input_tokens` minus it.
+- **Not recorded.** `curl -s "$a/v1/messages/count_tokens?beta=true" -H "x-api-key: $k" -d '{}'`; the summary's `requests.total` does not move.
+- **Unpriced.** Send the Codex request again with `"model":"gpt-unknown-1"`: the summary's `unpricedModels` is `["gpt-unknown-1"]`, `GET /api/usage/breakdown?range=24h&by=model` gives it `"costUsd": null`, and `by=account` marks `c1` `"partlyUnpriced": true`.
+- **Events.** With `curl -sN "$a/api/events"` open in a second shell, send a message: a `usage-recorded` event with `accountId` `a1` and `status` `success` arrives, and a `limits-changed` event for `a1`.
+- **Refresh.** `curl -s -X POST "$a/api/limits/refresh" -H "content-type: application/json" -d '{"accountId":"c1"}' | jq` answers all three accounts, `c1`'s windows with a new `asOf`; `-d '{"accountId":"nope"}'` prints `{"error":"No account nope."}` with 404.
+- **Ranges.** `GET /api/usage/series?range=7d&by=model&tz=Asia/Tokyo` has `bucketMs` `10800000` and buckets from midnight six days ago in Tokyo; `range=custom&from=2026-01-02&to=2026-01-01` is a 400 saying `from` must not be after `to`; `range=2w` is a 400 naming the ranges.
+- **Kept.** `verify cli --built --env "AGENT_PROXY_PROVIDER_ENDPOINTS=$E" -- daemon restart`, then with the fake stopped: `GET /api/usage/summary?range=lifetime` still counts every request, and `GET /api/limits` shows the same windows with their old `asOf`.
+- **Removed account.** `verify cli -- accounts set Work --label Office`, then `verify cli -- accounts remove Office`: `GET /api/limits` no longer lists `a1`, and `GET /api/usage/breakdown?range=24h&by=account` still has its row, its `account` `{"provider":"claude","label":"Office","email":"a1@example.com",…,"removedAt":<when>}`; after `daemon restart` it is the same.
+- **1-hour cache.** `sqlite3 -readonly "$XDG_DATA_HOME/agent-proxy/usage.sqlite" 'select cache_write, cache_write_1h from usage'` shows each Claude row's 1-hour part; a message whose `message_start` usage has `cache_creation.ephemeral_1h_input_tokens` raises `tokens.cacheWrite1h` in `GET /api/usage/summary`.
+
+## Gotchas
+
+- `AGENT_PROXY_PROVIDER_ENDPOINTS` must name a `usageUrl` for each provider whose accounts are seeded, or the daemon reads the real usage endpoints with the seeded tokens (harmless 401s, but traffic to Anthropic or OpenAI). The fake providers' printed JSON already does.
+- Usage is recorded when the response ends: read the summary after the client has read the whole stream, or wait for the `usage-recorded` event.
+- Times are epoch milliseconds; buckets follow the `tz` you pass, so compare against the same zone.
+- An answer whose headers only confirm a window's numbers moves its `asOf` at most once a minute, so `limits-changed` does not arrive with every request.

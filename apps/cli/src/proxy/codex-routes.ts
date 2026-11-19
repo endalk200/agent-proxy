@@ -13,7 +13,8 @@ import { type ErrorKind, forward, untilText } from "./forward.ts"
  * - `POST /backend-api/codex/responses` (streamed), `GET
  *   /backend-api/codex/models` (with `?client_version=`) and `POST
  *   /backend-api/codex/alpha/search` (standalone web search) go to the Codex
- *   backend as the highest-priority Active Codex account.
+ *   backend as the highest-priority Active Codex account. Only responses
+ *   are recorded as usage.
  * - `GET /backend-api/codex/responses`, the WebSocket upgrade Codex and
  *   opencode try first, is refused with 426, after which both fall back to
  *   HTTP.
@@ -59,12 +60,16 @@ const codexCoolingDown = (cooldown: Cooldown, now: number) => {
   )
 }
 
-const toCodex = forward({
+const codex = {
   provider: "codex",
   upstream: CodexApi,
   error: openAiError,
   coolingDown: codexCoolingDown,
-})
+} as const
+
+/** Responses spend usage, so they are recorded; listing models and searching are not. */
+const toCodex = forward(codex, { recordsUsage: true })
+const toCodexUnrecorded = forward(codex)
 
 /** No WebSocket: the proxy serves the Responses API over HTTP only. */
 const noWebSocket = openAiError(
@@ -78,6 +83,6 @@ export const codexRoutes = (router: HttpRouter.HttpRouter) =>
   Effect.all([
     router.add("POST", "/backend-api/codex/responses", toCodex),
     router.add("GET", "/backend-api/codex/responses", noWebSocket),
-    router.add("GET", "/backend-api/codex/models", toCodex),
-    router.add("POST", "/backend-api/codex/alpha/search", toCodex),
+    router.add("GET", "/backend-api/codex/models", toCodexUnrecorded),
+    router.add("POST", "/backend-api/codex/alpha/search", toCodexUnrecorded),
   ])

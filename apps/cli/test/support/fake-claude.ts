@@ -97,6 +97,70 @@ const answerMessage: ApiHandler = () =>
     { headers: { ...limitHeaders, "request-id": "req_fake" } },
   )
 
+/**
+ * A streamed message as Claude sends it: `message_start` with the input
+ * usage, a text delta, `message_delta` with the final usage, `message_stop`.
+ */
+export const streamedMessage = (usage: {
+  readonly input: number
+  readonly cacheRead: number
+  readonly cacheWrite: number
+  /** The part of `cacheWrite` written to the 1-hour cache; reported only in `message_start`, as the API does. */
+  readonly cacheWrite1h?: number
+  readonly output: number
+}) =>
+  [
+    {
+      type: "message_start",
+      message: {
+        id: "msg_fake",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-4-5",
+        content: [],
+        usage: {
+          input_tokens: usage.input,
+          cache_read_input_tokens: usage.cacheRead,
+          cache_creation_input_tokens: usage.cacheWrite,
+          ...(usage.cacheWrite1h === undefined
+            ? {}
+            : {
+                cache_creation: {
+                  ephemeral_5m_input_tokens: usage.cacheWrite - usage.cacheWrite1h,
+                  ephemeral_1h_input_tokens: usage.cacheWrite1h,
+                },
+              }),
+          output_tokens: 1,
+        },
+      },
+    },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello." } },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn" },
+      usage: {
+        input_tokens: usage.input,
+        cache_read_input_tokens: usage.cacheRead,
+        cache_creation_input_tokens: usage.cacheWrite,
+        output_tokens: usage.output,
+      },
+    },
+    { type: "message_stop" },
+  ]
+    .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+    .join("")
+
+/** What Claude's usage endpoint answers by default: the same windows as `limitHeaders`, in percent. */
+export const usageAnswer = {
+  five_hour: { utilization: 12, resets_at: new Date(1_795_000_000_000).toISOString() },
+  seven_day: { utilization: 34, resets_at: new Date(1_795_500_000_000).toISOString() },
+  limits: [],
+}
+
+const answerUsageDefault: ApiHandler = () => json(usageAnswer)
+
 /** How the fake answers one refresh request instead of refreshing. */
 type RefreshTrouble =
   | { readonly _tag: "Hold"; readonly arrived: () => void; readonly released: Promise<void> }
@@ -146,6 +210,12 @@ export interface FakeClaude {
   readonly dropNextRefresh: () => void
   /** The next refresh request gets `status` and `body` instead of new tokens. */
   readonly refuseNextRefresh: (status: number, body: unknown) => void
+  /** The requests the usage endpoint received so far, oldest first. */
+  readonly usageRequests: () => ReadonlyArray<ApiRequest>
+  /** Answers every later usage endpoint request with `handler`; the default answers `usageAnswer`. */
+  readonly answerUsageWith: (handler: ApiHandler) => void
+  /** The most usage endpoint requests that were ever in flight at once. */
+  readonly peakUsageInFlight: () => number
 }
 
 /** Starts the fake on a free loopback port until the scope closes. */
@@ -162,6 +232,10 @@ export const fakeClaude = Effect.gen(function* () {
   const refreshRequests: Array<string> = []
   const refreshWaiters: Array<{ readonly count: number; readonly resolve: () => void }> = []
   let refreshTrouble: RefreshTrouble | undefined
+  const usageRequests: Array<ApiRequest> = []
+  let answerUsage: ApiHandler = answerUsageDefault
+  let usageInFlight = 0
+  let peakUsageInFlight = 0
 
   /** Issues a new token pair to `owner`. */
   const grant = (owner: ClaudeUser) => {
@@ -312,6 +386,22 @@ export const fakeClaude = Effect.gen(function* () {
     return answerApi(request)
   }
 
+  const usage = async (request: Request, url: URL) => {
+    usageRequests.push({
+      method: request.method,
+      path: url.pathname + url.search,
+      headers: Object.fromEntries(request.headers),
+      body: "",
+    })
+    usageInFlight++
+    peakUsageInFlight = Math.max(peakUsageInFlight, usageInFlight)
+    try {
+      return await answerUsage(request)
+    } finally {
+      usageInFlight--
+    }
+  }
+
   const server = yield* Effect.acquireRelease(
     Effect.sync(() =>
       Bun.serve({
@@ -327,6 +417,9 @@ export const fakeClaude = Effect.gen(function* () {
           }
           if (request.method === "GET" && url.pathname === "/api/oauth/profile") {
             return profile(request)
+          }
+          if (request.method === "GET" && url.pathname === "/api/oauth/usage") {
+            return usage(request, url)
           }
           if (url.pathname.startsWith("/v1/messages")) {
             return api(request, url)
@@ -345,6 +438,7 @@ export const fakeClaude = Effect.gen(function* () {
       authorizeUrl: `${origin}/cai/oauth/authorize`,
       tokenUrl: `${origin}/v1/oauth/token`,
       profileUrl: `${origin}/api/oauth/profile`,
+      usageUrl: `${origin}/api/oauth/usage`,
       callbackPort: 0,
     },
     signInAs: (next) => {
@@ -386,6 +480,11 @@ export const fakeClaude = Effect.gen(function* () {
     refuseNextRefresh: (status, body) => {
       refreshTrouble = { _tag: "Refuse", status, body }
     },
+    usageRequests: () => [...usageRequests],
+    answerUsageWith: (handler) => {
+      answerUsage = handler
+    },
+    peakUsageInFlight: () => peakUsageInFlight,
   }
   return fake
 })

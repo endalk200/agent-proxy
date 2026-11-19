@@ -1821,7 +1821,7 @@ layer(services)("agent-proxy uninstall", (it) => {
           expect(Option.getOrNull(yield* home.read(home.codexConfig))).toBe("")
           expect(yield* fs.exists(binary)).toBe(false)
           expect(output).toContain(`Deleted ${binary}.`)
-          expect(output).toContain(`accounts and the proxy key  ${home.root}/data/agent-proxy`)
+          expect(output).toContain(`accounts, usage, proxy key  ${home.root}/data/agent-proxy`)
           expect(output).toContain(`logs                        ${home.root}/state/agent-proxy`)
           expect(output).toContain(
             `config                      ${home.root}/config/agent-proxy/config.toml`,

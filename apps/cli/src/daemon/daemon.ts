@@ -20,6 +20,9 @@ import { claudeRoutes } from "../proxy/claude-routes.ts"
 import { codexRoutes } from "../proxy/codex-routes.ts"
 import { ProxyKey } from "../proxy/proxy-key.ts"
 import { buildLabel, RuntimeInfo } from "../runtime-info.ts"
+import { LimitWindows } from "../usage/limit-windows.ts"
+import { LimitPoller } from "../usage/poller.ts"
+import { UsageStore } from "../usage/store.ts"
 import { AccountEvents } from "./account-events.ts"
 import { accountRoutes } from "./accounts-routes.ts"
 import { dashboardRoutes } from "./dashboard.ts"
@@ -28,13 +31,14 @@ import { localOnly } from "./http.ts"
 import { keyRoutes } from "./key-routes.ts"
 import { openLogFile } from "./log-file.ts"
 import { acquireLock, removeStateFile, stateFiles, writeStateFile } from "./state.ts"
+import { usageRoutes } from "./usage-routes.ts"
 
 /**
  * The daemon: one HTTP listener that serves agent-proxy, meeting ADR-0002.
  *
  * It serves its health and identity, the daemon API under `/api/`, the
  * proxy's Claude and Codex routes, and the built dashboard at `/` for every
- * other GET.
+ * other GET. It records usage and keeps limit windows in its usage store.
  */
 
 export interface RunningDaemon {
@@ -73,6 +77,7 @@ const routes = (info: {
       accountRoutes(router, localOnly(info.listenHost)),
       eventRoutes(router, localOnly(info.listenHost), info.closing),
       keyRoutes(router, localOnly(info.listenHost)),
+      usageRoutes(router, localOnly(info.listenHost)),
       claudeRoutes(router),
       codexRoutes(router),
       dashboardRoutes(router, localOnly(info.listenHost)),
@@ -177,10 +182,16 @@ export const startDaemon = Effect.gen(function* () {
       ).pipe(
         Layer.provide(
           Layer.mergeAll(
-            Layer.mergeAll(Logins.layer, CredentialKeeper.layer, AccountEvents.layer).pipe(
+            LimitPoller.layer.pipe(
+              Layer.provideMerge(
+                Layer.mergeAll(Logins.layer, CredentialKeeper.layer, AccountEvents.layer),
+              ),
               Layer.provideMerge(Router.layer),
+              Layer.provideMerge(LimitWindows.layer),
+              Layer.provideMerge(UsageStore.layer),
               Layer.provideMerge(AccountStore.layer),
               Layer.provideMerge(AccountChanges.layer),
+              Layer.provideMerge(Layer.mergeAll(ClaudeApi.layer, CodexApi.layer)),
               Layer.provide(
                 Layer.mergeAll(
                   ClaudeLogin.layer,
@@ -191,8 +202,6 @@ export const startDaemon = Effect.gen(function* () {
               ),
             ),
             ProxyKey.layer,
-            ClaudeApi.layer,
-            CodexApi.layer,
           ),
         ),
         Layer.provide(Layer.succeed(HttpServer.HttpServer, server)),
