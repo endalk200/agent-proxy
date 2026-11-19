@@ -190,6 +190,29 @@ layer(services)("usage", (it) => {
     }),
   )
 
+  it.effect(
+    "Claude Code embedded through the Agent SDK by an app that names itself is recorded as claude-code",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.seed("claude", "work")
+        const events = yield* home.events
+        // T3 Code runs Claude Code through the Agent SDK with its own entrypoint,
+        // where opencode leaves the SDK's default, `sdk-ts`.
+        yield* home.send("/v1/messages?beta=true", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "user-agent": "claude-cli/2.1.328 (external, t3-code, agent-sdk/0.3.321)",
+            "x-api-key": yield* home.key,
+          },
+          body: JSON.stringify({ model: "claude-haiku-4-5", max_tokens: 8, messages: [] }),
+        })
+        const recorded = yield* events.next("usage-recorded")
+        expect(recorded["usage"]).toMatchObject({ client: "claude-code" })
+      }),
+  )
+
   it.effect("Codex embedded in an app that renames its user agent is recorded as codex", () =>
     Effect.gen(function* () {
       const home = yield* makeHome()
