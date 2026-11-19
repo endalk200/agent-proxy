@@ -1,4 +1,15 @@
-import { Clock, Context, Duration, Effect, Layer, Option, Queue, Semaphore, Stream } from "effect"
+import {
+  Clock,
+  Context,
+  DateTime,
+  Duration,
+  Effect,
+  Layer,
+  Option,
+  Queue,
+  Semaphore,
+  Stream,
+} from "effect"
 
 import type { Account, Credentials, Provider } from "../accounts/account.ts"
 import { CredentialKeeper } from "../accounts/keeper.ts"
@@ -102,7 +113,7 @@ export class LimitPoller extends Context.Service<
                 ).pipe(
                   Effect.annotateLogs({
                     provider: account.provider,
-                    until: new Date(busyUntil[account.provider]).toISOString(),
+                    until: DateTime.formatIso(DateTime.makeUnsafe(busyUntil[account.provider])),
                   }),
                 )
               case "Failed":
