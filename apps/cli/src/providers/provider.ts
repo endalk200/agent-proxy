@@ -73,7 +73,8 @@ export class RefreshRejected extends Data.TaggedError("RefreshRejected")<{
 
 /**
  * The refresh may or may not have happened: it was sent, but no answer was
- * read. Refresh tokens are single-use, so it must never be replayed.
+ * read. It is tried again later with the same refresh token: a provider that
+ * did spend it refuses the retry, which then counts as `RefreshRejected`.
  */
 export class RefreshOutcomeUnknown extends Data.TaggedError("RefreshOutcomeUnknown")<{
   readonly reason: string
@@ -119,17 +120,36 @@ const NOT_CONNECTED = new Set([
   "ConnectionRefused",
 ])
 
+/**
+ * A TLS handshake that failed, such as on a captive portal or behind a proxy
+ * with its own certificate (`CERT_HAS_EXPIRED`, `DEPTH_ZERO_SELF_SIGNED_CERT`,
+ * `ERR_TLS_CERT_ALTNAME_INVALID`), or with a server that does not speak TLS
+ * (Bun's `EPROTO`): the request is sent only after the handshake, so it never was.
+ */
+const isTlsFailure = (code: string) =>
+  code === "EPROTO" || /CERT|SSL|TLS|SELF_SIGNED|UNABLE_TO_VERIFY/.test(code)
+
 const errorCode = (cause: unknown) =>
   typeof cause === "object" && cause !== null && "code" in cause ? String(cause.code) : undefined
 
 /** How a refresh request to `name` that got no answer ended. */
-export const refreshUnanswered = (name: string) => (error: HttpClientError.HttpClientError) =>
-  error.reason._tag === "TransportError" && NOT_CONNECTED.has(errorCode(error.reason.cause) ?? "")
-    ? new RefreshUnavailable({ reason: `Could not reach ${name}.`, cause: error })
-    : new RefreshOutcomeUnknown({
-        reason: `The connection to ${name} closed before it answered.`,
-        cause: error,
-      })
+export const refreshUnanswered = (name: string) => (error: HttpClientError.HttpClientError) => {
+  const code =
+    error.reason._tag === "TransportError" ? (errorCode(error.reason.cause) ?? "") : undefined
+  if (code !== undefined && NOT_CONNECTED.has(code)) {
+    return new RefreshUnavailable({ reason: `Could not reach ${name}.`, cause: error })
+  }
+  if (code !== undefined && isTlsFailure(code)) {
+    return new RefreshUnavailable({
+      reason: `Could not reach ${name} securely (${code}); a captive portal or a proxy on this network may be in the way.`,
+      cause: error,
+    })
+  }
+  return new RefreshOutcomeUnknown({
+    reason: `The connection to ${name} closed before it answered.`,
+    cause: error,
+  })
+}
 
 /**
  * Fails with how a refresh `name` answered with anything but 200 ended;
@@ -142,13 +162,19 @@ export const refreshFailed = Effect.fnUntraced(function* (
 ) {
   // Only 429 and 503 say the refresh was not taken. Any other server error,
   // a gateway's 502 or 504 above all, may come after the provider spent the
-  // single-use refresh token, so it must never be sent again.
+  // single-use refresh token: whether it did, the retry finds out.
   if (response.status === 429 || response.status === 503) {
     return yield* new RefreshUnavailable({
       reason: `${name} could not refresh the tokens now (HTTP ${response.status}).`,
     })
   }
-  if (response.status >= 500) {
+  // A request timeout and a redirect (never followed) refuse nothing either:
+  // only an answer about the refresh itself, a 4xx, refuses it.
+  if (
+    response.status >= 500 ||
+    response.status === 408 ||
+    (response.status >= 300 && response.status < 400)
+  ) {
     return yield* new RefreshOutcomeUnknown({
       reason: `${name} answered the refresh with HTTP ${response.status}, so whether it took the refresh token is unknown.`,
     })
@@ -160,7 +186,8 @@ export const refreshFailed = Effect.fnUntraced(function* (
  * An HTTP client for a provider's OAuth endpoints that never follows a
  * redirect: following one would resend a single-use code or refresh token,
  * possibly to another origin. A redirect comes back as the answer, which no
- * caller treats as success.
+ * caller treats as success; a refresh answered with one is tried again later
+ * at the same endpoint.
  */
 export const oauthClient = Effect.map(HttpClient.HttpClient, (client) =>
   HttpClient.transform(client, (effect) =>

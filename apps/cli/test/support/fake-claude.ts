@@ -165,6 +165,7 @@ const answerUsageDefault: ApiHandler = () => json(usageAnswer)
 type RefreshTrouble =
   | { readonly _tag: "Hold"; readonly arrived: () => void; readonly released: Promise<void> }
   | { readonly _tag: "Drop" }
+  | { readonly _tag: "SpendAndDrop" }
   | { readonly _tag: "Refuse"; readonly status: number; readonly body: unknown }
 
 /** A refresh request held by `holdNextRefresh`. */
@@ -208,6 +209,11 @@ export interface FakeClaude {
   readonly holdNextRefresh: () => HeldRefresh
   /** The next refresh request is taken in, then its connection drops with no answer. */
   readonly dropNextRefresh: () => void
+  /**
+   * The next refresh request spends its refresh token, as a provider that
+   * issued a new pair does, then its connection drops before the answer.
+   */
+  readonly spendAndDropNextRefresh: () => void
   /** The next refresh request gets `status` and `body` instead of new tokens. */
   readonly refuseNextRefresh: (status: number, body: unknown) => void
   /** The requests the usage endpoint received so far, oldest first. */
@@ -269,7 +275,8 @@ export const fakeClaude = Effect.gen(function* () {
     }
     const trouble = refreshTrouble
     refreshTrouble = undefined
-    if (trouble?._tag === "Drop") {
+    if (trouble?._tag === "SpendAndDrop") refreshTokens.delete(presented)
+    if (trouble?._tag === "Drop" || trouble?._tag === "SpendAndDrop") {
       // Taken in, then the connection closes before any answer.
       return new Response(
         new ReadableStream({
@@ -476,6 +483,9 @@ export const fakeClaude = Effect.gen(function* () {
     },
     dropNextRefresh: () => {
       refreshTrouble = { _tag: "Drop" }
+    },
+    spendAndDropNextRefresh: () => {
+      refreshTrouble = { _tag: "SpendAndDrop" }
     },
     refuseNextRefresh: (status, body) => {
       refreshTrouble = { _tag: "Refuse", status, body }

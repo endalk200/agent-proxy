@@ -213,9 +213,9 @@ layer(services)("the credential keeper with Codex accounts", (it) => {
     )
   }
 
-  for (const status of [500, 502, 504]) {
+  for (const status of [408, 500, 502, 504]) {
     it.effect(
-      `a Codex refresh answered with HTTP ${status} is never sent again: the account needs sign-in`,
+      `a Codex refresh answered with HTTP ${status} leaves the account active and is tried again later`,
       () =>
         Effect.gen(function* () {
           const codex = yield* fakeOpenAi
@@ -224,29 +224,39 @@ layer(services)("the credential keeper with Codex accounts", (it) => {
           codex.refuseNextRefresh(status, { error: "bad_gateway" })
 
           yield* untilRefreshDue
-          yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-          yield* TestClock.adjust("2 hours")
-          expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
+          yield* within3s("the first refresh", codex.refreshesArrived(1))
+          expect(yield* home.statuses).toEqual(["active"])
+          yield* TestClock.adjust("5 minutes")
+          yield* within3s("the second refresh", codex.refreshesArrived(2))
+          expect(codex.refreshRequests()).toEqual(["rt_fake_1", "rt_fake_1"])
+          expect(yield* home.statuses).toEqual(["active"])
         }),
     )
   }
 
-  it.effect("a Codex refresh answered with a redirect is never sent again, there or here", () =>
-    Effect.gen(function* () {
-      const codex = yield* fakeOpenAi
-      const home = yield* makeHome(codex)
-      yield* home.signIn
-      // Back to the token endpoint itself: following it would send the token twice.
-      codex.redirectNextRefresh(codex.endpoints.tokenUrl)
+  it.effect(
+    "a Codex refresh answered with a redirect is never followed, and is tried again later",
+    () =>
+      Effect.gen(function* () {
+        const codex = yield* fakeOpenAi
+        const home = yield* makeHome(codex)
+        yield* home.signIn
+        // Back to the token endpoint itself: following it would send the token twice.
+        codex.redirectNextRefresh(codex.endpoints.tokenUrl)
 
-      yield* untilRefreshDue
-      yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-      yield* TestClock.adjust("2 hours")
-      expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
-    }),
+        yield* untilRefreshDue
+        yield* within3s("the first refresh", codex.refreshesArrived(1))
+        // A redirect refuses nothing: the account stays active.
+        expect(yield* home.statuses).toEqual(["active"])
+        expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
+        yield* TestClock.adjust("5 minutes")
+        yield* within3s("the second refresh", codex.refreshesArrived(2))
+        expect(codex.refreshRequests()).toEqual(["rt_fake_1", "rt_fake_1"])
+        expect(yield* home.statuses).toEqual(["active"])
+      }),
   )
 
-  it.effect("a Codex refresh whose connection drops after sending is never retried", () =>
+  it.effect("a Codex refresh whose connection drops before an answer is tried again later", () =>
     Effect.gen(function* () {
       const codex = yield* fakeOpenAi
       const home = yield* makeHome(codex)
@@ -254,9 +264,12 @@ layer(services)("the credential keeper with Codex accounts", (it) => {
       codex.dropNextRefresh()
 
       yield* untilRefreshDue
-      yield* within3s("Needs sign-in", home.statusBecomes("needs-sign-in"))
-      yield* TestClock.adjust("2 hours")
-      expect(codex.refreshRequests()).toEqual(["rt_fake_1"])
+      yield* within3s("the first refresh", codex.refreshesArrived(1))
+      expect(yield* home.statuses).toEqual(["active"])
+      yield* TestClock.adjust("5 minutes")
+      yield* within3s("the second refresh", codex.refreshesArrived(2))
+      expect(codex.refreshRequests()).toEqual(["rt_fake_1", "rt_fake_1"])
+      expect(yield* home.statuses).toEqual(["active"])
     }),
   )
 

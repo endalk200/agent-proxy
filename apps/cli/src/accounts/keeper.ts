@@ -1,7 +1,6 @@
 import {
   Clock,
   Context,
-  DateTime,
   Duration,
   Effect,
   Fiber,
@@ -14,11 +13,7 @@ import {
 
 import { ClaudeTokens } from "../providers/claude.ts"
 import { CodexTokens } from "../providers/codex.ts"
-import {
-  type RefreshError,
-  RefreshOutcomeUnknown,
-  type TokenAdapter,
-} from "../providers/provider.ts"
+import type { RefreshError, TokenAdapter } from "../providers/provider.ts"
 import type { Account, Credentials, Provider } from "./account.ts"
 import { AccountStore, type AccountStoreError } from "./store.ts"
 
@@ -30,10 +25,14 @@ import { AccountStore, type AccountStoreError } from "./store.ts"
  *
  * - At most one refresh per account runs at a time; callers that wanted one
  *   meanwhile get its result.
- * - A durable "refresh in flight" marker is stored before the refresh is sent.
- *   A refresh whose outcome is unknown, including one a stopped daemon left
- *   marked, is never replayed: the account goes to Needs sign-in.
  * - A new token pair is stored before anything uses it.
+ * - A refresh that did not happen, or whose outcome is unknown (the
+ *   connection failed, timed out, or a gateway answered), is tried again
+ *   later with the same refresh token, and the token in hand serves
+ *   meanwhile. Retrying never costs more than giving up: if the provider did
+ *   spend the token, it refuses the retry, and the account goes to Needs
+ *   sign-in as it would have anyway; if it did not, the retry just works.
+ *   A daemon stopped mid-refresh is the same case: it refreshes again.
  * - A refresh the provider refuses for good flags the account Needs sign-in.
  *   Signing in again clears the flag.
  *
@@ -114,17 +113,6 @@ export class CredentialKeeper extends Context.Service<
       const refresh = Effect.fnUntraced(function* (account: Account) {
         const adapter = adapters[account.provider]
         const now = yield* Clock.currentTimeMillis
-        const marked = yield* store.updateCredentials(account.id, (current) =>
-          current.credentials.refreshToken === account.credentials.refreshToken
-            ? {
-                credentials: current.credentials,
-                needsSignIn: current.needsSignIn,
-                refreshStartedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
-              }
-            : undefined,
-        )
-        if (Option.isNone(marked)) return marked
-
         const outcome = yield* Effect.result(adapter.refresh(account.credentials.refreshToken))
         if (outcome._tag === "Success") {
           yield* Ref.update(retryAt, (all) => {
@@ -147,7 +135,7 @@ export class CredentialKeeper extends Context.Service<
         error: RefreshError,
         now: number,
       ) {
-        if (error._tag === "RefreshUnavailable") {
+        if (error._tag !== "RefreshRejected") {
           yield* Ref.update(retryAt, (all) => new Map(all).set(account.id, now + RETRY_AFTER_MS))
           yield* Effect.logWarning("account tokens not refreshed; will retry").pipe(
             Effect.annotateLogs({ reason: error.reason }),
@@ -155,12 +143,7 @@ export class CredentialKeeper extends Context.Service<
           return yield* settle(account, {})
         }
         yield* Effect.logWarning("account needs sign-in").pipe(
-          Effect.annotateLogs({
-            reason:
-              error._tag === "RefreshRejected"
-                ? `The refresh was refused: ${error.reason}`
-                : `The refresh's outcome is unknown, so it is not retried: ${error.reason}`,
-          }),
+          Effect.annotateLogs({ reason: `The refresh was refused: ${error.reason}` }),
         )
         return yield* settle(account, { needsSignIn: true })
       })
@@ -177,18 +160,6 @@ export class CredentialKeeper extends Context.Service<
               const account = (yield* store.list).find((candidate) => candidate.id === id)
               if (account === undefined || account.needsSignIn) return Option.none<Account>()
               const now = yield* Clock.currentTimeMillis
-              // Under the lock no refresh of this account is running, so a
-              // marker means one whose outcome was never stored, such as one
-              // whose new tokens could not be saved: never replay it.
-              if (account.refreshStartedAt !== undefined) {
-                return yield* failed(
-                  account,
-                  new RefreshOutcomeUnknown({
-                    reason: "An earlier refresh never stored its outcome.",
-                  }),
-                  now,
-                )
-              }
               const retry = (yield* Ref.get(retryAt)).get(id)
               if (!wanted(account) || (retry !== undefined && now < retry)) {
                 return Option.some(account)
@@ -222,21 +193,6 @@ export class CredentialKeeper extends Context.Service<
           )
         },
       )
-
-      // A refresh a stopped daemon left marked may have happened: never replay it.
-      for (const account of yield* store.list) {
-        if (account.refreshStartedAt === undefined) continue
-        yield* store.updateCredentials(account.id, (current) => ({
-          credentials: current.credentials,
-          needsSignIn: true,
-        }))
-        yield* Effect.logWarning("account needs sign-in").pipe(
-          Effect.annotateLogs({
-            account: account.id,
-            reason: `A refresh started at ${account.refreshStartedAt} never recorded its outcome, so it is not retried.`,
-          }),
-        )
-      }
 
       /** Refreshes every account that is due, one after another. */
       const check = Effect.gen(function* () {
