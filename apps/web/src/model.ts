@@ -43,17 +43,117 @@ export const clientsOf = (provider: Provider): string =>
     .map((client) => client.name)
     .join(" and ")
 
-/** A pool's accounts, highest priority first. */
+/**
+ * A pool's accounts, highest priority first, and in the daemon's order among
+ * those sharing a priority: the first added first.
+ */
 export const accountsOf = (list: AccountList, provider: Provider): ReadonlyArray<Account> =>
   list.accounts
     .filter((account) => account.provider === provider)
-    .toSorted((a, b) => a.priority - b.priority)
+    .toSorted(
+      (a, b) =>
+        a.priority - b.priority || a.addedAt.localeCompare(b.addedAt) || a.id.localeCompare(b.id),
+    )
+
+/**
+ * `pool` by priority, highest first: each level holds the accounts that share
+ * one priority, in `pool`'s order. Gaps between priorities close.
+ */
+export const levelsOf = (pool: ReadonlyArray<Account>): ReadonlyArray<ReadonlyArray<Account>> => {
+  const levels: Array<Array<Account>> = []
+  for (const account of pool.toSorted((a, b) => a.priority - b.priority)) {
+    const last = levels.at(-1)
+    if (last !== undefined && last[0]?.priority === account.priority) last.push(account)
+    else levels.push([account])
+  }
+  return levels
+}
+
+/** Where the owner puts an account in its pool, as the daemon API takes it. */
+export type Placement =
+  /** Alone at `priority`; the accounts from that priority down move down one. */
+  | { readonly priority: number }
+  /** At the priority account `sharePriorityWith` holds, sharing it. */
+  | { readonly sharePriorityWith: string }
+
+/**
+ * `pool` (highest priority first) as the daemon leaves it once account `id`
+ * is placed as `placement` says, numbered 1, 2, 3… by level; undefined when
+ * the daemon would refuse it.
+ */
+export const place = (
+  pool: ReadonlyArray<Account>,
+  id: string,
+  placement: Placement,
+): ReadonlyArray<Account> | undefined => {
+  const moving = pool.find((account) => account.id === id)
+  if (moving === undefined) return undefined
+  const others = levelsOf(pool.filter((account) => account.id !== id))
+  let levels: ReadonlyArray<ReadonlyArray<Account>>
+  if ("priority" in placement) {
+    const { priority } = placement
+    if (!Number.isInteger(priority) || priority < 1 || priority > others.length + 1) {
+      return undefined
+    }
+    levels = [...others.slice(0, priority - 1), [moving], ...others.slice(priority - 1)]
+  } else if (placement.sharePriorityWith === id) {
+    levels = levelsOf(pool)
+  } else {
+    const at = others.findIndex((level) =>
+      level.some((account) => account.id === placement.sharePriorityWith),
+    )
+    if (at === -1) return undefined
+    levels = others.map((level, index) => (index === at ? level.concat(moving) : level))
+  }
+  return levels.flatMap((level, index) =>
+    level.map((account) =>
+      account.priority === index + 1 ? account : { ...account, priority: index + 1 },
+    ),
+  )
+}
+
+/**
+ * The placement one step up (-1) or down (1) from where account `id` is in
+ * `pool`, as the arrow keys and Move up or down step: an account alone at its
+ * priority joins the next one over, and an account sharing one takes that
+ * side of it alone. Undefined at either end of the pool.
+ */
+export const step = (
+  pool: ReadonlyArray<Account>,
+  id: string,
+  direction: -1 | 1,
+): Placement | undefined => {
+  const levels = levelsOf(pool)
+  const at = levels.findIndex((level) => level.some((account) => account.id === id))
+  const level = levels[at]
+  if (level === undefined) return undefined
+  if (level.length > 1) return { priority: direction === -1 ? at + 1 : at + 2 }
+  const neighbour = levels[at + direction]?.[0]
+  return neighbour === undefined ? undefined : { sharePriorityWith: neighbour.id }
+}
+
+/** The other accounts in `account`'s pool at its priority. */
+export const sharingWith = (list: AccountList, account: Account): ReadonlyArray<Account> =>
+  accountsOf(list, account.provider).filter(
+    (other) => other.priority === account.priority && other.id !== account.id,
+  )
+
+/** How many priorities `provider`'s pool has: accounts sharing one count once. */
+export const priorityCount = (list: AccountList, provider: Provider): number =>
+  levelsOf(accountsOf(list, provider)).length
+
+/** "Work", "Work and Home", "Work, Home and Spare". */
+export const labelsText = (accounts: ReadonlyArray<Account>): string => {
+  const labels = accounts.map((account) => account.label)
+  const last = labels.pop()
+  return labels.length === 0 ? (last ?? "") : `${labels.join(", ")} and ${last}`
+}
 
 /**
  * `list` as it will be once the daemon applies `settings` to account `id`:
- * a new priority moves the account within its pool and renumbers the rest,
- * and turning an account off makes it Disabled. Which account gets new
- * sessions is left to the daemon to say.
+ * a new or shared priority moves the account within its pool and renumbers
+ * the rest, and turning an account off makes it Disabled. Which account gets
+ * new sessions is left to the daemon to say.
  */
 export const withSettings = (
   list: AccountList,
@@ -62,14 +162,21 @@ export const withSettings = (
 ): AccountList => {
   const changed = list.accounts.find((account) => account.id === id)
   if (changed === undefined) return list
-  const pool = accountsOf(list, changed.provider).filter((account) => account.id !== id)
-  const position = Math.min(Math.max(settings.priority ?? changed.priority, 1), pool.length + 1)
-  const order = [...pool.slice(0, position - 1), changed, ...pool.slice(position - 1)]
+  const placement: Placement | undefined =
+    settings.sharePriorityWith !== undefined
+      ? { sharePriorityWith: settings.sharePriorityWith }
+      : settings.priority !== undefined
+        ? { priority: settings.priority }
+        : undefined
+  const placed =
+    placement === undefined ? undefined : place(accountsOf(list, changed.provider), id, placement)
+  const priorities = new Map(placed?.map((account) => [account.id, account.priority]))
   return {
     ...list,
     accounts: list.accounts.map((account) => {
-      const priority = order.indexOf(account) + 1
-      if (account.id !== id) return priority === 0 ? account : { ...account, priority }
+      const priority = priorities.get(account.id) ?? account.priority
+      if (account.id !== id)
+        return priority === account.priority ? account : { ...account, priority }
       const enabled = settings.enabled ?? account.enabled
       return {
         ...account,

@@ -74,9 +74,11 @@ const notices = () =>
     .queryAllByRole("dialog")
     .map(textOf)
 
+/** Who gets the Claude pool's new sessions, as its header says, without the accounts after. */
 const poolLine = () =>
-  within(screen.getByRole("region", { name: "Claude" })).getByText(/New sessions go to|No account/)
-    .textContent
+  within(screen.getByRole("region", { name: "Claude" }))
+    .getByText(/New sessions go to|No account/)
+    .textContent?.replace(/ · then .*$/, "")
 
 describe("a status the daemon changes", () => {
   it("shows a cooldown starting at once: the row flashes amber and a notice says until when", async () => {
@@ -127,6 +129,34 @@ describe("a status the daemon changes", () => {
     expect(statusOf(table, "Home")).toContain("Needs sign-in")
     expect(rowOf(table, "Home").dataset["flash"]).toBe("needs-sign-in")
     within(nav).getByRole("link", { name: "Accounts 1 needs sign-in" })
+  })
+})
+
+/** The Claude pool's header line, whole. */
+const header = () =>
+  within(screen.getByRole("region", { name: "Claude" })).getByText(/New sessions go to/).textContent
+
+describe("the order new sessions go in", () => {
+  it("follows accounts sharing a priority as they trade places, with no notice or flash", async () => {
+    const daemon = fakeDaemon({
+      accounts: [
+        account({ id: "a1", label: "Work", priority: 1 }),
+        account({ id: "a2", label: "Home", priority: 1 }),
+      ],
+      pools: [{ provider: "claude", newSessionsAccountId: "a1", newSessionsOrder: ["a1", "a2"] }],
+    })
+    const table = await show(daemon)
+    expect(header()).toBe("New sessions go to Work · then Home")
+
+    daemon.setPools([
+      { provider: "claude", newSessionsAccountId: "a2", newSessionsOrder: ["a2", "a1"] },
+    ])
+
+    await waitFor(() => expect(header()).toBe("New sessions go to Home · then Work"))
+    screen.getByRole("listitem", { name: "Claude: new sessions go to Home" })
+    expect(rowOf(table, "Home").classList.contains("is-serving")).toBe(true)
+    expect(rowOf(table, "Work").dataset["flash"]).toBeUndefined()
+    expect(notices()).toEqual([])
   })
 })
 

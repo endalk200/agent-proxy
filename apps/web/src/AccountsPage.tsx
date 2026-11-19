@@ -14,11 +14,14 @@ import {
   cooldownEnd,
   countdown,
   lastUsedText,
+  levelsOf,
+  type Placement,
   planWeight,
   type PoolState,
   poolState,
   providerNames,
   statusLabels,
+  step,
 } from "./model.ts"
 import type { SignInRequest } from "./SignIn.tsx"
 import {
@@ -29,6 +32,7 @@ import {
   IconChevronUp,
   IconGrip,
   IconMore,
+  IconLink,
   IconPencil,
   IconRefresh,
   IconTrash,
@@ -48,8 +52,8 @@ export interface AccountControls {
   readonly open: (account: Account) => void
   readonly setEnabled: (account: Account, enabled: boolean) => void
   readonly rename: (account: Account, label: string) => void
-  /** Moves `account` to `priority` in its pool, 1 first. */
-  readonly move: (account: Account, priority: number) => void
+  /** Moves `account` within its pool, to a priority of its own or one it shares. */
+  readonly move: (account: Account, placement: Placement) => void
   /** Asks the owner to confirm removing `account`. */
   readonly askRemove: (account: Account) => void
   /** Rows flashing because their account just changed, by account id. */
@@ -64,18 +68,60 @@ const ROW_CONTROLS = "button, input, a, [role=switch], [role=menu]"
 /** Stops a click before it reaches the page, such as the one that ends a drag. */
 const swallowClick = (event: MouseEvent) => event.stopPropagation()
 
-/** A row being dragged: account `id`, shown at index `to` of its pool. */
+/**
+ * Where a dragged row would land, by the pool's priorities as shown: onto
+ * the accounts of priority `level + 1`, sharing it, or into the gap before
+ * priority `gap + 1` (after the last when `gap` is the number of priorities),
+ * holding a priority alone.
+ */
+type Drop =
+  | { readonly kind: "share"; readonly level: number }
+  | { readonly kind: "gap"; readonly gap: number }
+
+/** A row being dragged: account `id`, and where it would land now, if anywhere yet. */
 interface Drag {
   readonly id: string
-  readonly to: number
+  readonly drop: Drop | undefined
 }
 
-/** `pool` with the dragged account moved to where the drag shows it. */
-const dragOrder = (pool: ReadonlyArray<Account>, drag: Drag): ReadonlyArray<Account> => {
-  const dragged = pool.find((account) => account.id === drag.id)
-  if (dragged === undefined) return pool
-  const others = pool.filter((account) => account !== dragged)
-  return [...others.slice(0, drag.to), dragged, ...others.slice(drag.to)]
+/** A drop as a string, to tell whether the pointer moved to another one. */
+const dropKey = (drop: Drop | undefined) =>
+  drop === undefined ? "" : drop.kind === "share" ? `share:${drop.level}` : `gap:${drop.gap}`
+
+/** The share of a row's height, at its top and bottom, that drops between priorities rather than onto one. */
+const GAP_EDGE = 0.3
+
+/** What dropping account `id` at `drop` asks the daemon for; undefined when it would change nothing. */
+const placementOf = (
+  levels: ReadonlyArray<ReadonlyArray<Account>>,
+  id: string,
+  drop: Drop,
+): Placement | undefined => {
+  const from = levels.findIndex((level) => level.some((account) => account.id === id))
+  const alone = levels[from]?.length === 1
+  if (drop.kind === "share") {
+    if (drop.level === from) return undefined
+    const partner = levels[drop.level]?.find((account) => account.id !== id)
+    return partner === undefined ? undefined : { sharePriorityWith: partner.id }
+  }
+  // Either side of the priority it holds alone is where it already is.
+  if (alone && (drop.gap === from || drop.gap === from + 1)) return undefined
+  const above = drop.gap - (alone && from < drop.gap ? 1 : 0)
+  return { priority: above + 1 }
+}
+
+/** What a drop would do, in words, for the pool's header while a row is dragged. */
+const dropText = (levels: ReadonlyArray<ReadonlyArray<Account>>, drag: Drag): string => {
+  const placement = drag.drop === undefined ? undefined : placementOf(levels, drag.id, drag.drop)
+  if (placement === undefined) {
+    return "Drop on an account to share its priority, or between priorities to move"
+  }
+  if ("priority" in placement) return `Drop to move to priority ${placement.priority}`
+  const level = levels.findIndex((accounts) =>
+    accounts.some((account) => account.id === placement.sharePriorityWith),
+  )
+  const partners = (levels[level] ?? []).filter((account) => account.id !== drag.id)
+  return `Drop to share priority ${level + 1} with ${partners.map((account) => account.label).join(", ")}`
 }
 
 /** The accounts page body: one table per pool, or the first-run guide. */
@@ -103,7 +149,8 @@ export function AccountsPage(props: {
   return (
     <div className="sections">
       <p className="sr-only" id={REORDER_HINT}>
-        Drag, or press the up and down arrow keys, to change its priority.
+        Drag, or press the up and down arrow keys, to change its priority. Each arrow key press
+        either shares the next priority over or moves past it.
       </p>
       {list.pools.map((pool) => (
         <PoolSection
@@ -120,7 +167,13 @@ export function AccountsPage(props: {
   )
 }
 
-function PoolLine(props: { state: PoolState; provider: Provider; now: number }) {
+function PoolLine(props: {
+  state: PoolState
+  provider: Provider
+  /** The Active accounts after the one new sessions go to, in the order they would. */
+  then: ReadonlyArray<Account>
+  now: number
+}) {
   const { state } = props
   switch (state.kind) {
     case "serving":
@@ -128,6 +181,12 @@ function PoolLine(props: { state: PoolState; provider: Provider; now: number }) 
         <p className="pool-line is-ok">
           <span className="pool-dot" aria-hidden="true" />
           New sessions go to <b>{state.account.label}</b>
+          {props.then.length > 0 && " "}
+          {props.then.length > 0 && (
+            <span className="pool-line-sub">
+              {`· then ${props.then.map((account) => account.label).join(", ")}`}
+            </span>
+          )}
         </p>
       )
     case "blocked":
@@ -184,9 +243,9 @@ function PoolSection(props: {
 }) {
   const { provider } = props.pool
   const name = providerNames[provider]
-  const pool = accountsOf(props.list, provider)
+  const accounts = accountsOf(props.list, provider)
+  const levels = levelsOf(accounts)
   const [drag, setDrag] = useState<Drag | undefined>()
-  const accounts = drag === undefined ? pool : dragOrder(pool, drag)
   const { move } = props.controls
 
   // While a row is dragged, the pointer may be released anywhere, and Escape
@@ -199,9 +258,10 @@ function PoolSection(props: {
       // the pointer, which is no request to open that row's sheet.
       document.addEventListener("click", swallowClick, { capture: true, once: true })
       setTimeout(() => document.removeEventListener("click", swallowClick, { capture: true }), 0)
-      const from = pool.findIndex((account) => account.id === drag.id)
-      const dragged = pool[from]
-      if (dragged !== undefined && from !== drag.to) move(dragged, drag.to + 1)
+      const dragged = accounts.find((account) => account.id === drag.id)
+      const placement =
+        drag.drop === undefined ? undefined : placementOf(levels, drag.id, drag.drop)
+      if (dragged !== undefined && placement !== undefined) move(dragged, placement)
     }
     const cancel = (event: KeyboardEvent) => {
       if (event.key === "Escape") setDrag(undefined)
@@ -216,10 +276,19 @@ function PoolSection(props: {
       document.removeEventListener("pointercancel", abandon)
       document.removeEventListener("keydown", cancel)
     }
-  }, [drag, pool, move])
+  }, [drag, accounts, levels, move])
 
   const state = poolState(props.list, props.pool)
   const servingId = state.kind === "serving" ? state.account.id : undefined
+  const then = props.pool.newSessionsOrder.slice(1).flatMap((id) => {
+    const account = accounts.find((candidate) => candidate.id === id)
+    return account === undefined ? [] : [account]
+  })
+  // Where the drag would land, marked only when landing there changes something.
+  const target =
+    drag?.drop !== undefined && placementOf(levels, drag.id, drag.drop) !== undefined
+      ? drag.drop
+      : undefined
   const headingId = `pool-${provider}`
   return (
     <section className="section" aria-labelledby={headingId}>
@@ -232,7 +301,13 @@ function PoolSection(props: {
             <span className="sr-only"> {accounts.length === 1 ? "account" : "accounts"}</span>
           </span>
         </div>
-        <PoolLine state={state} provider={provider} now={props.now} />
+        {drag === undefined ? (
+          <PoolLine state={state} provider={provider} then={then} now={props.now} />
+        ) : (
+          <p className="pool-line is-drag" aria-hidden="true">
+            {dropText(levels, drag)}
+          </p>
+        )}
       </header>
 
       {state.kind === "blocked" && (
@@ -270,24 +345,53 @@ function PoolSection(props: {
             </tr>
           </thead>
           <tbody>
-            {accounts.map((account, index) => (
-              <AccountRow
-                key={account.id}
-                account={account}
-                place={index + 1}
-                lifted={drag?.id === account.id}
-                onDragStart={() => setDrag({ id: account.id, to: index })}
-                onDragOver={() =>
-                  drag !== undefined && drag.to !== index && setDrag({ ...drag, to: index })
-                }
-                serving={account.id === servingId}
-                columns={props.columns}
-                pad={props.widest - props.columns.length}
-                count={accounts.length}
-                now={props.now}
-                controls={props.controls}
-              />
-            ))}
+            {levels.flatMap((level, at) =>
+              level.map((account, index) => {
+                const first = index === 0
+                const last = index === level.length - 1
+                const dropClass =
+                  target === undefined
+                    ? undefined
+                    : target.kind === "share"
+                      ? target.level === at
+                        ? `is-drop-share${first ? " is-drop-first" : ""}${last ? " is-drop-last" : ""}`
+                        : undefined
+                      : target.gap === at && first
+                        ? "is-drop-above"
+                        : target.gap === at + 1 && last && at === levels.length - 1
+                          ? "is-drop-below"
+                          : undefined
+                return (
+                  <AccountRow
+                    key={account.id}
+                    account={account}
+                    pool={accounts}
+                    level={{ first, last, shared: level.length > 1 }}
+                    dropClass={dropClass}
+                    lifted={drag?.id === account.id}
+                    onDragStart={() => setDrag({ id: account.id, drop: undefined })}
+                    onDragOver={
+                      drag === undefined
+                        ? undefined
+                        : (offset) => {
+                            const drop: Drop =
+                              offset < GAP_EDGE && first
+                                ? { kind: "gap", gap: at }
+                                : offset > 1 - GAP_EDGE && last
+                                  ? { kind: "gap", gap: at + 1 }
+                                  : { kind: "share", level: at }
+                            if (dropKey(drop) !== dropKey(drag.drop)) setDrag({ ...drag, drop })
+                          }
+                    }
+                    serving={account.id === servingId}
+                    columns={props.columns}
+                    pad={props.widest - props.columns.length}
+                    now={props.now}
+                    controls={props.controls}
+                  />
+                )
+              }),
+            )}
           </tbody>
         </table>
       </div>
@@ -308,16 +412,20 @@ function CooldownEnd(props: { account: Account; now: number }) {
 
 function AccountRow(props: {
   account: Account
-  /** Where the row shows in its pool: its priority, or where a drag would put it. */
-  place: number
+  /** Its pool, highest priority first. */
+  pool: ReadonlyArray<Account>
+  /** Where the row sits among the accounts of its priority. */
+  level: { readonly first: boolean; readonly last: boolean; readonly shared: boolean }
+  /** How the row shows where a drag would land, if it lands by this row. */
+  dropClass: string | undefined
   lifted: boolean
   onDragStart: () => void
-  onDragOver: () => void
+  /** While a row is dragged: the pointer is over this row, `offset` down it, 0 to 1. */
+  onDragOver: ((offset: number) => void) | undefined
   serving: boolean
   columns: ReadonlyArray<WindowColumn>
   /** Spacer cells after the windows, so the pools' tables line up. */
   pad: number
-  count: number
   now: number
   controls: AccountControls
 }) {
@@ -341,11 +449,28 @@ function AccountRow(props: {
     // A click anywhere on the row that is not one of its controls opens the
     // account's sheet, as the label's button does from the keyboard.
     <tr
-      className={`row is-${account.status} ${props.serving ? "is-serving" : ""} ${props.lifted ? "is-lifted" : ""} ${open ? "is-open" : ""}`}
+      className={[
+        "row",
+        `is-${account.status}`,
+        props.serving ? "is-serving" : "",
+        props.lifted ? "is-lifted" : "",
+        open ? "is-open" : "",
+        props.level.shared ? "is-shared" : "",
+        props.level.first ? "is-level-first" : "",
+        props.level.last ? "is-level-last" : "",
+        props.dropClass ?? "",
+      ]
+        .filter((name) => name !== "")
+        .join(" ")}
       data-account-row=""
+      data-priority={account.priority}
       data-flash={flash?.status}
       data-flash-turn={flash?.turn}
-      onPointerOver={props.onDragOver}
+      onPointerMove={(event) => {
+        if (props.onDragOver === undefined) return
+        const box = event.currentTarget.getBoundingClientRect()
+        props.onDragOver(box.height === 0 ? 0.5 : (event.clientY - box.top) / box.height)
+      }}
       onClick={(event) => {
         if (event.target instanceof Element && event.target.closest(ROW_CONTROLS) !== null) return
         controls.open(account)
@@ -368,17 +493,17 @@ function AccountRow(props: {
             props.onDragStart()
           }}
           onKeyDown={(event) => {
-            const step = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0
-            if (step === 0) return
+            const direction = event.key === "ArrowUp" ? -1 : event.key === "ArrowDown" ? 1 : 0
+            if (direction === 0) return
             event.preventDefault()
-            const priority = account.priority + step
-            if (priority >= 1 && priority <= props.count) controls.move(account, priority)
+            const placement = step(props.pool, account.id, direction)
+            if (placement !== undefined) controls.move(account, placement)
           }}
         >
           <span className="grip-dots" aria-hidden="true">
             <IconGrip size={14} />
           </span>
-          <span className="prio">{props.place}</span>
+          <span className="prio">{account.priority}</span>
         </button>
       </td>
       <td className="col-who">
@@ -465,7 +590,7 @@ function AccountRow(props: {
       <td className="col-menu">
         <RowMenu
           account={account}
-          count={props.count}
+          pool={props.pool}
           controls={controls}
           onRename={() => setRenaming(true)}
         />
@@ -530,11 +655,18 @@ export function LabelInput(props: {
 /** The row's ⋯ menu. */
 function RowMenu(props: {
   account: Account
-  count: number
+  /** Its pool, highest priority first. */
+  pool: ReadonlyArray<Account>
   controls: AccountControls
   onRename: () => void
 }) {
   const { account, controls } = props
+  const up = step(props.pool, account.id, -1)
+  const down = step(props.pool, account.id, 1)
+  // Each account it could share a priority with, one per priority but its own.
+  const partners = levelsOf(props.pool)
+    .filter((level) => level.every((other) => other.priority !== account.priority))
+    .flatMap((level) => level.slice(0, 1).map((first) => ({ level, first })))
   const usage = useUsage()
   // Rename waits for the menu to close, so the menu hands focus to the label's
   // field rather than taking it back.
@@ -560,23 +692,21 @@ function RowMenu(props: {
       label: "Move up",
       icon: <IconChevronUp size={14} />,
       separatorBefore: true,
-      disabled: account.priority === 1,
-      onClick: () => controls.move(account, account.priority - 1),
+      disabled: up === undefined,
+      onClick: () => up !== undefined && controls.move(account, up),
     },
     {
       label: "Move down",
       icon: <IconChevronDown size={14} />,
-      disabled: account.priority === props.count,
-      onClick: () => controls.move(account, account.priority + 1),
-    },
-    {
-      label: "Remove…",
-      icon: <IconTrash size={14} />,
-      separatorBefore: true,
-      danger: true,
-      onClick: () => controls.askRemove(account),
+      disabled: down === undefined,
+      onClick: () => down !== undefined && controls.move(account, down),
     },
   ]
+  const remove = {
+    label: "Remove…",
+    icon: <IconTrash size={14} />,
+    onClick: () => controls.askRemove(account),
+  }
   return (
     <Menu.Root
       onOpenChange={(open) => {
@@ -602,7 +732,7 @@ function RowMenu(props: {
               <div key={item.label} className="menu-group">
                 {item.separatorBefore === true && <Menu.Separator className="menu-sep" />}
                 <Menu.Item
-                  className={`menu-item ${item.danger === true ? "is-danger" : ""}`}
+                  className="menu-item"
                   disabled={item.disabled === true}
                   onClick={item.onClick}
                 >
@@ -611,6 +741,41 @@ function RowMenu(props: {
                 </Menu.Item>
               </div>
             ))}
+            <Menu.SubmenuRoot>
+              <Menu.SubmenuTrigger className="menu-item" disabled={partners.length === 0}>
+                <span className="menu-icon">
+                  <IconLink size={14} />
+                </span>
+                Share priority with
+                <span className="menu-chevron" aria-hidden="true">
+                  <IconChevronRight size={13} />
+                </span>
+              </Menu.SubmenuTrigger>
+              <Menu.Portal>
+                <Menu.Positioner className="layer" sideOffset={2} alignOffset={-4}>
+                  <Menu.Popup className="menu">
+                    {partners.map(({ level, first }) => (
+                      <Menu.Item
+                        key={first.id}
+                        className="menu-item"
+                        onClick={() => controls.move(account, { sharePriorityWith: first.id })}
+                      >
+                        <span className="menu-prio" aria-hidden="true">
+                          {first.priority}
+                        </span>
+                        {level.map((other) => other.label).join(", ")}
+                        <span className="sr-only">{` (priority ${first.priority})`}</span>
+                      </Menu.Item>
+                    ))}
+                  </Menu.Popup>
+                </Menu.Positioner>
+              </Menu.Portal>
+            </Menu.SubmenuRoot>
+            <Menu.Separator className="menu-sep" />
+            <Menu.Item className="menu-item is-danger" onClick={remove.onClick}>
+              <span className="menu-icon">{remove.icon}</span>
+              {remove.label}
+            </Menu.Item>
           </Menu.Popup>
         </Menu.Positioner>
       </Menu.Portal>

@@ -11,12 +11,16 @@ import {
   clockText,
   cooldownEnd,
   countdown,
+  labelsText,
   lastUsedText,
   ordinal,
   planWeight,
   poolState,
+  priorityCount,
   providerNames,
+  sharingWith,
   statusLabels,
+  step,
 } from "./model.ts"
 import {
   IconActivity,
@@ -147,6 +151,9 @@ function SheetBody(props: {
   const { readOnly } = controls
   const provider = providerNames[account.provider]
   const pool = accountsOf(list, account.provider)
+  const sharing = sharingWith(list, account)
+  const up = step(pool, account.id, -1)
+  const down = step(pool, account.id, 1)
   const [renaming, setRenaming] = useState(false)
   // A rename ended from the keyboard hands focus back to the Rename button.
   const renameButton = useRef<HTMLButtonElement>(null)
@@ -243,7 +250,11 @@ function SheetBody(props: {
                 <dt>Priority</dt>
                 <dd>
                   <span>
-                    <b>{account.priority}</b> of {pool.length} in the {provider} pool
+                    <b>{account.priority}</b> of {priorityCount(list, account.provider)} in the{" "}
+                    {provider} pool
+                    {sharing.length > 0 && (
+                      <span className="muted">{` · shared with ${labelsText(sharing)}`}</span>
+                    )}
                   </span>
                   <span className="stepper">
                     <Tip label="Move up">
@@ -251,8 +262,8 @@ function SheetBody(props: {
                         type="button"
                         className="iconbtn"
                         aria-label="Move up"
-                        disabled={readOnly || account.priority === 1}
-                        onClick={() => controls.move(account, account.priority - 1)}
+                        disabled={readOnly || up === undefined}
+                        onClick={() => up !== undefined && controls.move(account, up)}
                       >
                         <IconChevronUp size={14} />
                       </button>
@@ -262,8 +273,8 @@ function SheetBody(props: {
                         type="button"
                         className="iconbtn"
                         aria-label="Move down"
-                        disabled={readOnly || account.priority === pool.length}
-                        onClick={() => controls.move(account, account.priority + 1)}
+                        disabled={readOnly || down === undefined}
+                        onClick={() => down !== undefined && controls.move(account, down)}
                       >
                         <IconChevronDown size={14} />
                       </button>
@@ -379,14 +390,21 @@ function StatusCard(props: {
   const pool = list.pools.find((candidate) => candidate.provider === account.provider)
   const state = pool === undefined ? undefined : poolState(list, pool)
   const serving = state?.kind === "serving" && state.account.id === account.id
+  // The Active accounts that share its priority, which trade new sessions with it.
+  const peers = sharingWith(list, account).filter((other) => other.status === "active")
 
   const text = (() => {
     switch (account.status) {
       case "active":
-        if (serving) return `Gets every new ${provider} session.`
-        return state?.kind === "serving"
-          ? `Ready. Takes new sessions when ${state.account.label} can't.`
-          : `Ready to take new ${provider} sessions.`
+        if (serving) {
+          return peers.length === 0
+            ? `Gets every new ${provider} session.`
+            : `Gets new ${provider} sessions while it has more room left in its limits than ${labelsText(peers)}, at the same priority.`
+        }
+        if (state?.kind !== "serving") return `Ready to take new ${provider} sessions.`
+        return state.account.priority === account.priority
+          ? `Shares priority ${account.priority} with ${state.account.label}, which has more room left in its limits, so it gets new sessions first.`
+          : `Ready. Takes new sessions when ${state.account.label} can't.`
       case "cooling-down":
         return "It hit its plan's limit. agent-proxy skips it until the limit resets."
       case "needs-sign-in":

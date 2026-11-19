@@ -9,7 +9,7 @@ import { ConnectClientsDialog } from "./ConnectClients.tsx"
 import { type Account, createDaemonClient, type OpenEventStream } from "./daemon-api.ts"
 import { DashboardPage } from "./DashboardPage.tsx"
 import { useLiveUpdates } from "./LiveUpdates.ts"
-import { accountsOf, hostOf } from "./model.ts"
+import { accountsOf, hostOf, labelsText, place, priorityCount } from "./model.ts"
 import { NoticeProvider } from "./Notices.tsx"
 import { RemoveAccountDialog } from "./RemoveAccount.tsx"
 import { usePage } from "./route.ts"
@@ -106,10 +106,21 @@ function Dashboard(props: DashboardProps) {
     open: (account) => setOpenId(account.id),
     setEnabled: actions.setEnabled,
     rename: actions.rename,
-    move: (account, priority) => {
-      actions.move(account, priority)
-      const poolSize = list === undefined ? priority : accountsOf(list, account.provider).length
-      setAnnouncement(`${account.label} moved to priority ${priority} of ${poolSize}.`)
+    move: (account, placement) => {
+      actions.move(account, placement)
+      if (list === undefined) return
+      const pool = place(accountsOf(list, account.provider), account.id, placement)
+      const moved = pool?.find((other) => other.id === account.id)
+      if (pool === undefined || moved === undefined) return
+      const sharing = pool.filter(
+        (other) => other.priority === moved.priority && other.id !== account.id,
+      )
+      const count = priorityCount({ ...list, accounts: pool }, account.provider)
+      setAnnouncement(
+        sharing.length === 0
+          ? `${account.label} moved to priority ${moved.priority} of ${count}.`
+          : `${account.label} now shares priority ${moved.priority} with ${labelsText(sharing)}.`,
+      )
     },
     askRemove: setRemoving,
     flashes: live.flashes,
@@ -170,7 +181,7 @@ function Dashboard(props: DashboardProps) {
                       <p>
                         {firstRun && page === "dashboard"
                           ? "Add an account and connect a client, and this page shows what goes through the proxy."
-                          : "Each client spends only its own provider's accounts. Within a pool, the highest-priority account that is Active gets new sessions."}
+                          : "Each client spends only its own provider's accounts. Within a pool, the highest-priority account that is Active gets new sessions; accounts sharing a priority take turns, by the room left in their limits."}
                       </p>
                     </div>
                     {list !== undefined && list.accounts.length > 0 && (

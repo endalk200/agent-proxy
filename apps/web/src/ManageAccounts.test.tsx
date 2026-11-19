@@ -29,9 +29,11 @@ const show = async (daemon: FakeDaemon) => {
   return screen.findByRole("table", { name: "Claude accounts" })
 }
 
+/** Who gets the Claude pool's new sessions, as its header says, without the accounts after. */
 const poolLine = () =>
-  within(screen.getByRole("region", { name: "Claude" })).getByText(/New sessions go to|No account/)
-    .textContent
+  within(screen.getByRole("region", { name: "Claude" }))
+    .getByText(/New sessions go to|No account/)
+    .textContent?.replace(/ · then .*$/, "")
 
 const stored = (daemon: FakeDaemon) =>
   daemon.accounts
@@ -127,35 +129,66 @@ describe("rename", () => {
   })
 })
 
+/** Each row as "<priority> <label>", top to bottom. */
+const priorities = (table: HTMLElement) =>
+  rowsOf(table).map((row) => `${row["Priority"]} ${row["Account"]?.split(" ")[0]}`)
+
+/** The Claude pool's header line, whole. */
+const poolText = () =>
+  within(screen.getByRole("region", { name: "Claude" })).getByText(/New sessions go to/).textContent
+
 describe("reorder", () => {
-  it("moves an account with the arrow keys on its handle, and says who gets new sessions", async () => {
+  it("steps an account with the arrow keys, sharing the next priority over, then passing it", async () => {
     const daemon = threeAccounts()
     const table = await show(daemon)
 
     const home = within(table).getByRole("button", { name: "Reorder Home" })
     home.focus()
     fireEvent.keyDown(home, { key: "ArrowUp" })
-    expect(labels(table)).toEqual(["Home", "Work", "Spare"])
+    expect(priorities(table)).toEqual(["1 Work", "1 Home", "2 Spare"])
     expect(document.activeElement).toBe(home)
+    screen.getByText("Home now shares priority 1 with Work.")
+    await waitFor(() => expect(stored(daemon)).toEqual(["1 Work", "1 Home", "2 Spare (off)"]))
+    await waitFor(() => expect(poolText()).toBe("New sessions go to Work · then Home"))
+
+    fireEvent.keyDown(home, { key: "ArrowUp" })
+    expect(priorities(table)).toEqual(["1 Home", "2 Work", "3 Spare"])
     screen.getByText("Home moved to priority 1 of 3.")
     await waitFor(() => expect(poolLine()).toBe("New sessions go to Home"))
     expect(stored(daemon)).toEqual(["1 Home", "2 Work", "3 Spare (off)"])
 
+    // Nothing is past either end.
     fireEvent.keyDown(home, { key: "ArrowUp" })
     fireEvent.keyDown(within(table).getByRole("button", { name: "Reorder Spare" }), {
       key: "ArrowDown",
     })
-    expect(daemon.changes).toHaveLength(1)
+    expect(daemon.changes).toHaveLength(2)
 
     fireEvent.keyDown(home, { key: "ArrowDown" })
+    fireEvent.keyDown(home, { key: "ArrowDown" })
+    await waitFor(() => expect(stored(daemon)).toEqual(["1 Work", "2 Home", "3 Spare (off)"]))
     await waitFor(() => expect(poolLine()).toBe("New sessions go to Work"))
-    expect(stored(daemon)).toEqual(["1 Work", "2 Home", "3 Spare (off)"])
-    expect(rowsOf(table).map((row) => row["Priority"])).toEqual(["1", "2", "3"])
+    expect(priorities(table)).toEqual(["1 Work", "2 Home", "3 Spare"])
   })
 })
 
+/**
+ * Moves a dragged row's pointer over `label`'s row: near its top or bottom,
+ * between priorities, or across its middle, onto its priority.
+ */
+const dragOver = (table: HTMLElement, label: string, where: "top" | "middle" | "bottom") => {
+  const row = rowOf(table, label)!
+  // happy-dom lays nothing out: each row is 60px tall, 100px down the page.
+  row.getBoundingClientRect = () => new DOMRect(0, 100, 800, 60)
+  fireEvent.pointerMove(row, { clientY: 100 + { top: 5, middle: 30, bottom: 55 }[where] })
+}
+
+/** What the Claude pool's header says while a row is dragged. */
+const dropHint = () =>
+  within(screen.getByRole("region", { name: "Claude" })).getByText(/^Drop/).textContent
+
 describe("drag to reorder", () => {
-  it("moves an account to where it is dropped, and says who gets new sessions", async () => {
+  it("moves an account between priorities, or onto one to share it, where it is dropped", async () => {
     const daemon = threeAccounts()
     const table = await show(daemon)
 
@@ -163,24 +196,30 @@ describe("drag to reorder", () => {
       button: 0,
       pointerId: 1,
     })
-    fireEvent.pointerOver(rowOf(table, "Home")!)
-    expect(labels(table)).toEqual(["Work", "Spare", "Home"])
-    fireEvent.pointerOver(rowOf(table, "Work")!)
-    expect(labels(table)).toEqual(["Spare", "Work", "Home"])
+    dragOver(table, "Home", "top")
+    expect(dropHint()).toBe("Drop to move to priority 2")
+    expect(rowOf(table, "Home")?.classList.contains("is-drop-above")).toBe(true)
+    dragOver(table, "Work", "top")
+    expect(dropHint()).toBe("Drop to move to priority 1")
+    // Rows stay put while dragging; a line marks where the row would land.
+    expect(labels(table)).toEqual(["Work", "Home", "Spare"])
     fireEvent.pointerUp(document, { pointerId: 1 })
 
     await waitFor(() => expect(stored(daemon)).toEqual(["1 Spare (off)", "2 Work", "3 Home"]))
-    expect(rowsOf(table).map((row) => row["Priority"])).toEqual(["1", "2", "3"])
+    expect(priorities(table)).toEqual(["1 Spare", "2 Work", "3 Home"])
     expect(poolLine()).toBe("New sessions go to Work")
 
     fireEvent.pointerDown(within(table).getByRole("button", { name: "Reorder Home" }), {
       button: 0,
       pointerId: 2,
     })
-    fireEvent.pointerOver(rowOf(table, "Spare")!)
+    dragOver(table, "Work", "middle")
+    expect(dropHint()).toBe("Drop to share priority 2 with Work")
+    expect(rowOf(table, "Work")?.classList.contains("is-drop-share")).toBe(true)
     fireEvent.pointerUp(document, { pointerId: 2 })
-    await waitFor(() => expect(poolLine()).toBe("New sessions go to Home"))
-    expect(stored(daemon)).toEqual(["1 Home", "2 Spare (off)", "3 Work"])
+    await waitFor(() => expect(stored(daemon)).toEqual(["1 Spare (off)", "2 Work", "2 Home"]))
+    expect(priorities(table)).toEqual(["1 Spare", "2 Work", "2 Home"])
+    await waitFor(() => expect(poolText()).toBe("New sessions go to Work · then Home"))
   })
 
   it("does not open the sheet of the row a drag is dropped on", async () => {
@@ -191,11 +230,11 @@ describe("drag to reorder", () => {
       button: 0,
       pointerId: 1,
     })
-    fireEvent.pointerOver(rowOf(table, "Home")!)
+    dragOver(table, "Home", "middle")
     fireEvent.pointerUp(document, { pointerId: 1 })
     // The browser follows the release with a click on the row now under it.
-    fireEvent.click(within(rowOf(table, "Spare")!).getByText("spare@example.com"))
-    await waitFor(() => expect(stored(daemon)).toEqual(["1 Work", "2 Spare (off)", "3 Home"]))
+    fireEvent.click(within(rowOf(table, "Home")!).getByText("home@example.com"))
+    await waitFor(() => expect(stored(daemon)).toEqual(["1 Work", "2 Home", "2 Spare (off)"]))
     expect(screen.queryByRole("dialog")).toBeNull()
 
     // A click of its own still opens it.
@@ -204,7 +243,7 @@ describe("drag to reorder", () => {
     expect(await screen.findByRole("dialog", { name: "Spare" })).toBeTruthy()
   })
 
-  it("leaves the order alone when the drag is cancelled with Escape or dropped where it began", async () => {
+  it("leaves the order alone when the drag is cancelled with Escape or dropped where it is", async () => {
     const daemon = threeAccounts()
     const table = await show(daemon)
 
@@ -212,21 +251,29 @@ describe("drag to reorder", () => {
       button: 0,
       pointerId: 1,
     })
-    fireEvent.pointerOver(rowOf(table, "Spare")!)
-    expect(labels(table)).toEqual(["Home", "Spare", "Work"])
+    dragOver(table, "Spare", "middle")
+    expect(dropHint()).toBe("Drop to share priority 3 with Spare")
     fireEvent.keyDown(document, { key: "Escape" })
-    expect(labels(table)).toEqual(["Work", "Home", "Spare"])
+    expect(within(table).queryByText(/^Drop/)).toBeNull()
     fireEvent.pointerUp(document, { pointerId: 1 })
 
+    // Onto its own priority, or either side of it, it stays where it is.
     fireEvent.pointerDown(within(table).getByRole("button", { name: "Reorder Home" }), {
       button: 0,
       pointerId: 2,
     })
-    fireEvent.pointerOver(rowOf(table, "Spare")!)
-    fireEvent.pointerOver(rowOf(table, "Home")!)
-    fireEvent.pointerOver(rowOf(table, "Work")!)
-    fireEvent.pointerOver(rowOf(table, "Work")!)
-    fireEvent.pointerOver(rowOf(table, "Home")!)
+    for (const [label, where] of [
+      ["Home", "middle"],
+      ["Home", "top"],
+      ["Home", "bottom"],
+      ["Work", "bottom"],
+      ["Spare", "top"],
+    ] as const) {
+      dragOver(table, label, where)
+      expect(dropHint()).toBe(
+        "Drop on an account to share its priority, or between priorities to move",
+      )
+    }
     fireEvent.pointerUp(document, { pointerId: 2 })
 
     expect(labels(table)).toEqual(["Work", "Home", "Spare"])
@@ -241,7 +288,7 @@ const pick = async (label: string, item: string) => {
 }
 
 describe("row menu", () => {
-  it("renames, and moves an account up and down, the top and bottom moves left out", async () => {
+  it("renames, steps an account up and down, and shares a priority picked from a submenu", async () => {
     const daemon = threeAccounts()
     const table = await show(daemon)
 
@@ -251,13 +298,32 @@ describe("row menu", () => {
       within(menu)
         .getAllByRole("menuitem")
         .map((item) => `${item.textContent}${item.hasAttribute("data-disabled") ? " (off)" : ""}`),
-    ).toEqual(["Open details", "Rename", "Refresh limits", "Move up (off)", "Move down", "Remove…"])
+    ).toEqual([
+      "Open details",
+      "Rename",
+      "Refresh limits",
+      "Move up (off)",
+      "Move down",
+      "Share priority with",
+      "Remove…",
+    ])
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Move down" }))
+    await waitFor(() => expect(stored(daemon)).toEqual(["1 Work", "1 Home", "2 Spare (off)"]))
+
+    await pick("Work", "Move down")
     await waitFor(() => expect(poolLine()).toBe("New sessions go to Home"))
     expect(stored(daemon)).toEqual(["1 Home", "2 Work", "3 Spare (off)"])
 
-    await pick("Spare", "Move up")
-    await waitFor(() => expect(stored(daemon)).toEqual(["1 Home", "2 Spare (off)", "3 Work"]))
+    // Each priority but its own, by the accounts that hold it.
+    await pick("Spare", "Share priority with")
+    const submenu = (await screen.findAllByRole("menu")).at(-1)!
+    expect(
+      within(submenu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["1Home (priority 1)", "2Work (priority 2)"])
+    fireEvent.click(within(submenu).getByRole("menuitem", { name: "Home (priority 1)" }))
+    await waitFor(() => expect(stored(daemon)).toEqual(["1 Home", "1 Spare (off)", "2 Work"]))
 
     await pick("Home", "Rename")
     const input = await within(table).findByRole("textbox", { name: "Label for Home" })
@@ -446,6 +512,15 @@ describe("account sheet controls", () => {
       true,
     )
     fireEvent.click(within(work).getByRole("button", { name: "Move down" }))
+    await waitFor(() =>
+      expect(priorityIn(work)).toBe("1 of 2 in the Claude pool · shared with Home"),
+    )
+    await waitFor(() =>
+      expect(within(work).getByRole("region", { name: "Status" }).textContent).toBe(
+        "ActiveNew sessionsGets new Claude sessions while it has more room left in its limits than Home, at the same priority.",
+      ),
+    )
+    fireEvent.click(within(work).getByRole("button", { name: "Move down" }))
     await waitFor(() => expect(poolLine()).toBe("New sessions go to Home"))
     expect(priorityIn(work)).toBe("2 of 3 in the Claude pool")
     expect(labels(table)).toEqual(["Home", "Work", "Spare"])
@@ -562,12 +637,13 @@ describe("review fixes", () => {
 
     const spare = within(table).getByRole("button", { name: "Reorder Spare" })
     spare.focus()
+    // Into Home's priority, then alone above it.
     fireEvent.keyDown(spare, { key: "ArrowUp" })
     fireEvent.keyDown(spare, { key: "ArrowUp" })
 
     await waitFor(() => expect(daemon.changes).toHaveLength(2))
-    await waitFor(() => expect(stored(daemon)).toEqual(["1 Spare (off)", "2 Work", "3 Home"]))
-    await waitFor(() => expect(labels(table)).toEqual(["Spare", "Work", "Home"]))
+    await waitFor(() => expect(stored(daemon)).toEqual(["1 Work", "2 Spare (off)", "3 Home"]))
+    await waitFor(() => expect(labels(table)).toEqual(["Work", "Spare", "Home"]))
   })
 
   it("keeps a double-clicked label's field focused, though the first click opened the sheet", async () => {

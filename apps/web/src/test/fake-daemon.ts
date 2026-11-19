@@ -13,9 +13,10 @@ import type {
  * calls with the JSON the daemon serves, streams account events the way
  * `GET /api/events` does, and can stop answering to stand in for a daemon
  * that went down. Tests read back what the dashboard changed through `PATCH`
- * and `DELETE`, which follow the daemon's rules: a move renumbers the pool, a
- * removal closes the gap, and the pool's new sessions go to its
- * highest-priority Active account.
+ * and `DELETE`, which follow the daemon's rules: a move or a shared priority
+ * renumbers the pool, a removal closes any gap, and the pool's new sessions
+ * go to its Active accounts by priority (the fake knows no headroom: accounts
+ * sharing a priority go in the order they were added).
  *
  * - `update`, `add` and `forget` change accounts as the daemon does on its
  *   own (a cooldown, a sign-in expiring, the CLI), and stream the events.
@@ -54,6 +55,8 @@ export interface FakeAccount {
 export interface FakePool {
   readonly provider: "claude" | "codex"
   readonly newSessionsAccountId: string | null
+  /** A daemon from before shared priorities leaves it out. */
+  readonly newSessionsOrder?: ReadonlyArray<string>
 }
 
 /** A Claude account with plausible defaults; `overrides` sets what a test cares about. */
@@ -178,6 +181,8 @@ export interface FakeDaemon {
   readonly add: (account: FakeAccount) => void
   /** Forgets account `id`, as `accounts remove` from the CLI does, and streams it. */
   readonly forget: (id: string) => void
+  /** Sets the pools without changing an account, as headroom moving does, and streams `pools-changed`. */
+  readonly setPools: (pools: ReadonlyArray<FakePool>) => void
   accounts: ReadonlyArray<FakeAccount>
   pools: ReadonlyArray<FakePool>
   key: string
@@ -243,7 +248,12 @@ export interface FakeDaemon {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
 
-type Settings = { label?: string; priority?: number; enabled?: boolean }
+type Settings = {
+  label?: string
+  priority?: number
+  sharePriorityWith?: string
+  enabled?: boolean
+}
 
 const settingsOf = (body: unknown): Settings | undefined => {
   if (typeof body !== "object" || body === null) return undefined
@@ -254,29 +264,39 @@ const settingsOf = (body: unknown): Settings | undefined => {
   } else if ("label" in fields) return undefined
   if (typeof fields["priority"] === "number") settings.priority = fields["priority"]
   else if ("priority" in fields) return undefined
+  if (typeof fields["sharePriorityWith"] === "string") {
+    settings.sharePriorityWith = fields["sharePriorityWith"]
+  } else if ("sharePriorityWith" in fields) return undefined
+  if (settings.priority !== undefined && settings.sharePriorityWith !== undefined) return undefined
   if (typeof fields["enabled"] === "boolean") settings.enabled = fields["enabled"]
   else if ("enabled" in fields) return undefined
   return settings
 }
 
-/** `accounts` with `provider`'s pool numbered 1, 2, 3… in the order given. */
+/** A pool's accounts by priority, each level the accounts of one priority, gaps closed. */
+const levelsOf = (pool: ReadonlyArray<FakeAccount>): Array<Array<FakeAccount>> => {
+  const priorities = [...new Set(pool.map((held) => held.priority))].toSorted((a, b) => a - b)
+  return priorities.map((priority) => pool.filter((held) => held.priority === priority))
+}
+
+/** `accounts` with each account in `levels` at its level's priority: the first level is 1. */
 const renumbered = (
   accounts: ReadonlyArray<FakeAccount>,
-  pool: ReadonlyArray<FakeAccount>,
+  levels: ReadonlyArray<ReadonlyArray<FakeAccount>>,
 ): ReadonlyArray<FakeAccount> =>
   accounts.map((held) => {
-    const index = pool.findIndex((other) => other.id === held.id)
+    const index = levels.findIndex((level) => level.some((other) => other.id === held.id))
     return index === -1 ? held : { ...held, priority: index + 1 }
   })
 
 const poolsOf = (accounts: ReadonlyArray<FakeAccount>): ReadonlyArray<FakePool> =>
-  [...new Set(accounts.map((held) => held.provider))].map((provider) => ({
-    provider,
-    newSessionsAccountId:
-      accounts
-        .filter((held) => held.provider === provider && held.status === "active")
-        .toSorted((a, b) => a.priority - b.priority)[0]?.id ?? null,
-  }))
+  [...new Set(accounts.map((held) => held.provider))].map((provider) => {
+    const order = accounts
+      .filter((held) => held.provider === provider && held.status === "active")
+      .toSorted((a, b) => a.priority - b.priority)
+      .map((held) => held.id)
+    return { provider, newSessionsAccountId: order[0] ?? null, newSessionsOrder: order }
+  })
 
 /** How long a dropped fake stream waits before it reconnects. */
 const RECONNECT_MS = 10
@@ -428,7 +448,11 @@ export const fakeDaemon = (
       commit(daemon.accounts.map((held) => (held.id === id ? { ...held, ...changes } : held))),
     add: (added) => {
       const pool = daemon.accounts.filter((held) => held.provider === added.provider)
-      commit([...daemon.accounts, { ...added, priority: pool.length + 1 }])
+      commit([...daemon.accounts, { ...added, priority: levelsOf(pool).length + 1 }])
+    },
+    setPools: (pools) => {
+      daemon.pools = pools
+      broadcast({ type: "pools-changed", pools })
     },
     forget: (id) => {
       remove(id)
@@ -557,17 +581,23 @@ export const fakeDaemon = (
       // The daemon reports a cooldown only while it decides the status.
       cooldownEndsAt: enabled ? (existing.cooldownEndsAt ?? null) : null,
     }
-    const pool = daemon.accounts
-      .filter((held) => held.provider === existing.provider)
-      .toSorted((a, b) => a.priority - b.priority)
-    const position = settings.priority ?? existing.priority
-    if (position < 1 || position > pool.length) {
-      return json({ error: `The pool has ${pool.length} accounts.` }, 400)
-    }
-    const others = pool.filter((held) => held.id !== id)
-    const order = [...others.slice(0, position - 1), changed, ...others.slice(position - 1)]
     const accounts = daemon.accounts.map((held) => (held.id === id ? changed : held))
-    commit(renumbered(accounts, order))
+    const pool = accounts.filter((held) => held.provider === existing.provider)
+    const others = levelsOf(pool.filter((held) => held.id !== id))
+    let levels: ReadonlyArray<ReadonlyArray<FakeAccount>> = levelsOf(pool)
+    if (settings.priority !== undefined) {
+      const position = settings.priority
+      if (position < 1 || position > others.length + 1) {
+        return json({ error: `A priority is 1 to ${others.length + 1}.` }, 400)
+      }
+      levels = [...others.slice(0, position - 1), [changed], ...others.slice(position - 1)]
+    } else if (settings.sharePriorityWith !== undefined && settings.sharePriorityWith !== id) {
+      const partner = settings.sharePriorityWith
+      const at = others.findIndex((level) => level.some((held) => held.id === partner))
+      if (at === -1) return json({ error: `No account ${partner} to share a priority with.` }, 400)
+      levels = others.map((level, index) => (index === at ? level.concat(changed) : level))
+    }
+    commit(renumbered(accounts, levels))
     return json(daemon.accounts.find((held) => held.id === id))
   }
 
@@ -607,7 +637,7 @@ export const fakeDaemon = (
         provider: login.provider,
         ...identity,
         label,
-        priority: pool.length + 1,
+        priority: levelsOf(pool).length + 1,
         enabled: true,
         status: "active",
         addedAt: "2026-11-17T09:00:00.000Z",
@@ -885,12 +915,7 @@ export const fakeDaemon = (
     })
     const accounts = daemon.accounts.filter((held) => held.id !== id)
     commit(
-      renumbered(
-        accounts,
-        accounts
-          .filter((held) => held.provider === removed.provider)
-          .toSorted((a, b) => a.priority - b.priority),
-      ),
+      renumbered(accounts, levelsOf(accounts.filter((held) => held.provider === removed.provider))),
     )
     return json(removed)
   }

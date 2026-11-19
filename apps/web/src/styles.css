@@ -511,6 +511,29 @@ a.linkbtn {
   padding-left: 12px;
   color: var(--text);
 }
+.menu-chevron {
+  display: grid;
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--faint);
+}
+.menu-item[data-popup-open] {
+  background: var(--subtle);
+}
+/* A priority in a menu, drawn as the table's badge, smaller. */
+.menu-prio {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--subtle);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
 
 /* pages */
 .nav {
@@ -778,6 +801,10 @@ a.linkbtn {
   font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
+.pool-line.is-drag {
+  font-weight: 500;
+  color: var(--accent);
+}
 
 .callout {
   display: flex;
@@ -843,8 +870,9 @@ a.linkbtn {
   background: var(--hover);
 }
 .accounts .col-prio {
+  --prio-pad: 14px;
   width: 48px;
-  padding-left: 14px;
+  padding-left: var(--prio-pad);
 }
 .accounts th.col-who {
   width: 260px;
@@ -1145,31 +1173,81 @@ a.linkbtn {
 .accounts.is-dragging tbody tr:hover {
   background: none;
 }
-/* The dragged row: tinted and outlined, drawn on its cells, as a collapsed
-   table's row takes no ring of its own. */
+/* The dragged row stays where it is, dimmed: the accent marks where it
+   would land instead. */
 .accounts tbody tr.is-lifted {
-  background: color-mix(in srgb, var(--accent) 7%, var(--panel)) !important;
+  background: var(--subtle) !important;
 }
-.accounts tbody tr.is-lifted td {
+.accounts tbody tr.is-lifted > td:not(.col-prio) {
+  opacity: 0.45;
+}
+
+/* Accounts that share a priority: their badges hang on one rail, and no
+   line runs between their rows. */
+.accounts .col-prio {
+  position: relative;
+}
+.row.is-shared:not(.is-level-last) > td.col-prio::after {
+  content: "";
+  position: absolute;
+  top: calc(50% + 11px);
+  bottom: calc(-50% + 11px);
+  /* Under the middle of the 22px badge. */
+  left: calc(var(--prio-pad) + 10.25px);
+  width: 0;
+  border-left: 1.5px solid var(--border-strong);
+  pointer-events: none;
+}
+.row.is-shared:not(.is-level-first) > td {
   border-top-color: transparent;
-  box-shadow:
-    inset 0 1px 0 var(--accent),
-    inset 0 -1px 0 var(--accent);
 }
-.accounts tbody tr.is-lifted td:first-child {
-  box-shadow:
-    inset 0 1px 0 var(--accent),
-    inset 0 -1px 0 var(--accent),
-    inset 1px 0 0 var(--accent);
+.row.is-shared .prio {
+  border-color: var(--border-strong);
 }
-.accounts tbody tr.is-lifted td:last-child {
-  box-shadow:
-    inset 0 1px 0 var(--accent),
-    inset 0 -1px 0 var(--accent),
-    inset -1px 0 0 var(--accent);
+.row.is-serving.is-shared .prio {
+  border-color: var(--text);
 }
-.row.is-lifted + .row td {
-  border-top-color: transparent;
+
+/* Where a dragged row would land: a line between priorities, or the
+   priority it would share, outlined. */
+.accounts tbody tr.is-drop-above > td {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.accounts tbody tr.is-drop-below > td {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.accounts tbody tr.is-drop-share {
+  background: var(--accent-soft) !important;
+}
+.accounts tbody tr.is-drop-share > td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.accounts tbody tr.is-drop-share.is-drop-first > td {
+  box-shadow: inset 0 1.5px 0 var(--accent);
+}
+.accounts tbody tr.is-drop-share.is-drop-first > td:first-child {
+  box-shadow:
+    inset 0 1.5px 0 var(--accent),
+    inset 2px 0 0 var(--accent);
+}
+.accounts tbody tr.is-drop-share.is-drop-last > td {
+  box-shadow: inset 0 -1.5px 0 var(--accent);
+}
+.accounts tbody tr.is-drop-share.is-drop-last > td:first-child {
+  box-shadow:
+    inset 0 -1.5px 0 var(--accent),
+    inset 2px 0 0 var(--accent);
+}
+.accounts tbody tr.is-drop-share.is-drop-first.is-drop-last > td {
+  box-shadow:
+    inset 0 1.5px 0 var(--accent),
+    inset 0 -1.5px 0 var(--accent);
+}
+.accounts tbody tr.is-drop-share.is-drop-first.is-drop-last > td:first-child {
+  box-shadow:
+    inset 0 1.5px 0 var(--accent),
+    inset 0 -1.5px 0 var(--accent),
+    inset 2px 0 0 var(--accent);
 }
 
 .who-name {
@@ -1226,8 +1304,8 @@ a.linkbtn {
     display: none;
   }
   .accounts .col-prio {
+    --prio-pad: 12px;
     width: 40px;
-    padding-left: 12px;
   }
   .accounts .col-menu {
     width: 40px;
@@ -1261,8 +1339,8 @@ a.linkbtn {
     padding: 0 6px;
   }
   .accounts .col-prio {
+    --prio-pad: 10px;
     width: 34px;
-    padding-left: 10px;
   }
 }
 

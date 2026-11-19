@@ -49,23 +49,34 @@ const Listed = Schema.fromJsonString(
   }),
 )
 
-/** The accounts as the daemon holds them, as "1 Work", "2 Home (off)", … */
+/** The accounts as the daemon holds them, as "1 Work", "2 Home (off)", …, by label within a priority. */
 const held = async () => {
   const { accounts } = Schema.decodeSync(Listed)(await daemon.agentProxy(["accounts", "--json"]))
   return accounts
-    .toSorted((a, b) => a.priority - b.priority)
+    .toSorted((a, b) => a.priority - b.priority || a.label.localeCompare(b.label))
     .map((a) => `${a.priority} ${a.label}${a.enabled ? "" : " (off)"}`)
 }
 
 const rowOf = (table: Locator, email: string) => table.getByRole("row").filter({ hasText: email })
 
-/** Drags `label`'s row by its priority handle and drops it on the row holding `email`. */
-const drag = async (page: Page, table: Locator, label: string, email: string) => {
+/**
+ * Drags `label`'s row by its priority handle and drops it on the row holding
+ * `email`: near its top edge, between priorities, or across its middle, onto
+ * that row's priority to share it.
+ */
+const drag = async (
+  page: Page,
+  table: Locator,
+  label: string,
+  email: string,
+  where: "top" | "middle",
+) => {
   await table.getByRole("button", { name: `Reorder ${label}` }).hover()
   await page.mouse.down()
   const target = await rowOf(table, email).boundingBox()
   if (target === null) throw new Error(`No row for ${email}`)
-  await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 8 })
+  const y = target.y + target.height * (where === "top" ? 0.1 : 0.5)
+  await page.mouse.move(target.x + target.width / 2, y, { steps: 8 })
   await page.mouse.up()
 }
 
@@ -76,15 +87,27 @@ test("reorders, toggles, renames and removes accounts, and the sheet follows", a
   await expect(claude.getByText("New sessions go to Work")).toBeVisible()
 
   // Drag Home above Work: Home gets new sessions.
-  await drag(page, table, "Home", "me@work.example")
+  await drag(page, table, "Home", "me@work.example", "top")
   await expect(claude.getByText("New sessions go to Home")).toBeVisible()
   await expect.poll(held).toEqual(["1 Home", "2 Work", "3 Spare (off)"])
 
-  // The keyboard moves Spare up one.
-  await table.getByRole("button", { name: "Reorder Spare" }).focus()
-  await page.keyboard.press("ArrowUp")
+  // Drag Work onto Home: they share priority 1, and new sessions go to both in turn.
+  await drag(page, table, "Work", "me@home.example", "middle")
+  await expect.poll(held).toEqual(["1 Home", "1 Work", "2 Spare (off)"])
+  await expect(
+    claude.getByText(/New sessions go to (Home · then Work|Work · then Home)/),
+  ).toBeVisible()
+
+  // The keyboard steps Work down: alone below Home, into Spare's priority, then below it.
+  const workHandle = table.getByRole("button", { name: "Reorder Work" })
+  await workHandle.focus()
+  await page.keyboard.press("ArrowDown")
+  await expect.poll(held).toEqual(["1 Home", "2 Work", "3 Spare (off)"])
+  await page.keyboard.press("ArrowDown")
+  await expect.poll(held).toEqual(["1 Home", "2 Spare (off)", "2 Work"])
+  await page.keyboard.press("ArrowDown")
   await expect.poll(held).toEqual(["1 Home", "2 Spare (off)", "3 Work"])
-  await expect(table.getByRole("button", { name: "Reorder Spare" })).toBeFocused()
+  await expect(workHandle).toBeFocused()
 
   // Turning Home off sends new sessions to Work, which Spare (off) cannot take.
   await page.getByRole("switch", { name: "Home enabled" }).click()

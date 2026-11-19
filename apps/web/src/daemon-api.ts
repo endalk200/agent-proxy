@@ -34,8 +34,13 @@ export interface Account {
 /** The settings the owner changes on an account; each one left out stays as it is. */
 export interface AccountSettings {
   readonly label?: string
-  /** A place in the account's pool, 1 first; the others shift to make room. */
+  /**
+   * A priority in the account's pool, 1 first, which it then holds alone: the
+   * accounts from that priority down move down one.
+   */
   readonly priority?: number
+  /** Another account in the pool, by id, whose priority it then shares; not with `priority`. */
+  readonly sharePriorityWith?: string
   readonly enabled?: boolean
 }
 
@@ -43,6 +48,12 @@ export interface Pool {
   readonly provider: Provider
   /** The account a new session goes to now, or null when none in the pool is Active. */
   readonly newSessionsAccountId: string | null
+  /**
+   * Every Active account, in the order new sessions go to them now: by
+   * priority, then the most room left in their limits. The first is
+   * `newSessionsAccountId`.
+   */
+  readonly newSessionsOrder: ReadonlyArray<string>
 }
 
 /** `GET /api/accounts`: every account, and a pool for each provider that has one. */
@@ -115,10 +126,20 @@ export type AccountEvent =
       readonly pools: ReadonlyArray<Pool>
     }
 
+/**
+ * The pools changed and no account did, from `GET /api/events`: accounts
+ * sharing a priority traded places in the order new sessions go in.
+ */
+export interface PoolsChanged {
+  readonly type: "pools-changed"
+  readonly pools: ReadonlyArray<Pool>
+}
+
 /** A message on the daemon's event stream: the accounts as they are when it opens, then each change. */
 export type StreamMessage =
   | { readonly type: "snapshot"; readonly list: AccountList }
   | AccountEvent
+  | PoolsChanged
   | UsageEvent
 
 // --------------------------------------------------------------------- usage
@@ -397,9 +418,17 @@ const decodeAccount = (value: unknown): Account => {
 const decodePools = (value: unknown): ReadonlyArray<Pool> =>
   array(value).map((pool) => {
     const fields = object(pool)
+    const newSessionsAccountId = nullableString(fields["newSessionsAccountId"])
     return {
       provider: oneOf(PROVIDERS, fields["provider"]),
-      newSessionsAccountId: nullableString(fields["newSessionsAccountId"]),
+      newSessionsAccountId,
+      // A daemon from before shared priorities names only the first.
+      newSessionsOrder:
+        fields["newSessionsOrder"] === undefined
+          ? newSessionsAccountId === null
+            ? []
+            : [newSessionsAccountId]
+          : array(fields["newSessionsOrder"]).map(string),
     }
   })
 
@@ -567,6 +596,8 @@ const decodeStreamMessage = (value: unknown): StreamMessage => {
       return { type: "limits-changed", limits: decodeAccountLimits(json["limits"]) }
     case "snapshot":
       return { type: "snapshot", list: decodeAccountList(json) }
+    case "pools-changed":
+      return { type: "pools-changed", pools: pools() }
     case "added":
     case "removed":
     case "used":
