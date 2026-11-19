@@ -17,7 +17,7 @@
       "name": "@agent-proxy/cli",
       "version": "0.0.0",
       "bin": {
-        "agent-proxy": "./dist/bin.js",
+        "agent-proxy": "./dist/agent-proxy",
       },
       "dependencies": {
         "@effect/platform-bun": "catalog:",
