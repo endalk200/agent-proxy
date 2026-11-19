@@ -71,7 +71,7 @@ const fakes = (options: {
             view: Effect.succeed({
               status: () => (options.cooldownEndsAt === undefined ? "active" : "cooling-down"),
               cooldownEndsAt: () => options.cooldownEndsAt,
-              newSessions: () => undefined,
+              newSessionsOrder: () => [],
             }),
           }),
         ),
@@ -101,6 +101,8 @@ const fakes = (options: {
             windows: unused,
             saveWindows: () => unused,
             forgetWindows: () => unused,
+            cooldowns: () => unused,
+            saveCooldown: () => unused,
             rememberAccounts: () => Effect.void,
             rememberRemoved: () => unused,
           }),

@@ -20,135 +20,143 @@ import { codexHeaders, fakeCodex } from "../support/fake-codex.ts"
 
 const notFound = () => Response.json({ error: "not_found" }, { status: 404 })
 
-/** A daemon in a throwaway home whose Claude and Codex traffic goes to the fakes. */
-const makeHome = Effect.gen(function* () {
-  // The test clock is shared by the tests in this file: each starts at the epoch.
-  yield* TestClock.setTime(0)
-  const fs = yield* FileSystem.FileSystem
-  const claude = yield* fakeClaude
-  const codex = yield* fakeCodex
-  // Headroom here comes from answers' headers alone: the usage endpoints,
-  // which the daemon reads at startup, are not there.
-  claude.answerUsageWith(notFound)
-  codex.answerUsageWith(notFound)
-  const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-routing-" })
-  yield* fs.makeDirectory(`${root}/config/agent-proxy`, { recursive: true })
-  yield* fs.writeFileString(`${root}/config/agent-proxy/config.toml`, 'listen = "127.0.0.1:0"\n')
-  const env = {
-    HOME: `${root}/home`,
-    XDG_CONFIG_HOME: `${root}/config`,
-    XDG_STATE_HOME: `${root}/state`,
-    XDG_DATA_HOME: `${root}/data`,
-  }
-  const daemon = yield* startDaemon.pipe(
-    Effect.provideService(
-      ProviderEndpoints,
-      ProviderEndpoints.of({ claude: claude.endpoints, codex: codex.endpoints }),
-    ),
-    Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
-  )
-
-  const send = (path: string, init: RequestInit = {}) =>
-    Effect.promise(async () => {
-      const response = await fetch(`${daemon.address}${path}`, init)
-      return { status: response.status, headers: response.headers, text: await response.text() }
-    })
-
-  const api = (method: "GET" | "PATCH" | "DELETE", path: string, body?: unknown) =>
-    Effect.map(
-      send(path, {
-        method,
-        ...(body === undefined
-          ? {}
-          : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
-      }),
-      (response) => ({ status: response.status, json: JSON.parse(response.text) }),
+/**
+ * A daemon in a throwaway home whose Claude and Codex traffic goes to the
+ * fakes. Given `home`, an earlier daemon's directory, it starts there
+ * instead, as that daemon restarted.
+ */
+const makeHomeIn = (home?: string) =>
+  Effect.gen(function* () {
+    // The test clock is shared by the tests in this file: each starts at the epoch.
+    // A restarted daemon carries on from the time its first run left.
+    if (home === undefined) yield* TestClock.setTime(0)
+    const fs = yield* FileSystem.FileSystem
+    const claude = yield* fakeClaude
+    const codex = yield* fakeCodex
+    // Headroom here comes from answers' headers alone: the usage endpoints,
+    // which the daemon reads at startup, are not there.
+    claude.answerUsageWith(notFound)
+    codex.answerUsageWith(notFound)
+    const root = home ?? (yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-routing-" }))
+    yield* fs.makeDirectory(`${root}/config/agent-proxy`, { recursive: true })
+    yield* fs.writeFileString(`${root}/config/agent-proxy/config.toml`, 'listen = "127.0.0.1:0"\n')
+    const env = {
+      HOME: `${root}/home`,
+      XDG_CONFIG_HOME: `${root}/config`,
+      XDG_STATE_HOME: `${root}/state`,
+      XDG_DATA_HOME: `${root}/data`,
+    }
+    const daemon = yield* startDaemon.pipe(
+      Effect.provideService(
+        ProviderEndpoints,
+        ProviderEndpoints.of({ claude: claude.endpoints, codex: codex.endpoints }),
+      ),
+      Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
     )
 
-  const key = Effect.map(api("GET", "/api/key"), (response) => String(response.json.key))
+    const send = (path: string, init: RequestInit = {}) =>
+      Effect.promise(async () => {
+        const response = await fetch(`${daemon.address}${path}`, init)
+        return { status: response.status, headers: response.headers, text: await response.text() }
+      })
 
-  /**
-   * Writes the file of an account the daemon held before, as `id` at
-   * `priority`. Its access token is `token-<id>`, so a test tells which
-   * account served a request by the token that reached the provider.
-   */
-  const seed = (
-    provider: Provider,
-    id: string,
-    priority: number,
-    settings: { readonly enabled?: boolean; readonly needsSignIn?: boolean } = {},
-  ) =>
-    Effect.gen(function* () {
-      const dir = `${env.XDG_DATA_HOME}/agent-proxy/accounts`
-      yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 })
-      yield* fs.writeFileString(
-        `${dir}/${id}.json`,
-        JSON.stringify({
-          id,
-          provider,
-          providerAccountId: `provider-${id}`,
-          email: `${id}@example.com`,
-          plan: "Pro",
-          label: id,
-          priority,
-          enabled: settings.enabled ?? true,
-          needsSignIn: settings.needsSignIn ?? false,
-          addedAt: "1970-01-01T00:00:00.000Z",
-          lastUsedAt: null,
-          credentials: {
-            accessToken: `token-${id}`,
-            refreshToken: `refresh-${id}`,
-            expiresAt: "2099-01-01T00:00:00.000Z",
-          },
+    const api = (method: "GET" | "PATCH" | "DELETE", path: string, body?: unknown) =>
+      Effect.map(
+        send(path, {
+          method,
+          ...(body === undefined
+            ? {}
+            : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
         }),
-        { mode: 0o600 },
+        (response) => ({ status: response.status, json: JSON.parse(response.text) }),
       )
-    })
 
-  /** Sends a Claude message request as Claude Code does, in `session` when one is given. */
-  const claudeMessage = (session?: string) =>
-    Effect.gen(function* () {
-      return yield* send("/v1/messages?beta=true", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": yield* key,
-          ...(session === undefined ? {} : { "x-claude-code-session-id": session }),
-        },
-        body: messagesBody,
+    const key = Effect.map(api("GET", "/api/key"), (response) => String(response.json.key))
+
+    /**
+     * Writes the file of an account the daemon held before, as `id` at
+     * `priority`. Its access token is `token-<id>`, so a test tells which
+     * account served a request by the token that reached the provider.
+     */
+    const seed = (
+      provider: Provider,
+      id: string,
+      priority: number,
+      settings: { readonly enabled?: boolean; readonly needsSignIn?: boolean } = {},
+    ) =>
+      Effect.gen(function* () {
+        const dir = `${env.XDG_DATA_HOME}/agent-proxy/accounts`
+        yield* fs.makeDirectory(dir, { recursive: true, mode: 0o700 })
+        yield* fs.writeFileString(
+          `${dir}/${id}.json`,
+          JSON.stringify({
+            id,
+            provider,
+            providerAccountId: `provider-${id}`,
+            email: `${id}@example.com`,
+            plan: "Pro",
+            label: id,
+            priority,
+            enabled: settings.enabled ?? true,
+            needsSignIn: settings.needsSignIn ?? false,
+            addedAt: "1970-01-01T00:00:00.000Z",
+            lastUsedAt: null,
+            credentials: {
+              accessToken: `token-${id}`,
+              refreshToken: `refresh-${id}`,
+              expiresAt: "2099-01-01T00:00:00.000Z",
+            },
+          }),
+          { mode: 0o600 },
+        )
       })
-    })
 
-  /** Sends a Codex Responses request with `headers` and the body's fields laid over a short request. */
-  const codexResponse = (
-    options: {
-      readonly headers?: Readonly<Record<string, string>>
-      readonly body?: Readonly<Record<string, unknown>>
-    } = {},
-  ) =>
-    Effect.gen(function* () {
-      return yield* send("/backend-api/codex/responses", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${yield* key}`,
-          ...options.headers,
-        },
-        body: JSON.stringify({ ...responsesBody, ...options.body }),
+    /** Sends a Claude message request as Claude Code does, in `session` when one is given. */
+    const claudeMessage = (session?: string) =>
+      Effect.gen(function* () {
+        return yield* send("/v1/messages?beta=true", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-api-key": yield* key,
+            ...(session === undefined ? {} : { "x-claude-code-session-id": session }),
+          },
+          body: messagesBody,
+        })
       })
-    })
 
-  /** The account each request so far reached `provider` as, oldest first. */
-  const servedBy = (provider: Provider) =>
-    (provider === "claude" ? claude : codex)
-      .apiRequests()
-      .map((request) => request.headers["authorization"]?.replace(/^Bearer token-/, ""))
+    /** Sends a Codex Responses request with `headers` and the body's fields laid over a short request. */
+    const codexResponse = (
+      options: {
+        readonly headers?: Readonly<Record<string, string>>
+        readonly body?: Readonly<Record<string, unknown>>
+      } = {},
+    ) =>
+      Effect.gen(function* () {
+        return yield* send("/backend-api/codex/responses", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${yield* key}`,
+            ...options.headers,
+          },
+          body: JSON.stringify({ ...responsesBody, ...options.body }),
+        })
+      })
 
-  /** `GET /api/accounts`: each account's status, and cooldown end when it has one. */
-  const accounts = Effect.map(api("GET", "/api/accounts"), (response) => response.json)
+    /** The account each request so far reached `provider` as, oldest first. */
+    const servedBy = (provider: Provider) =>
+      (provider === "claude" ? claude : codex)
+        .apiRequests()
+        .map((request) => request.headers["authorization"]?.replace(/^Bearer token-/, ""))
 
-  return { claude, codex, send, api, seed, claudeMessage, codexResponse, servedBy, accounts }
-})
+    /** `GET /api/accounts`: each account's status, and cooldown end when it has one. */
+    const accounts = Effect.map(api("GET", "/api/accounts"), (response) => response.json)
+
+    return { claude, codex, send, api, seed, claudeMessage, codexResponse, servedBy, accounts }
+  })
+
+const makeHome = makeHomeIn()
 
 const messagesBody = JSON.stringify({
   model: "claude-sonnet-4-5",
@@ -290,7 +298,7 @@ layer(services)("routing a pool's accounts", (it) => {
           cooldownEndsAt: "1970-01-01T00:30:00.000Z",
         })
         expect((yield* home.accounts).pools).toEqual([
-          { provider: "claude", newSessionsAccountId: "second" },
+          { provider: "claude", newSessionsAccountId: "second", newSessionsOrder: ["second"] },
         ])
 
         // A new session skips the cooling account; once the window resets it is Active again.
@@ -727,7 +735,7 @@ layer(services)("routing a pool's accounts", (it) => {
         expect((yield* home.claudeMessage()).status).toBe(429)
         expect(home.servedBy("claude")).toEqual(["first", "second"])
         expect((yield* home.accounts).pools).toEqual([
-          { provider: "claude", newSessionsAccountId: null },
+          { provider: "claude", newSessionsAccountId: null, newSessionsOrder: [] },
         ])
       }),
   )
@@ -843,6 +851,82 @@ layer(services)("routing a pool's accounts", (it) => {
       yield* home.claudeMessage()
 
       expect(home.servedBy("claude")).toEqual(["busy", "idle", "idle", "idle", "busy"])
+    }),
+  )
+
+  it.effect(
+    "accounts sharing a priority take turns at new sessions by headroom; sessions stay put",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome
+        yield* home.seed("claude", "work", 1)
+        yield* home.seed("claude", "home", 2)
+        yield* home.seed("claude", "spare", 3)
+        const utilization: Record<string, string> = { work: "0.5", home: "0.2" }
+        home.claude.answerApiWith((request) =>
+          claudeAnswer(200, {
+            "anthropic-ratelimit-unified-5h-utilization": utilization[accountOf(request)] ?? "0",
+            "anthropic-ratelimit-unified-7d-utilization": "0.1",
+          }),
+        )
+        const share = yield* home.api("PATCH", "/api/accounts/home", { sharePriorityWith: "work" })
+        expect(share.json).toMatchObject({ id: "home", priority: 1 })
+
+        // Neither has reported headroom yet, so the listed order decides.
+        yield* home.claudeMessage("session-a")
+        yield* home.claudeMessage("session-b")
+        yield* home.claudeMessage("session-c")
+        utilization["home"] = "0.7"
+        yield* home.claudeMessage("session-c")
+        yield* home.claudeMessage("session-d")
+        yield* home.claudeMessage("session-a")
+
+        expect(home.servedBy("claude")).toEqual(["home", "work", "home", "home", "work", "home"])
+        expect((yield* home.accounts).pools).toEqual([
+          {
+            provider: "claude",
+            newSessionsAccountId: "work",
+            newSessionsOrder: ["work", "home", "spare"],
+          },
+        ])
+      }),
+  )
+
+  it.effect("a restarted daemon still skips an account until its limit resets", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(0)
+      const fs = yield* FileSystem.FileSystem
+      // Made in the test's scope, so it outlives the first daemon.
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-routing-" })
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const before = yield* makeHomeIn(root)
+          yield* before.seed("claude", "first", 1)
+          yield* before.seed("claude", "second", 2)
+          before.claude.answerApiWith((request) =>
+            accountOf(request) === "first"
+              ? claudeAnswer(429, {
+                  "anthropic-ratelimit-unified-status": "rejected",
+                  "anthropic-ratelimit-unified-reset": "1800",
+                  "anthropic-ratelimit-unified-representative-claim": "five_hour",
+                  "anthropic-ratelimit-unified-5h-status": "rejected",
+                  "anthropic-ratelimit-unified-5h-reset": "1800",
+                })
+              : claudeAnswer(200),
+          )
+          yield* before.claudeMessage("session-a")
+          expect(before.servedBy("claude")).toEqual(["first", "second"])
+        }),
+      )
+      const after = yield* makeHomeIn(root)
+      expect(statusOf(yield* after.accounts, "first")).toEqual({
+        status: "cooling-down",
+        cooldownEndsAt: "1970-01-01T00:30:00.000Z",
+      })
+      yield* after.claudeMessage("session-b")
+      yield* TestClock.adjust("30 minutes")
+      yield* after.claudeMessage("session-c")
+      expect(after.servedBy("claude")).toEqual(["second", "first"])
     }),
   )
 

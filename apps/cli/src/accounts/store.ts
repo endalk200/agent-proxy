@@ -24,6 +24,7 @@ import {
   providerNames,
 } from "./account.ts"
 import { AccountChanges } from "./changes.ts"
+import { levelsOf, numbered, place } from "./priority.ts"
 
 /**
  * The accounts the daemon holds (ADR-0004): one JSON file per account, mode
@@ -45,24 +46,37 @@ export class AccountNotFound extends Data.TaggedError("AccountNotFound")<{ reado
   }
 }
 
-/** A priority past either end of the account's pool. */
+/** A priority past either end of the account's pool: it can take 1 to `max`. */
 export class PriorityOutOfRange extends Data.TaggedError("PriorityOutOfRange")<{
   readonly provider: Provider
-  readonly poolSize: number
+  readonly max: number
 }> {
   override get message() {
-    const pool = `The ${providerNames[this.provider]} pool`
-    return this.poolSize === 1
-      ? `${pool} has 1 account, so its priority is 1.`
-      : `${pool} has ${this.poolSize} accounts, so a priority is 1${this.poolSize === 2 ? " or 2" : ` to ${this.poolSize}`}.`
+    const pool = `the ${providerNames[this.provider]} pool`
+    return this.max === 1
+      ? `It is the only account in ${pool}, so its priority is 1.`
+      : `In ${pool}, a priority is 1${this.max === 2 ? " or 2" : ` to ${this.max}`}.`
   }
 }
+
+/** An account can share a priority only with another account in its own pool. */
+export class CannotSharePriority extends Data.TaggedError("CannotSharePriority")<{
+  readonly message: string
+}> {}
 
 /** The settings the owner changes on an account; each one left out stays as it is. */
 export interface AccountSettings {
   readonly label?: string | undefined
-  /** A position in the account's pool, 1 first; the accounts from there down move one place. */
+  /**
+   * A priority in the account's pool, 1 first, which the account then holds
+   * alone: the accounts from that priority down move down one.
+   */
   readonly priority?: number | undefined
+  /**
+   * The id of another account in the pool whose priority the account then
+   * shares. Not given with `priority`.
+   */
+  readonly sharePriorityWith?: string | undefined
   /** A disabled account sits out of its pool but keeps its priority. */
   readonly enabled?: boolean | undefined
 }
@@ -114,16 +128,19 @@ export class AccountStore extends Context.Service<
     ) => Effect.Effect<Upserted, AccountStoreError>
     /**
      * Changes the owner's settings on the account with `id`, and returns it as
-     * stored. A new priority moves it within its pool, and the others shift
-     * to keep the pool's priorities 1, 2, 3 and so on.
+     * stored. A new or shared priority moves it within its pool, and the
+     * others shift to keep the pool's priorities 1, 2, 3 and so on.
      */
     readonly updateSettings: (
       id: string,
       settings: AccountSettings,
-    ) => Effect.Effect<Account, AccountStoreError | AccountNotFound | PriorityOutOfRange>
+    ) => Effect.Effect<
+      Account,
+      AccountStoreError | AccountNotFound | PriorityOutOfRange | CannotSharePriority
+    >
     /**
      * Forgets the account with `id`, credentials and all, and returns it as it
-     * was. The accounts below it in its pool move up one place.
+     * was. When it held its priority alone, the accounts below it move up one.
      */
     readonly remove: (id: string) => Effect.Effect<Account, AccountStoreError | AccountNotFound>
     /**
@@ -219,15 +236,18 @@ export class AccountStore extends Context.Service<
           Effect.mapError(storeError(`Could not save account ${account.id} in ${dir}`)),
         )
 
-      /** Gives a pool, listed in its new order, the priorities 1, 2, 3…, writing only the accounts that move. */
-      const renumber = (pool: ReadonlyArray<Account>) =>
-        Effect.forEach(
-          pool.flatMap((account, index) =>
-            account.priority === index + 1 ? [] : [{ ...account, priority: index + 1 }],
-          ),
+      /**
+       * Writes the accounts of `next`, a pool as it is to be, whose priority
+       * differs from `before`'s, the same pool as stored.
+       */
+      const writeMoved = (before: ReadonlyArray<Account>, next: ReadonlyArray<Account>) => {
+        const was = new Map(before.map((account) => [account.id, account.priority]))
+        return Effect.forEach(
+          next.filter((account) => was.get(account.id) !== account.priority),
           write,
           { discard: true },
         )
+      }
 
       const upsert = Effect.fn("AccountStore.upsert")(function* (
         identity: Identity,
@@ -288,23 +308,43 @@ export class AccountStore extends Context.Service<
           label: settings.label?.trim() ?? existing.label,
           enabled: settings.enabled ?? existing.enabled,
         }
-        if (settings.priority === undefined) {
+        const placement =
+          settings.sharePriorityWith !== undefined
+            ? ({ _tag: "Share", with: settings.sharePriorityWith } as const)
+            : settings.priority !== undefined
+              ? ({ _tag: "Own", priority: settings.priority } as const)
+              : undefined
+        if (placement === undefined) {
           yield* write(account)
           return account
         }
 
         const pool = accounts.filter((other) => other.provider === account.provider)
-        const position = settings.priority
-        if (position < 1 || position > pool.length) {
-          return yield* new PriorityOutOfRange({
-            provider: account.provider,
-            poolSize: pool.length,
-          })
+        const placed = place(
+          pool.map((other) => (other.id === id ? account : other)),
+          id,
+          placement,
+        )
+        switch (placed._tag) {
+          case "OutOfRange":
+            return yield* new PriorityOutOfRange({ provider: account.provider, max: placed.max })
+          case "NotInPool": {
+            const other = accounts.find((candidate) => candidate.id === placed.id)
+            return yield* new CannotSharePriority({
+              message:
+                other === undefined
+                  ? `No account ${placed.id} to share a priority with.`
+                  : `"${other.label}" is in the ${providerNames[other.provider]} pool, and an account shares a priority only within its own pool.`,
+            })
+          }
         }
-        const others = pool.filter((other) => other.id !== id)
-        const moved: Account = { ...account, priority: position }
+        const moved = placed.pool.find((other) => other.id === id) ?? account
+        // The account itself first, so its own settings are never left unwritten.
         yield* write(moved)
-        yield* renumber([...others.slice(0, position - 1), moved, ...others.slice(position - 1)])
+        yield* writeMoved(
+          pool,
+          placed.pool.filter((other) => other.id !== id),
+        )
         return moved
       }, changing)
 
@@ -315,20 +355,23 @@ export class AccountStore extends Context.Service<
         yield* fs
           .remove(path.join(dir, `${id}.json`))
           .pipe(Effect.mapError(storeError(`Could not remove account ${id} from ${dir}`)))
-        yield* renumber(
-          accounts.filter((other) => other.provider === account.provider && other.id !== id),
-        )
+        const pool = accounts.filter((other) => other.provider === account.provider)
+        yield* writeMoved(pool, numbered(levelsOf(pool.filter((other) => other.id !== id))))
         return account
       }, changing)
 
-      // A change that failed between its file writes can leave a pool with a
-      // gap or two accounts at one priority. Renumber every pool in its
-      // listed order, so priorities are 1, 2, 3… again.
+      // A change that failed between its file writes, or a file edited by
+      // hand, can leave a pool with a gap between priorities. Close the gaps,
+      // so every pool's priorities are 1, 2, 3… again; accounts that share
+      // a priority keep sharing it.
       yield* list.pipe(
         Effect.flatMap((all) =>
           Effect.forEach(
             [...new Set(all.map((account) => account.provider))],
-            (provider) => renumber(all.filter((account) => account.provider === provider)),
+            (provider) => {
+              const pool = all.filter((account) => account.provider === provider)
+              return writeMoved(pool, numbered(levelsOf(pool)))
+            },
             { discard: true },
           ),
         ),

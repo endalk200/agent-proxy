@@ -31,8 +31,8 @@ Where an account stands with its pool, exactly one of: **Active** (in the pool),
 _Avoid_: State, health, expired, banned
 
 **Priority**:
-The owner's ranking of an account within its pool. It decides which account a new session goes to, before headroom does.
-_Avoid_: Weight, order
+The owner's ranking of an account within its pool, 1 first. Accounts may share a priority: a new session goes to the highest priority with an Active account, and among the accounts sharing it, to the one with the most headroom.
+_Avoid_: Weight, order, tier
 
 ### Usage
 

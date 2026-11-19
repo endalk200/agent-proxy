@@ -18,7 +18,7 @@ The daemon records every proxied Claude message and Codex response (time, provid
 - `limits-endpoint` reads Claude's `GET /api/oauth/usage` and Codex's `GET /backend-api/wham/usage` as each servable account, one at a time, at startup, as soon as an account is added, every 30 minutes, and a minute after a known window resets; after a 429 it waits for `Retry-After`, an hour at most. A failed or unreadable read leaves the last-known windows and their `asOf`.
 - `limits-refresh` answers `POST /api/limits/refresh` with `{}` (every account) or `{"accountId":"<id>"}`, once the reads finish, with every account's windows; an unknown id is a 404.
 - `limits-kept` keeps last-known windows across restarts; removing an account removes its windows.
-- `usage-events` adds `usage-recorded` (`usage`: `at`, `provider`, `accountId`, `model`, `client`, `status`, `tokens`) and `limits-changed` (`limits`: one account's windows) to `GET /api/events`.
+- `usage-events` adds `usage-recorded` (`usage`: `at`, `provider`, `accountId`, `model`, `client`, `status`, `tokens`) and `limits-changed` (`limits`: one account's windows) to `GET /api/events`; when new limit windows change the order a pool's new sessions go in, and no account changed, a `pools-changed` event (`pools`: every pool) follows.
 
 ## How to get to it (user POV)
 

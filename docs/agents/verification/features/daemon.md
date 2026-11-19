@@ -19,7 +19,7 @@
 - `daemon-install` (macOS, the installed binary only) writes `~/Library/LaunchAgents/dev.endalk200.agent-proxy.plist` and loads it: launchd runs the daemon at login and after a crash, but not after a clean stop. It refuses from source, in a verify sandbox (`HOME` is not the real home), and on Linux. Run again, it stops the running daemon with SIGTERM first, so the requests in flight finish, before launchd reloads the agent.
 - `daemon-supervised` with the launch agent installed: `start` and `restart` go through launchd, `stop` keeps the daemon stopped until the next start or login, and a supervised daemon refused by the lock exits 0.
 - `daemon-uninstall` stops the supervised daemon and removes the launch agent; with none installed it says so and exits `0`.
-- `daemon-usage-api` serves `GET /api/usage/summary`, `/api/usage/series`, `/api/usage/breakdown`, `GET /api/limits` and `POST /api/limits/refresh`, and adds `usage-recorded` and `limits-changed` to `GET /api/events`; the drives are in [Usage and limit windows](./usage.md). It keeps usage and limit windows in `usage.sqlite` in its data directory.
+- `daemon-usage-api` serves `GET /api/usage/summary`, `/api/usage/series`, `/api/usage/breakdown`, `GET /api/limits` and `POST /api/limits/refresh`, and adds `usage-recorded` and `limits-changed` to `GET /api/events`; the drives are in [Usage and limit windows](./usage.md). It keeps usage, limit windows and cooldowns in `usage.sqlite` in its data directory.
 - `daemon-dashboard-pages` serves the dashboard's `index.html` for `/` and for its pages, such as `/accounts`, so a reload of one works.
 - `config-errors` fails on a malformed config or an unknown key, naming the problem and its line, and on an `AGENT_PROXY_CONFIG` that names a missing file.
 

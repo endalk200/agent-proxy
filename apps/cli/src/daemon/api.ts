@@ -52,6 +52,12 @@ export const PoolView = Schema.Struct({
   provider: Provider,
   /** The account a new session goes to now, or null when no account in the pool is Active. */
   newSessionsAccountId: Schema.NullOr(Schema.String),
+  /**
+   * Every Active account, in the order new sessions go to them now: by
+   * priority, then the most headroom. The first is `newSessionsAccountId`;
+   * each after it gets new sessions when those before it can't.
+   */
+  newSessionsOrder: Schema.Array(Schema.String),
 })
 export type PoolView = typeof PoolView.Type
 
@@ -62,15 +68,22 @@ export const AccountList = Schema.Struct({
 })
 export type AccountList = typeof AccountList.Type
 
+/** A pool for each provider that has an account, as `routing` sees them now. */
+export const toPools = (
+  accounts: ReadonlyArray<Account>,
+  routing: RoutingView,
+): ReadonlyArray<PoolView> =>
+  [...new Set(accounts.map((account) => account.provider))].map((provider) => {
+    const order = routing.newSessionsOrder(accounts, provider).map((account) => account.id)
+    return { provider, newSessionsAccountId: order[0] ?? null, newSessionsOrder: order }
+  })
+
 export const toAccountList = (
   accounts: ReadonlyArray<Account>,
   routing: RoutingView,
 ): AccountList => ({
   accounts: accounts.map((account) => toAccountView(account, routing)),
-  pools: [...new Set(accounts.map((account) => account.provider))].map((provider) => ({
-    provider,
-    newSessionsAccountId: routing.newSessions(accounts, provider)?.id ?? null,
-  })),
+  pools: toPools(accounts, routing),
 })
 
 /**
@@ -99,6 +112,9 @@ export type AccountSnapshot = typeof AccountSnapshot.Type
  *   after a fresh sign-in, and its status did not. `previous` is the account before.
  * - `used`: it served a request, and nothing else changed: only `lastUsedAt`
  *   moved, which the daemon records at most once a minute.
+ *
+ * When no account changed but the order new sessions go in did, as accounts
+ * sharing a priority trade places by headroom, a {@link PoolsChanged} says so.
  */
 export const AccountEvent = Schema.Union([
   Schema.Struct({
@@ -114,6 +130,12 @@ export const AccountEvent = Schema.Union([
   }),
 ])
 export type AccountEvent = typeof AccountEvent.Type
+
+/** The pools changed, and no account did, on `GET /api/events`; `pools` is every pool as it is now. */
+export interface PoolsChanged {
+  readonly type: "pools-changed"
+  readonly pools: ReadonlyArray<PoolView>
+}
 
 /**
  * A proxied request finished and was recorded, on `GET /api/events`: when it
@@ -139,7 +161,7 @@ export interface LimitsChanged {
 }
 
 /** Every message on `GET /api/events` after the snapshot. */
-export type DaemonEvent = AccountEvent | UsageRecorded | LimitsChanged
+export type DaemonEvent = AccountEvent | PoolsChanged | UsageRecorded | LimitsChanged
 
 /** The fields of an account view that make a `settings-changed` event when they change. */
 const settingsChanged = (before: AccountView, after: AccountView) =>
@@ -151,12 +173,22 @@ const settingsChanged = (before: AccountView, after: AccountView) =>
   before.provider !== after.provider ||
   before.providerAccountId !== after.providerAccountId
 
-/** The events that take a client from `before` to `after`: removals, then additions, then changes. */
-export const accountEvents = (before: AccountList, after: AccountList): Array<AccountEvent> => {
+/** True when `a` and `b` say the same about every pool. */
+const samePools = (a: ReadonlyArray<PoolView>, b: ReadonlyArray<PoolView>) =>
+  JSON.stringify(a) === JSON.stringify(b)
+
+/**
+ * The events that take a client from `before` to `after`: removals, then
+ * additions, then changes, or a `pools-changed` when only the pools moved.
+ */
+export const accountEvents = (
+  before: AccountList,
+  after: AccountList,
+): Array<AccountEvent | PoolsChanged> => {
   const pools = after.pools
   const was = new Map(before.accounts.map((account) => [account.id, account]))
   const now = new Set(after.accounts.map((account) => account.id))
-  const events: Array<AccountEvent> = before.accounts
+  const events: Array<AccountEvent | PoolsChanged> = before.accounts
     .filter((account) => !now.has(account.id))
     .map((account) => ({ type: "removed", account, pools }))
   for (const account of after.accounts) {
@@ -174,6 +206,9 @@ export const accountEvents = (before: AccountList, after: AccountList): Array<Ac
       events.push({ type: "used", account, pools })
     }
   }
+  if (events.length === 0 && !samePools(before.pools, after.pools)) {
+    return [{ type: "pools-changed", pools }]
+  }
   return events
 }
 
@@ -183,11 +218,20 @@ const Label = Schema.String.check(Schema.makeFilter((value) => value.trim() !== 
 
 export const UpdateAccount = Schema.Struct({
   label: Schema.optionalKey(Label),
-  /** A position in the account's pool, 1 first; the others shift to make room. */
+  /**
+   * A priority in the account's pool, 1 first, which it then holds alone:
+   * the accounts from that priority down move down one.
+   */
   priority: Schema.optionalKey(Schema.Int),
+  /** Another account in the pool, by id, whose priority it then shares; not with `priority`. */
+  sharePriorityWith: Schema.optionalKey(Schema.String),
   /** A disabled account sits out of its pool and keeps its priority. */
   enabled: Schema.optionalKey(Schema.Boolean),
-})
+}).check(
+  Schema.makeFilter(
+    (update) => update.priority === undefined || update.sharePriorityWith === undefined,
+  ),
+)
 export type UpdateAccount = typeof UpdateAccount.Type
 
 /** The body of every error the daemon API returns. */
