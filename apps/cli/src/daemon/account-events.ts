@@ -1,5 +1,6 @@
 import { type Cause, Clock, Context, Effect, Layer, Queue, Semaphore, Stream } from "effect"
 
+import type { Account } from "../accounts/account.ts"
 import { AccountChanges } from "../accounts/changes.ts"
 import { Router } from "../accounts/router.ts"
 import { AccountStore } from "../accounts/store.ts"
@@ -23,9 +24,10 @@ const RETRY_AFTER_FAILURE = "1 second"
 /**
  * Events for the daemon API's event stream. A watcher reads the accounts
  * again whenever the store or router signal a change, and when the first
- * running cooldown ends, which nothing writes, and publishes how the list
+ * running cooldown ends or known limit window resets, which nothing writes, and publishes how the list
  * moved since it last read it. Recorded usage and changed limit windows are
- * published as they happen. Each list read is also handed to the usage
+ * published as they happen; changed limit windows can also change the order
+ * new sessions go in, which a `pools-changed` event then says. Each list read is also handed to the usage
  * store, which keeps the names of the accounts held (a removal is recorded
  * where it is made, with the name the account had). No event is
  * kept: a subscriber gets the
@@ -74,9 +76,10 @@ export class AccountEvents extends Context.Service<
       // subscriber's snapshot is exactly the list its first event starts from.
       const lock = yield* Semaphore.make(1)
 
+      /** The accounts as stored, and as the daemon API reports them. */
       const read = Effect.gen(function* () {
         const accounts = yield* store.list
-        return toAccountList(accounts, yield* router.view)
+        return { accounts, list: toAccountList(accounts, yield* router.view) }
       })
       /**
        * Hands the usage store the accounts `list` holds, read from `readAt`.
@@ -107,32 +110,60 @@ export class AccountEvents extends Context.Service<
       /** Reads the accounts, and hands them to the usage store. */
       const readAndRemember = Effect.gen(function* () {
         const readAt = yield* Clock.currentTimeMillis
-        const list = yield* read
-        yield* remember(list, readAt)
-        return list
+        const next = yield* read
+        yield* remember(next.list, readAt)
+        return next
       })
 
-      let current: AccountList = yield* readAndRemember.pipe(
-        Effect.orElseSucceed((): AccountList => ({ accounts: [], pools: [] })),
+      const first = yield* readAndRemember.pipe(
+        Effect.orElseSucceed(() => ({
+          accounts: [] as ReadonlyArray<Account>,
+          list: { accounts: [], pools: [] } as AccountList,
+        })),
       )
+      /** The accounts as last read, and as last published. */
+      let held: ReadonlyArray<Account> = first.accounts
+      let current: AccountList = first.list
 
-      /** Waits for a signal, or for the first running cooldown to end. */
-      const untilChanged = Effect.suspend(() => {
-        const ends = current.accounts.flatMap((account) =>
+      /** Waits for a signal, or for the first running cooldown to end or known limit window to reset. */
+      const untilChanged = Effect.flatMap(Clock.currentTimeMillis, (now) => {
+        const cooldownEnds = current.accounts.flatMap((account) =>
           account.cooldownEndsAt === null ? [] : [Date.parse(account.cooldownEndsAt)],
         )
-        if (ends.length === 0) return changes.next
-        return Effect.flatMap(Clock.currentTimeMillis, (now) =>
-          Effect.timeoutOrElse(changes.next, {
-            duration: Math.max(0, Math.min(...ends) - now),
-            orElse: () => Effect.void,
-          }),
+        // A limit window that resets changes its account's headroom, and so
+        // perhaps the order new sessions go in, with nothing written.
+        const resets = current.accounts.flatMap((account) =>
+          limits
+            .known(account.id)
+            .flatMap((window) => (window.resetsAt > now ? [window.resetsAt] : [])),
         )
+        const ends = [...cooldownEnds, ...resets]
+        if (ends.length === 0) return changes.next
+        return Effect.timeoutOrElse(changes.next, {
+          duration: Math.max(0, Math.min(...ends) - now),
+          orElse: () => Effect.void,
+        })
       })
 
       /** Reads the accounts and publishes how they moved since the last read; call it holding `lock`. */
       const catchUp = Effect.gen(function* () {
         const next = yield* readAndRemember
+        const happened = accountEvents(current, next.list)
+        held = next.accounts
+        current = next.list
+        yield* publish(happened)
+      })
+
+      /**
+       * Works out the list again from the accounts last read and the router
+       * as it is now, without reading the accounts, and publishes any change;
+       * call it holding `lock`. Limit windows change with most answers, and
+       * the order new sessions go in follows them. The router may also know
+       * of a cooldown the watcher has yet to hear of, which this publishes
+       * first, so no client sees a pool that disagrees with its accounts.
+       */
+      const repool = Effect.gen(function* () {
+        const next = toAccountList(held, yield* router.view)
         const happened = accountEvents(current, next)
         current = next
         yield* publish(happened)
@@ -186,6 +217,7 @@ export class AccountEvents extends Context.Service<
       const nextLimits = yield* limits.subscribe
       yield* nextLimits.pipe(
         Effect.flatMap((changed) => publish([{ type: "limits-changed", limits: changed }])),
+        Effect.andThen(lock.withPermit(repool)),
         Effect.forever,
         Effect.forkScoped,
       )

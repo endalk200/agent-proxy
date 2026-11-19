@@ -14,7 +14,8 @@ import { apiError, type LocalOnly } from "./http.ts"
  *
  * - `GET /api/accounts` lists accounts with their status, and which account
  *   gets each pool's new sessions.
- * - `PATCH /api/accounts/:id` changes an account's label, priority or enabled.
+ * - `PATCH /api/accounts/:id` changes an account's label, priority or enabled,
+ *   or has it share another account's priority.
  * - `DELETE /api/accounts/:id` removes an account and its limit windows; its
  *   usage stays, under the name the account had.
  * - `POST /api/logins` starts a login; `GET /api/logins/:id` polls it.
@@ -29,7 +30,8 @@ const badRequest = (expected: string) => () =>
 
 const startLoginShape = '{ "provider": "claude" | "codex", "label"?: string }'
 
-const updateAccountShape = '{ "label"?: string, "priority"?: integer, "enabled"?: boolean }'
+const updateAccountShape =
+  '{ "label"?: string, "priority"?: integer, "sharePriorityWith"?: string, "enabled"?: boolean }, with at most one of "priority" and "sharePriorityWith"'
 
 /** Adds the routes to `router`, each served only to clients `localOnly` lets through. */
 export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnly) =>
@@ -64,6 +66,7 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
             HttpServerError: badRequest(updateAccountShape),
             AccountNotFound: (error) => Effect.succeed(apiError(404, error.message)),
             PriorityOutOfRange: (error) => Effect.succeed(apiError(400, error.message)),
+            CannotSharePriority: (error) => Effect.succeed(apiError(400, error.message)),
             AccountStoreError: (error) => Effect.succeed(apiError(500, error.message)),
           }),
         ),

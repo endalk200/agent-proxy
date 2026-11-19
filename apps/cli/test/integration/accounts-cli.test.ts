@@ -72,6 +72,14 @@ const signInWithoutReachingDaemon = (authorizeUrl: string) =>
  * `endpoints: "env"` leaves the real `ProviderEndpoints.layer` in place and points
  * it at the fake through `AGENT_PROXY_PROVIDER_ENDPOINTS`, the way the sandbox does.
  */
+/** Alice's seat in a Claude Team: another account, with the same person's name. */
+const aliceAtWork: ClaudeUser = {
+  ...alice,
+  organizationUuid: "7d3e2a90-cccc-4b2b-8b2b-000000000003",
+  email: "alice@work.example",
+  organizationType: "claude_team",
+}
+
 const makeHome = (
   claude: FakeClaude,
   options: { readonly endpoints?: "service" | "env"; readonly endpointsJson?: string } = {},
@@ -318,7 +326,7 @@ layer(
             "claude    Personal Max  alice@example.com  Max 20x  1         Active",
             "claude    bob           bob@example.com    Pro      2         Active",
             "",
-            'New Claude sessions go to "Personal Max".',
+            'New Claude sessions go to "Personal Max", then "bob".',
           ].join("\n"),
         )
       }),
@@ -633,10 +641,10 @@ layer(
         )
         expect(yield* home.order).toEqual(["1 bob", "2 alice"])
         expect(yield* home.fails(["accounts", "set", "bob", "--priority", "3"])).toBe(
-          "The Claude pool has 2 accounts, so a priority is 1 or 2.",
+          "In the Claude pool, a priority is 1 or 2.",
         )
         expect(yield* home.fails(["accounts", "set", "bob"])).toBe(
-          "Nothing to change. Give --label, --priority, or both.",
+          "Nothing to change. Give --label, and --priority or --share-priority-with.",
         )
         expect(yield* home.fails(["accounts", "set", "bob", "--label", " "])).toBe(
           "A label cannot be blank.",
@@ -652,6 +660,43 @@ layer(
         expect(yield* home.order).toEqual(["1 alice", "2 Spare"])
       }),
     ),
+  )
+
+  it.effect(
+    "accounts set --share-priority-with puts two accounts at one priority, listed in order",
+    () =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const home = yield* makeHome(yield* fakeClaude)
+          yield* home.runDaemon
+          yield* home.add(alice)
+          yield* home.add(bob)
+          yield* home.add(aliceAtWork, ["--label", "Work"])
+
+          expect(
+            yield* home.cli(["accounts", "set", "work", "--share-priority-with", "alice"]),
+          ).toBe('Claude account "Work" (alice@work.example) now shares priority 1 with "alice".')
+          expect(yield* home.order).toEqual(["1 alice", "1 Work", "2 bob"])
+          expect((yield* home.cli(["accounts"])).split("\n").at(-1)).toBe(
+            'New Claude sessions go to "alice", then "Work", then "bob".',
+          )
+          expect(
+            yield* home.fails([
+              "accounts",
+              "set",
+              "work",
+              "--priority",
+              "1",
+              "--share-priority-with",
+              "bob",
+            ]),
+          ).toBe("Give --priority or --share-priority-with, not both.")
+          expect(yield* home.cli(["accounts", "set", "work", "--priority", "2"])).toBe(
+            'Moved Claude account "Work" (alice@work.example) to priority 2.',
+          )
+          expect(yield* home.order).toEqual(["1 alice", "2 Work", "3 bob"])
+        }),
+      ),
   )
 
   it.effect(
@@ -680,7 +725,13 @@ layer(
             'Enabled Claude account "Work" (alice@example.com) at priority 1.',
           )
           const { accounts, pools } = yield* home.list
-          expect(pools).toEqual([{ provider: "claude", newSessionsAccountId: accounts[0]?.id }])
+          expect(pools).toEqual([
+            {
+              provider: "claude",
+              newSessionsAccountId: accounts[0]?.id,
+              newSessionsOrder: [accounts[0]?.id],
+            },
+          ])
           expect(yield* home.order).toEqual(["1 Work", "2 bob (disabled)"])
         }),
       ),

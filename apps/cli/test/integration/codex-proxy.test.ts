@@ -195,7 +195,13 @@ layer(services)("Codex accounts and the Codex proxy", (it) => {
               status: "active",
             }),
           ],
-          pools: [{ provider: "codex", newSessionsAccountId: login.account.id }],
+          pools: [
+            {
+              provider: "codex",
+              newSessionsAccountId: login.account.id,
+              newSessionsOrder: [login.account.id],
+            },
+          ],
         })
       }),
     ),

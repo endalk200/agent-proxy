@@ -1,24 +1,25 @@
 import { Clock, Context, Duration, Effect, Layer } from "effect"
 
 import { LimitWindows } from "../usage/limit-windows.ts"
+import { UsageStore } from "../usage/store.ts"
 import { type Account, type AccountStatus, accountStatus, type Provider } from "./account.ts"
 import { AccountChanges } from "./changes.ts"
 import { AccountStore, type AccountStoreError } from "./store.ts"
 
 /**
  * The router (ADR-0003): chooses which account of a pool serves each
- * request, and keeps what that takes in memory only: each session's account
- * and each account's cooldown. Headroom comes from the limit windows the
- * daemon knows, the same ones the dashboard shows.
+ * request. Headroom comes from the limit windows the daemon knows, the same
+ * ones the dashboard shows.
  *
  * - A session goes to its bound account while that account is Active and the
  *   session has not been idle for an hour.
  * - Otherwise, and for a request with no session, the request goes to the
- *   highest-priority Active account; equal priorities go to the most
- *   headroom, and unknown headroom counts as full.
+ *   highest-priority Active account; accounts sharing a priority go by the
+ *   most headroom, and unknown headroom counts as full.
  * - A limit the provider reports cools the account down until the limit
- *   resets, and raises `AccountChanges`' signal. A daemon that restarts has
- *   no cooldowns until the provider reports them again.
+ *   resets, and raises `AccountChanges`' signal. Cooldowns are kept in the
+ *   usage store too, so a restarted daemon still skips an account until its
+ *   limit resets. Session bindings live in memory only.
  */
 
 /** What a provider's answer says about the account's limits, as its adapter reads it. */
@@ -65,11 +66,15 @@ export interface RoutingView {
   readonly status: (account: Account) => AccountStatus
   /** When the account's cooldown ends, if one is running. */
   readonly cooldownEndsAt: (account: Account) => number | undefined
-  /** The account a new session in `provider`'s pool goes to now. */
-  readonly newSessions: (
+  /**
+   * Every Active account of `provider`'s pool, in the order new sessions go
+   * to them now: by priority, then the most headroom. The first gets the
+   * next new session; each after it gets one when those before it can't.
+   */
+  readonly newSessionsOrder: (
     accounts: ReadonlyArray<Account>,
     provider: Provider,
-  ) => Account | undefined
+  ) => ReadonlyArray<Account>
 }
 
 /** How long a session keeps its account without a request. */
@@ -126,8 +131,20 @@ export class Router extends Context.Service<
       const store = yield* AccountStore
       const changes = yield* AccountChanges
       const limits = yield* LimitWindows
+      const usage = yield* UsageStore
       const bindings = new Map<string, Binding>()
-      const cooldowns = new Map<string, Cooldown>()
+      const cooldowns = new Map<string, Cooldown>(
+        yield* usage
+          .cooldowns(yield* Clock.currentTimeMillis)
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("could not read the cooldowns from before the restart").pipe(
+                Effect.annotateLogs({ cause: error.message }),
+                Effect.as(new Map<string, Cooldown>()),
+              ),
+            ),
+          ),
+      )
 
       const coolingAt = (now: number) => (account: Account) => {
         const cooldown = cooldowns.get(account.id)
@@ -144,10 +161,10 @@ export class Router extends Context.Service<
           // or signed-out account is not waiting for its limit to reset.
           cooldownEndsAt: (account) =>
             status(account) === "cooling-down" ? cooling(account)?.until : undefined,
-          newSessions: (accounts, provider) =>
+          newSessionsOrder: (accounts, provider) =>
             accounts
               .filter((account) => account.provider === provider && status(account) === "active")
-              .toSorted((a, b) => a.priority - b.priority || headroom(b) - headroom(a))[0],
+              .toSorted((a, b) => a.priority - b.priority || headroom(b) - headroom(a)),
         }
       }
 
@@ -172,7 +189,7 @@ export class Router extends Context.Service<
           binding !== undefined && now - binding.at < SESSION_IDLE_MS
             ? servable.find((account) => account.id === binding.accountId)
             : undefined
-        const account = bound ?? view.newSessions(servable, provider)
+        const account = bound ?? view.newSessionsOrder(servable, provider)[0]
         if (account !== undefined)
           return { _tag: "Chosen", account, seen: binding } satisfies Choice
 
@@ -206,6 +223,19 @@ export class Router extends Context.Service<
               window: cooldown.window ?? "rate limit",
             }),
             Effect.andThen(changes.signal),
+            // Kept for a restarted daemon; one that cannot keep it still
+            // routes by it until it stops.
+            Effect.andThen(
+              usage
+                .saveCooldown(account.id, cooldown)
+                .pipe(
+                  Effect.catch((error) =>
+                    Effect.logWarning("could not save a cooldown").pipe(
+                      Effect.annotateLogs({ account: account.id, cause: error.message }),
+                    ),
+                  ),
+                ),
+            ),
           )
         })
 

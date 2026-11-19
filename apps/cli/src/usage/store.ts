@@ -22,9 +22,9 @@ import {
 /**
  * The usage store (ADR-0009): one SQLite file, `usage.sqlite` in the data
  * directory, that the daemon alone opens. It keeps a row per proxied
- * generation request, forever, each account's last-known limit windows, and
- * the name of every account the daemon has held, so usage of an account
- * since removed still says whose it was.
+ * generation request, forever, each account's last-known limit windows and
+ * running cooldown, and the name of every account the daemon has held, so
+ * usage of an account since removed still says whose it was.
  * Callers record rows and windows and ask range questions; none of them sees
  * SQL, and equivalent cost is computed here at query time, never stored.
  */
@@ -33,6 +33,12 @@ export class UsageStoreError extends Data.TaggedError("UsageStoreError")<{
   readonly message: string
   readonly cause?: unknown
 }> {}
+
+/** A cooldown as the store keeps it: until when, epoch milliseconds, and the window that ran out, if any. */
+export interface StoredCooldown {
+  readonly until: number
+  readonly window: string | undefined
+}
 
 /** A range question: `range` in the viewer's zone `tz`, about one account or all. */
 export interface UsageQuery {
@@ -154,6 +160,15 @@ export class UsageStore extends Context.Service<
     ) => Effect.Effect<void, UsageStoreError>
     /** Forgets `accountId`'s limit windows; its usage rows stay. */
     readonly forgetWindows: (accountId: string) => Effect.Effect<void, UsageStoreError>
+    /** Every account's cooldown still running at `now`; those that ended are dropped. */
+    readonly cooldowns: (
+      now: number,
+    ) => Effect.Effect<ReadonlyMap<string, StoredCooldown>, UsageStoreError>
+    /** Keeps `accountId`'s cooldown, unless one that ends later is already kept. */
+    readonly saveCooldown: (
+      accountId: string,
+      cooldown: StoredCooldown,
+    ) => Effect.Effect<void, UsageStoreError>
     /**
      * Remembers `accounts` as held, by their names in a list of the accounts
      * read from `readAt`. An account removed after `readAt` stays removed,
@@ -234,7 +249,7 @@ const notRecorded = (file: string, cause: unknown) =>
 /**
  * The store for a database the daemon could not open: it records nothing,
  * so no request waits on it or logs about it, and every usage question is
- * answered with `reason`. Limit windows are kept in memory only.
+ * answered with `reason`. Limit windows and cooldowns are kept in memory only.
  */
 const unavailable = (reason: string) => {
   const refused = Effect.fail(new UsageStoreError({ message: reason }))
@@ -246,6 +261,8 @@ const unavailable = (reason: string) => {
     windows: Effect.succeed(new Map()),
     saveWindows: () => Effect.void,
     forgetWindows: () => Effect.void,
+    cooldowns: () => Effect.succeed(new Map()),
+    saveCooldown: () => Effect.void,
     rememberAccounts: () => Effect.void,
     rememberRemoved: () => Effect.void,
   })
@@ -296,6 +313,11 @@ const MIGRATIONS: ReadonlyArray<string> = [
      email TEXT NOT NULL,
      plan TEXT NOT NULL,
      removed_at INTEGER
+   );`,
+  `CREATE TABLE cooldowns (
+     account_id TEXT PRIMARY KEY,
+     until INTEGER NOT NULL,
+     window_id TEXT
    );`,
 ]
 
@@ -450,6 +472,18 @@ const make = (db: Database) => {
     "DELETE FROM limit_windows WHERE account_id = $account AND window_id = $id",
   )
   const deleteWindows = db.query("DELETE FROM limit_windows WHERE account_id = $account")
+  const deleteEndedCooldowns = db.query("DELETE FROM cooldowns WHERE until <= $now")
+  const allCooldowns = db.query<
+    { account_id: string; until: number; window_id: string | null },
+    []
+  >("SELECT account_id, until, window_id FROM cooldowns")
+  // Answers in flight together are saved in any order: a cooldown never
+  // replaces one that ends later.
+  const upsertCooldown = db.query(
+    `INSERT INTO cooldowns (account_id, until, window_id) VALUES ($account, $until, $window)
+     ON CONFLICT (account_id) DO UPDATE SET until = excluded.until, window_id = excluded.window_id
+     WHERE excluded.until > cooldowns.until`,
+  )
   const allAccounts = db.query<
     {
       id: string
@@ -682,6 +716,30 @@ const make = (db: Database) => {
       deleteWindows.run({ account: accountId })
     })
 
+  const cooldowns = (now: number) =>
+    attempt("Could not read the cooldowns", () =>
+      db.transaction(() => {
+        deleteEndedCooldowns.run({ now })
+        return new Map(
+          allCooldowns
+            .all()
+            .map((row): [string, StoredCooldown] => [
+              row.account_id,
+              { until: row.until, window: row.window_id ?? undefined },
+            ]),
+        )
+      })(),
+    )
+
+  const saveCooldown = (accountId: string, cooldown: StoredCooldown) =>
+    attempt("Could not save the cooldown", () => {
+      upsertCooldown.run({
+        account: accountId,
+        until: cooldown.until,
+        window: cooldown.window ?? null,
+      })
+    })
+
   const rememberAccounts = (accounts: ReadonlyArray<AccountName>, readAt: number) =>
     attempt("Could not remember the accounts", () => {
       db.transaction(() => {
@@ -702,6 +760,8 @@ const make = (db: Database) => {
     windows,
     saveWindows,
     forgetWindows,
+    cooldowns,
+    saveCooldown,
     rememberAccounts,
     rememberRemoved,
   })

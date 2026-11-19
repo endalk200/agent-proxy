@@ -58,11 +58,14 @@ const statusText = (account: AccountView, now: number) =>
     ? `${statusNames[account.status]} until ${clockText(account.cooldownEndsAt, now)}`
     : statusNames[account.status]
 
-/** Which account a pool's new sessions go to, in a sentence. */
+/** Which accounts a pool's new sessions go to, in order, in a sentence. */
 const formatPool = (pool: PoolView, accounts: ReadonlyArray<AccountView>, now: number) => {
   const name = providerNames[pool.provider]
-  const next = accounts.find((account) => account.id === pool.newSessionsAccountId)
-  if (next !== undefined) return `New ${name} sessions go to "${next.label}".`
+  const order = pool.newSessionsOrder.flatMap((id) => {
+    const account = accounts.find((candidate) => candidate.id === id)
+    return account === undefined ? [] : [`"${account.label}"`]
+  })
+  if (order.length > 0) return `New ${name} sessions go to ${order.join(", then ")}.`
   const firstFree = accounts
     .filter((account) => account.provider === pool.provider && account.status === "cooling-down")
     .flatMap((account) => (account.cooldownEndsAt === null ? [] : [account.cooldownEndsAt]))
@@ -274,26 +277,48 @@ const set = Command.make(
     label: Flag.String("label").pipe(Flag.optional, Flag.withDescription("A new label")),
     priority: Flag.Int("priority").pipe(
       Flag.optional,
-      Flag.withDescription("A new place in its pool, 1 first; the others shift to make room"),
+      Flag.withDescription(
+        "A priority in its pool, 1 first, to hold alone; the accounts from there down move down one",
+      ),
+    ),
+    shareWith: Flag.String("share-priority-with").pipe(
+      Flag.optional,
+      Flag.withDescription(
+        "Another account in its pool (label, email or id start) whose priority it then shares; new sessions go to whichever has the most headroom",
+      ),
     ),
   },
-  Effect.fn("accounts.set")(function* ({ account: query, label, priority }) {
-    if (Option.isNone(label) && Option.isNone(priority)) {
-      return yield* userError("Nothing to change. Give --label, --priority, or both.")
+  Effect.fn("accounts.set")(function* ({ account: query, label, priority, shareWith }) {
+    if (Option.isNone(label) && Option.isNone(priority) && Option.isNone(shareWith)) {
+      return yield* userError(
+        "Nothing to change. Give --label, and --priority or --share-priority-with.",
+      )
+    }
+    if (Option.isSome(priority) && Option.isSome(shareWith)) {
+      return yield* userError("Give --priority or --share-priority-with, not both.")
     }
     if (Option.isSome(label) && label.value.trim() === "") {
       return yield* userError("A label cannot be blank.")
     }
     const before = yield* findAccount(query)
+    const partner = Option.isSome(shareWith) ? yield* findAccount(shareWith.value) : undefined
     const after = yield* updateAccount(before.id, {
       ...(Option.isSome(label) ? { label: label.value.trim() } : {}),
       ...(Option.isSome(priority) ? { priority: priority.value } : {}),
+      ...(partner === undefined ? {} : { sharePriorityWith: partner.id }),
     }).pipe(Effect.mapError(asUserError))
     if (Option.isSome(label)) {
       yield* Console.log(`Renamed ${describe(before)} to "${after.label}".`)
     }
     if (Option.isSome(priority)) {
       yield* Console.log(`Moved ${describe(after)} to priority ${after.priority}.`)
+    }
+    if (partner !== undefined) {
+      yield* Console.log(
+        partner.id === after.id
+          ? `${describe(after)} stays at priority ${after.priority}.`
+          : `${describe(after)} now shares priority ${after.priority} with "${partner.label}".`,
+      )
     }
   }),
 ).pipe(Command.withDescription("Change an account's label or its priority in its pool"))

@@ -487,6 +487,122 @@ layer(
     }),
   )
 
+  it.effect(
+    "accounts sharing a priority that trade places by headroom arrive as pools changed",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.seed("claude", "work", 1)
+        yield* home.seed("claude", "home", 1)
+        // Headroom comes from answers alone: the usage endpoint is not there.
+        home.claude.answerUsageWith(() => Response.json({}, { status: 404 }))
+        home.claude.answerApiWith(() =>
+          Response.json(
+            { type: "message", content: [] },
+            {
+              headers: {
+                ...limitHeaders,
+                "anthropic-ratelimit-unified-5h-utilization": "0.6",
+                "anthropic-ratelimit-unified-7d-utilization": "0.1",
+              },
+            },
+          ),
+        )
+        const events = yield* openEvents(home.address)
+        expect(yield* events.nextEvent).toMatchObject({
+          type: "snapshot",
+          pools: [{ provider: "claude", newSessionsOrder: ["home", "work"] }],
+        })
+
+        // Home served it and has less headroom left than Work, whose is unknown.
+        expect(yield* home.claudeMessage).toBe(200)
+        const arrived = [yield* events.nextEvent, yield* events.nextEvent]
+        expect(arrived).toContainEqual({
+          type: "pools-changed",
+          pools: [
+            {
+              provider: "claude",
+              newSessionsAccountId: "work",
+              newSessionsOrder: ["work", "home"],
+            },
+          ],
+        })
+        expect(arrived).toContainEqual(
+          expect.objectContaining({
+            type: "used",
+            account: expect.objectContaining({ id: "home" }),
+          }),
+        )
+      }),
+  )
+
+  it.effect(
+    "a limit window that resets, with nothing else happening, arrives as pools changed",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome()
+        yield* home.seed("claude", "work", 1)
+        yield* home.seed("claude", "home", 1)
+        // Headroom comes from answers alone: the usage endpoint is not there.
+        home.claude.answerUsageWith(() => Response.json({}, { status: 404 }))
+        // Work's five-hour window is nearly used up, until 10 minutes from the clock's start, before the poller next reads anything.
+        const windows: Record<string, Record<string, string>> = {
+          "Bearer token-work": {
+            "anthropic-ratelimit-unified-5h-utilization": "0.9",
+            "anthropic-ratelimit-unified-5h-reset": "600",
+          },
+          "Bearer token-home": {
+            "anthropic-ratelimit-unified-5h-utilization": "0.5",
+            "anthropic-ratelimit-unified-5h-reset": "9000",
+          },
+        }
+        home.claude.answerApiWith((request) =>
+          Response.json(
+            { type: "message", content: [] },
+            {
+              headers: {
+                ...limitHeaders,
+                ...windows[request.headers.get("authorization") ?? ""],
+                "anthropic-ratelimit-unified-7d-utilization": "0.1",
+                "anthropic-ratelimit-unified-7d-reset": "500000",
+              },
+            },
+          ),
+        )
+        const events = yield* openEvents(home.address)
+        yield* events.nextEvent
+        /** Reads the stream until a `pools-changed` puts new sessions in `order`, or fails. */
+        const untilOrder = (order: ReadonlyArray<string>) =>
+          Effect.gen(function* () {
+            for (let read = 0; read < 8; read++) {
+              const event: unknown = yield* events.nextEvent
+              if (
+                typeof event === "object" &&
+                event !== null &&
+                "type" in event &&
+                event.type === "pools-changed" &&
+                "pools" in event &&
+                JSON.stringify(event.pools) ===
+                  JSON.stringify([
+                    { provider: "claude", newSessionsAccountId: order[0], newSessionsOrder: order },
+                  ])
+              ) {
+                return event
+              }
+            }
+            return undefined
+          })
+        // Home serves first (the listed order), then Work, which then has less left.
+        expect(yield* home.claudeMessage).toBe(200)
+        expect(yield* home.claudeMessage).toBe(200)
+        expect(yield* untilOrder(["home", "work"])).toBeDefined()
+
+        // Once Work's five-hour window resets, only its weekly window counts.
+        yield* TestClock.adjust("10 minutes")
+        expect(yield* untilOrder(["work", "home"])).toBeDefined()
+      }),
+  )
+
   it.effect("an account disabled from the CLI arrives like any other change", () =>
     Effect.gen(function* () {
       const home = yield* makeHome()

@@ -108,6 +108,7 @@ agent-proxy accounts add claude --no-browser  # print the URL; paste the callbac
 agent-proxy accounts add codex                # sign in to ChatGPT for Codex (also --no-browser)
 agent-proxy accounts                          # provider, label, email, plan, priority, status (--json for scripts)
 agent-proxy accounts set Work --label Personal --priority 1  # rename, or move within its pool
+agent-proxy accounts set Home --share-priority-with Work     # Home and Work take turns at new sessions
 agent-proxy accounts disable Work              # keep it out of its pool, at its priority
 agent-proxy accounts enable Work               # put it back where it was
 agent-proxy accounts remove Work               # forget it and its credentials
@@ -119,7 +120,7 @@ The dashboard runs the same logins: **Add account** asks for Claude or Codex and
 
 A new account joins the bottom of its pool, labelled after its email unless `--label` names it. Signing in again to an account the daemon already holds updates its credentials in place and keeps its priority and enabled setting, and its label unless `--label` gives a new one.
 
-`accounts` ends with which account gets each pool's new sessions: the highest-priority Active one (see [Sessions and limits](#sessions-and-limits)). An account that hit a limit shows **Cooling down** with the local time its cooldown ends, such as `Cooling down until 15:30`, and `--json` gives that end as `cooldownEndsAt`. Priority is a place in the pool: moving an account to priority 1 moves the others down one place, and removing one moves those below it up. A disabled account keeps its place, so enabling it returns it there. Removing an account deletes its file at once; a request it is already serving still finishes, and the next one goes to the next account.
+`accounts` ends with the order each pool's new sessions go in, such as `New Claude sessions go to "Work", then "Home".`: every Active account, by priority, then by the room left in its limits (see [Sessions and limits](#sessions-and-limits)). An account that hit a limit shows **Cooling down** with the local time its cooldown ends, such as `Cooling down until 15:30`, and `--json` gives that end as `cooldownEndsAt`. A pool's priorities run 1, 2, 3 with no gaps, and accounts may share one. `--priority <n>` gives an account priority n on its own, moving the accounts from there down one place; `--share-priority-with <account>` puts it at that account's priority instead. A priority left empty closes up, as does removing the last account that held it. A disabled account keeps its priority, so enabling it returns it there. Removing an account deletes its file at once; a request it is already serving still finishes, and the next one goes to the next account.
 
 The account a command acts on is named by its label, its email (either ignoring case), or the start of its id from `accounts --json`. A name that fits several accounts fails and lists them with their ids.
 
@@ -229,7 +230,7 @@ opencode reads the key file when it loads its config, so after `agent-proxy key 
 
 ## Sessions and limits
 
-A session stays on one account, so the provider's prompt cache keeps working (ADR-0003). The daemon knows a session by what the client sends: Claude Code's `x-claude-code-session-id` (its subagents send their parent's), Codex's `session-id`, or, from opencode, the body's `prompt_cache_key`. A session's first request goes to the highest-priority Active account of its pool; accounts that share a priority, which happens only when a change was interrupted, go to the one with the most room left in its tightest 5-hour or weekly limit window, as the dashboard shows it (see [Usage and limit windows](#usage-and-limit-windows)). The session then stays on that account until the account stops being Active or the session sits idle for an hour. A request that names no session is routed afresh every time. Sessions live in memory only.
+A session stays on one account, so the provider's prompt cache keeps working (ADR-0003). The daemon knows a session by what the client sends: Claude Code's `x-claude-code-session-id` (its subagents send their parent's), Codex's `session-id`, or, from opencode, the body's `prompt_cache_key`. A session's first request goes to the highest-priority Active account of its pool; among accounts that share a priority, it goes to the one with the most room left in its tightest 5-hour or weekly limit window, as the dashboard shows it (see [Usage and limit windows](#usage-and-limit-windows)). Give several accounts one priority to spread new sessions across them; give each its own to use one until it hits a limit. The session then stays on that account until the account stops being Active or the session sits idle for an hour. A request that names no session is routed afresh every time. Sessions live in memory only.
 
 When an account hits a limit, the daemon cools it down for as long as the provider says:
 
@@ -237,7 +238,7 @@ When an account hits a limit, the daemon cools it down for as long as the provid
 - a Codex `usage_limit_reached` until its `resets_at`, for every model the account serves;
 - any other 429, such as a per-minute rate limit, for its `Retry-After` only.
 
-If nothing has reached the client yet, the request goes straight to the next account and the session moves with it, so the client never notices. A failure after the answer has started streaming reaches the client as it is. When every account in the pool is cooling down, the client gets the provider's own limit answer with the earliest reset: Claude Code shows the limit and when it resets, and Codex shows its usage-limit message. When every account needs sign-in or is disabled, the client gets a 400 saying so at once. Cooldowns live in memory; after a restart, the next limit answer starts them again.
+If nothing has reached the client yet, the request goes straight to the next account and the session moves with it, so the client never notices. A failure after the answer has started streaming reaches the client as it is. When every account in the pool is cooling down, the client gets the provider's own limit answer with the earliest reset: Claude Code shows the limit and when it resets, and Codex shows its usage-limit message. When every account needs sign-in or is disabled, the client gets a 400 saying so at once. The daemon keeps each cooldown in its usage store too, so after a restart it still skips the account until its limit resets.
 
 ## Usage and limit windows
 

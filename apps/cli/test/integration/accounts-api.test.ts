@@ -93,11 +93,18 @@ const makeHome = (claude: FakeClaude, options: { readonly dataHome?: string } = 
     /** Writes an account file the way a daemon that held `user` before would have. */
     const seedAccount = (
       user: ClaudeUser,
-      settings: { label: string; priority: number; enabled: boolean; needsSignIn: boolean },
+      settings: {
+        label: string
+        priority: number
+        enabled: boolean
+        needsSignIn: boolean
+        /** The account's id; `seeded<priority>` when none is given. */
+        id?: string
+      },
     ) =>
       Effect.gen(function* () {
         yield* fs.makeDirectory(accountsDir, { recursive: true, mode: 0o700 })
-        const id = `seeded${settings.priority}`
+        const { id = `seeded${settings.priority}`, ...rest } = settings
         yield* fs.writeFileString(
           `${accountsDir}/${id}.json`,
           JSON.stringify({
@@ -106,7 +113,7 @@ const makeHome = (claude: FakeClaude, options: { readonly dataHome?: string } = 
             providerAccountId: `${user.accountUuid}:${user.organizationUuid}`,
             email: user.email,
             plan: "Pro",
-            ...settings,
+            ...rest,
             addedAt: "2026-01-01T00:00:00.000Z",
             lastUsedAt: null,
             credentials: {
@@ -585,7 +592,7 @@ layer(services)("daemon account API", (it) => {
         priority: 3,
       })
       expect(outside.json).toEqual({
-        error: "The Claude pool has 2 accounts, so a priority is 1 or 2.",
+        error: "In the Claude pool, a priority is 1 or 2.",
       })
       expect((yield* home.accounts).map(({ label, priority }) => `${priority} ${label}`)).toEqual([
         "1 alice",
@@ -642,10 +649,82 @@ layer(services)("daemon account API", (it) => {
         home.request("GET", "/api/accounts"),
         ({ json }) => Schema.decodeUnknownSync(AccountList)(json).pools,
       )
-      expect(yield* pools).toEqual([{ provider: "claude", newSessionsAccountId: null }])
+      expect(yield* pools).toEqual([
+        { provider: "claude", newSessionsAccountId: null, newSessionsOrder: [] },
+      ])
 
       const work = yield* home.signIn(aliceAtWork)
-      expect(yield* pools).toEqual([{ provider: "claude", newSessionsAccountId: work.account?.id }])
+      const id = work.account?.id ?? ""
+      expect(yield* pools).toEqual([
+        { provider: "claude", newSessionsAccountId: id, newSessionsOrder: [id] },
+      ])
+
+      // Every Active account, in the order new sessions go to them.
+      yield* home.request("PATCH", `/api/accounts/${id}`, { priority: 1 })
+      yield* home.request("PATCH", "/api/accounts/seeded1", { enabled: true })
+      expect(yield* pools).toEqual([
+        { provider: "claude", newSessionsAccountId: id, newSessionsOrder: [id, "seeded1"] },
+      ])
+    }),
+  )
+
+  it.effect("an account shares another's priority, and can take one alone again", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      const a = (yield* home.signIn(alice)).account?.id ?? ""
+      const b = (yield* home.signIn(bob)).account?.id ?? ""
+      const c = (yield* home.signIn(aliceAtWork)).account?.id ?? ""
+      // Accounts sharing a priority, added at the same moment, are listed by id.
+      const order = Effect.map(home.accounts, (accounts) =>
+        accounts.map(({ label, priority }) => `${priority} ${label}`).toSorted(),
+      )
+
+      const shared = yield* home.request("PATCH", `/api/accounts/${c}`, { sharePriorityWith: a })
+      expect(shared).toMatchObject({ status: 200, json: { id: c, priority: 1 } })
+      expect(yield* order).toEqual(["1 alice", "1 alice 2", "2 bob"])
+
+      // Its old priority, now empty, closes up; the one it left keeps the other.
+      yield* home.request("PATCH", `/api/accounts/${a}`, { sharePriorityWith: b })
+      expect(yield* order).toEqual(["1 alice 2", "2 alice", "2 bob"])
+
+      // Taken out alone above the accounts it shared with.
+      yield* home.request("PATCH", `/api/accounts/${b}`, { priority: 2 })
+      expect(yield* order).toEqual(["1 alice 2", "2 bob", "3 alice"])
+
+      const both = yield* home.request("PATCH", `/api/accounts/${a}`, {
+        priority: 1,
+        sharePriorityWith: b,
+      })
+      expect(both.status).toBe(400)
+      const unknown = yield* home.request("PATCH", `/api/accounts/${a}`, {
+        sharePriorityWith: "nope",
+      })
+      expect(unknown).toEqual({
+        status: 400,
+        json: { error: "No account nope to share a priority with." },
+      })
+      expect(yield* order).toEqual(["1 alice 2", "2 bob", "3 alice"])
+    }),
+  )
+
+  it.effect("starting, closes gaps between priorities and keeps shared ones shared", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem
+      const claude = yield* fakeClaude
+      const dataHome = yield* fs.makeTempDirectoryScoped({ prefix: "agent-proxy-data-" })
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const first = yield* makeHome(claude, { dataHome })
+          const seeded = { enabled: true, needsSignIn: false }
+          yield* first.seedAccount(alice, { ...seeded, id: "a", label: "a", priority: 3 })
+          yield* first.seedAccount(bob, { ...seeded, id: "b", label: "b", priority: 3 })
+          yield* first.seedAccount(aliceAtWork, { ...seeded, id: "c", label: "c", priority: 7 })
+        }),
+      )
+      const second = yield* makeHome(claude, { dataHome })
+      expect((yield* second.accounts).map(({ label, priority }) => `${priority} ${label}`)).toEqual(
+        ["1 a", "1 b", "2 c"],
+      )
     }),
   )
 
