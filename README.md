@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/agent-proxy.png" width="88" height="88" alt="">
+
 # agent-proxy
 
 **All your Claude and Codex subscriptions behind one local endpoint.**

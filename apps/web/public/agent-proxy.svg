@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>agent-proxy</title>
+  <path fill="#231f21" d="M8 0h48l8 8v48l-8 8H8l-8-8V8z"/>
+  <path fill="#ff5947" d="M8 12h18l16 15h14v10H38L22 22H8z"/>
+  <path fill="#fff0da" d="M8 42h14l9-9 7 7-12 12H8z"/>
+</svg>
