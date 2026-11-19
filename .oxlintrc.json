@@ -41,6 +41,20 @@
       }
     },
     {
+      "files": ["**/web/src/components/ui/**", "**/web/src/hooks/use-mobile.ts"],
+      "rules": {
+        "jsx-a11y/prefer-tag-over-role": "off",
+        "jsx-a11y/label-has-associated-control": "off",
+        "react/jsx-no-constructed-context-values": "off",
+        "react/no-array-index-key": "off",
+        "react/set-state-in-effect": "off",
+        "eslint/no-shadow": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+        "react/no-object-type-as-default-prop": "off"
+      },
+      "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "react", "jsx-a11y"]
+    },
+    {
       "files": ["**/*.test.{ts,tsx}", "e2e/**/*.ts"],
       "rules": {
         "typescript/no-floating-promises": "off"
