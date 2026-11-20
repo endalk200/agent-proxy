@@ -15,7 +15,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -326,7 +326,7 @@ function BlockedCallout(props: {
         : `Every enabled ${name} account is cooling down or needs sign-in. Sign one in again, or wait for the first cooldown to end at ${clockText(nextReset, props.now)}.`
   return (
     <div
-      className="mx-6 flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-foreground [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-warning"
+      className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-foreground [&_svg]:mt-0.5 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-warning"
       role="note"
     >
       {nextReset === null ? <TriangleAlert aria-hidden="true" /> : <Clock aria-hidden="true" />}
@@ -395,127 +395,127 @@ function PoolSection(props: {
   const headingId = `pool-${provider}`
   const head = "h-11 px-4 text-xs font-medium text-muted-foreground @max-[40rem]/pool:px-2.5"
   return (
-    <section aria-labelledby={headingId}>
-      <Card className="@container/pool gap-5 py-0 pt-6 shadow-sm">
-        <CardHeader className="gap-1.5">
-          <CardTitle className="flex items-center gap-2.5 text-base font-semibold">
-            <ProviderMark provider={provider} size={18} />
-            <h2 id={headingId}>{name}</h2>
-            <span className="inline-grid h-5 min-w-5 place-items-center rounded-sm border border-border bg-muted px-1.5 text-xs font-medium tabular-nums text-muted-foreground">
-              {accounts.length}
-              <span className="sr-only"> {accounts.length === 1 ? "account" : "accounts"}</span>
-            </span>
-          </CardTitle>
-          <CardDescription>
-            {drag === undefined ? (
-              <PoolLine state={state} provider={provider} then={then} now={props.now} />
-            ) : (
-              <p className="text-sm font-medium text-accent" aria-hidden="true">
-                {dropText(levels, drag)}
-              </p>
-            )}
-          </CardDescription>
-        </CardHeader>
-
-        {state.kind === "blocked" && (
-          <BlockedCallout state={state} provider={provider} now={props.now} />
+    // The pool's name and where its new sessions go head the section, above
+    // the table rather than inside its box, so the table opens on its columns.
+    <section aria-labelledby={headingId} className="@container/pool flex flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1.5 px-1">
+        <div className="flex items-center gap-2.5">
+          <ProviderMark provider={provider} size={18} />
+          <h2 id={headingId} className="text-base font-semibold">
+            {name}
+          </h2>
+          <span className="inline-grid h-5 min-w-5 place-items-center rounded-sm border border-border bg-muted px-1.5 text-xs font-medium tabular-nums text-muted-foreground">
+            {accounts.length}
+            <span className="sr-only"> {accounts.length === 1 ? "account" : "accounts"}</span>
+          </span>
+        </div>
+        {drag === undefined ? (
+          <PoolLine state={state} provider={provider} then={then} now={props.now} />
+        ) : (
+          <p className="text-sm font-medium text-accent" aria-hidden="true">
+            {dropText(levels, drag)}
+          </p>
         )}
+      </div>
 
-        <CardContent className="px-0">
-          <Table
-            className={cn(
-              "table-fixed border-t border-border",
-              drag !== undefined && "cursor-grabbing select-none [&_*]:cursor-grabbing!",
-            )}
-            aria-label={`${name} accounts`}
-          >
-            <TableHeader className="bg-muted/40">
-              <TableRow className="hover:bg-transparent">
-                <TableHead
-                  scope="col"
-                  aria-label="Priority"
-                  className={cn(head, "w-14 pl-6 @max-[40rem]/pool:w-11 @max-[40rem]/pool:pl-4")}
-                >
-                  #
+      {state.kind === "blocked" && (
+        <BlockedCallout state={state} provider={provider} now={props.now} />
+      )}
+
+      <Card className="gap-0 py-0 shadow-sm">
+        <Table
+          className={cn(
+            "table-fixed",
+            drag !== undefined && "cursor-grabbing select-none [&_*]:cursor-grabbing!",
+          )}
+          aria-label={`${name} accounts`}
+        >
+          <TableHeader className="bg-muted/40">
+            <TableRow className="hover:bg-transparent">
+              <TableHead
+                scope="col"
+                aria-label="Priority"
+                className={cn(head, "w-14 pl-6 @max-[40rem]/pool:w-11 @max-[40rem]/pool:pl-4")}
+              >
+                #
+              </TableHead>
+              <TableHead scope="col" className={cn(head, "@min-[40rem]/pool:w-[26%]")}>
+                Account
+              </TableHead>
+              <TableHead scope="col" className={cn(head, "w-32 @min-[40rem]/pool:w-40")}>
+                Status
+              </TableHead>
+              {props.columns.map((column) => (
+                <TableHead key={column.id} scope="col" className={cn(head, WIDE)}>
+                  {column.label}
                 </TableHead>
-                <TableHead scope="col" className={cn(head, "@min-[40rem]/pool:w-[26%]")}>
-                  Account
-                </TableHead>
-                <TableHead scope="col" className={cn(head, "w-32 @min-[40rem]/pool:w-40")}>
-                  Status
-                </TableHead>
-                {props.columns.map((column) => (
-                  <TableHead key={column.id} scope="col" className={cn(head, WIDE)}>
-                    {column.label}
-                  </TableHead>
-                ))}
-                {Array.from({ length: props.widest - props.columns.length }, (_, i) => (
-                  <TableHead key={`pad-${i}`} aria-hidden="true" className={cn(head, PAD)} />
-                ))}
-                <TableHead scope="col" className={cn(head, ENABLED, "w-24")}>
-                  Enabled
-                </TableHead>
-                <TableHead
-                  scope="col"
-                  aria-label="Actions"
-                  className={cn(head, "w-16 pr-6 @max-[40rem]/pool:w-11 @max-[40rem]/pool:pr-3")}
-                />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {levels.flatMap((level, at) =>
-                level.map((account, index) => {
-                  const first = index === 0
-                  const last = index === level.length - 1
-                  const drop: DropMark | undefined =
-                    target === undefined
-                      ? undefined
-                      : target.kind === "share"
-                        ? target.level === at
-                          ? { kind: "share", first, last }
+              ))}
+              {Array.from({ length: props.widest - props.columns.length }, (_, i) => (
+                <TableHead key={`pad-${i}`} aria-hidden="true" className={cn(head, PAD)} />
+              ))}
+              <TableHead scope="col" className={cn(head, ENABLED, "w-24")}>
+                Enabled
+              </TableHead>
+              <TableHead
+                scope="col"
+                aria-label="Actions"
+                className={cn(head, "w-16 pr-6 @max-[40rem]/pool:w-11 @max-[40rem]/pool:pr-3")}
+              />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {levels.flatMap((level, at) =>
+              level.map((account, index) => {
+                const first = index === 0
+                const last = index === level.length - 1
+                const drop: DropMark | undefined =
+                  target === undefined
+                    ? undefined
+                    : target.kind === "share"
+                      ? target.level === at
+                        ? { kind: "share", first, last }
+                        : undefined
+                      : target.gap === at && first
+                        ? { kind: "above", first, last }
+                        : target.gap === at + 1 && last && at === levels.length - 1
+                          ? { kind: "below", first, last }
                           : undefined
-                        : target.gap === at && first
-                          ? { kind: "above", first, last }
-                          : target.gap === at + 1 && last && at === levels.length - 1
-                            ? { kind: "below", first, last }
-                            : undefined
-                  return (
-                    <AccountRow
-                      key={account.id}
-                      account={account}
-                      pool={accounts}
-                      level={{ first, last, shared: level.length > 1 }}
-                      drop={drop}
-                      dragging={drag !== undefined}
-                      lifted={drag?.id === account.id}
-                      onDragStart={() => setDrag({ id: account.id, drop: undefined })}
-                      onDragOver={
-                        drag === undefined
-                          ? undefined
-                          : (offset) => {
-                              const next: Drop =
-                                offset < GAP_EDGE && first
-                                  ? { kind: "gap", gap: at }
-                                  : offset > 1 - GAP_EDGE && last
-                                    ? { kind: "gap", gap: at + 1 }
-                                    : { kind: "share", level: at }
-                              if (dropKey(next) !== dropKey(drag.drop)) {
-                                setDrag({ ...drag, drop: next })
-                              }
+                return (
+                  <AccountRow
+                    key={account.id}
+                    account={account}
+                    pool={accounts}
+                    level={{ first, last, shared: level.length > 1 }}
+                    drop={drop}
+                    dragging={drag !== undefined}
+                    lifted={drag?.id === account.id}
+                    onDragStart={() => setDrag({ id: account.id, drop: undefined })}
+                    onDragOver={
+                      drag === undefined
+                        ? undefined
+                        : (offset) => {
+                            const next: Drop =
+                              offset < GAP_EDGE && first
+                                ? { kind: "gap", gap: at }
+                                : offset > 1 - GAP_EDGE && last
+                                  ? { kind: "gap", gap: at + 1 }
+                                  : { kind: "share", level: at }
+                            if (dropKey(next) !== dropKey(drag.drop)) {
+                              setDrag({ ...drag, drop: next })
                             }
-                      }
-                      serving={account.id === servingId}
-                      columns={props.columns}
-                      pad={props.widest - props.columns.length}
-                      now={props.now}
-                      controls={props.controls}
-                    />
-                  )
-                }),
-              )}
-            </TableBody>
-          </Table>
-        </CardContent>
+                          }
+                    }
+                    serving={account.id === servingId}
+                    columns={props.columns}
+                    pad={props.widest - props.columns.length}
+                    now={props.now}
+                    controls={props.controls}
+                  />
+                )
+              }),
+            )}
+          </TableBody>
+        </Table>
       </Card>
     </section>
   )

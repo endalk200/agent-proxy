@@ -71,7 +71,7 @@ import {
   usd,
 } from "./format.ts"
 import { LimitCell, type WindowColumn, windowColumns } from "./limits.tsx"
-import { accountsOf, providerNames, statusLabels } from "./model.ts"
+import { accountsOf, statusLabels } from "./model.ts"
 import { pageLink, setSearchParams, useSearchParam } from "./route.ts"
 import { ProviderMark, Tip } from "./ui.tsx"
 import { rangeKey, type UsageAnswer, useUsage, useUsageQuery } from "./usage.tsx"
@@ -972,15 +972,17 @@ function ModelsCard(props: {
 function LimitsCard(props: { list: AccountList; openAccount: (account: Account) => void }) {
   const { limits } = useUsage()
   const now = useNow(15_000)
-  const pools = props.list.pools.map((pool) => {
+  // One table for every pool: a column per window any account reports, and
+  // on each row a blank where its provider has no such window, so a dash
+  // still means "not read yet".
+  const rows = props.list.pools.flatMap((pool) => {
     const accounts = accountsOf(props.list, pool.provider)
-    return {
-      provider: pool.provider,
-      accounts,
-      columns: windowColumns(accounts.map((account) => limits?.get(account.id))),
-    }
+    const own = new Set(
+      windowColumns(accounts.map((account) => limits?.get(account.id))).map((column) => column.id),
+    )
+    return accounts.map((account) => ({ account, own }))
   })
-  const widest = Math.max(0, ...pools.map((pool) => pool.columns.length))
+  const columns = windowColumns(rows.map((row) => limits?.get(row.account.id)))
   return (
     <DashCard
       id="dash-limits"
@@ -992,52 +994,38 @@ function LimitsCard(props: { list: AccountList; openAccount: (account: Account) 
         </a>
       }
     >
-      <div className="flex flex-col gap-8">
-        {pools.map((pool) => (
-          <Table
-            key={pool.provider}
-            className="min-w-[36rem] table-fixed"
-            aria-label={`${providerNames[pool.provider]} limit windows`}
-          >
-            <colgroup>
-              <col className="w-36 md:w-56" />
-              {Array.from({ length: widest }, (_, i) => (
-                <col key={i} />
-              ))}
-            </colgroup>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead scope="col" className={cn(HEAD, "normal-case")}>
-                  <span className="inline-flex items-center gap-2 text-sm font-semibold tracking-normal text-foreground">
-                    <ProviderMark provider={pool.provider} size={15} />
-                    {providerNames[pool.provider]}
-                  </span>
-                </TableHead>
-                {pool.columns.map((column) => (
-                  <TableHead key={column.id} scope="col" className={cn(HEAD, "pr-8")}>
-                    {column.label}
-                  </TableHead>
-                ))}
-                {Array.from({ length: widest - pool.columns.length }, (_, i) => (
-                  <td key={`pad-${i}`} aria-hidden="true" />
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {pool.accounts.map((account) => (
-                <LimitRow
-                  key={account.id}
-                  account={account}
-                  columns={pool.columns}
-                  pad={widest - pool.columns.length}
-                  now={now}
-                  openAccount={props.openAccount}
-                />
-              ))}
-            </TableBody>
-          </Table>
-        ))}
-      </div>
+      <Table className="min-w-[36rem] table-fixed" aria-labelledby="dash-limits">
+        <colgroup>
+          <col className="w-40 md:w-60" />
+          {columns.map((column) => (
+            <col key={column.id} />
+          ))}
+        </colgroup>
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead scope="col" className={HEAD}>
+              Account
+            </TableHead>
+            {columns.map((column) => (
+              <TableHead key={column.id} scope="col" className={cn(HEAD, "pr-8")}>
+                {column.label}
+              </TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => (
+            <LimitRow
+              key={row.account.id}
+              account={row.account}
+              columns={columns}
+              own={row.own}
+              now={now}
+              openAccount={props.openAccount}
+            />
+          ))}
+        </TableBody>
+      </Table>
     </DashCard>
   )
 }
@@ -1045,7 +1033,8 @@ function LimitsCard(props: { list: AccountList; openAccount: (account: Account) 
 function LimitRow(props: {
   account: Account
   columns: ReadonlyArray<WindowColumn>
-  pad: number
+  /** The windows the account's provider has; the other columns stay blank. */
+  own: ReadonlySet<string>
   now: number
   openAccount: (account: Account) => void
 }) {
@@ -1055,15 +1044,20 @@ function LimitRow(props: {
   return (
     <TableRow className="hover:bg-transparent">
       <TableHead scope="row" className="h-16 px-3 pl-0">
-        <RowLink account={account} withRowMarker onOpen={() => props.openAccount(account)} />
+        <span className="inline-flex min-w-0 items-center gap-2.5">
+          <ProviderMark provider={account.provider} size={14} />
+          <RowLink account={account} withRowMarker onOpen={() => props.openAccount(account)} />
+        </span>
       </TableHead>
       {props.columns.map((column) => (
         <TableCell key={column.id} className="h-16 px-3 pr-8 whitespace-normal">
-          <LimitCell window={windows?.find((window) => window.id === column.id)} now={props.now} />
+          {props.own.has(column.id) && (
+            <LimitCell
+              window={windows?.find((window) => window.id === column.id)}
+              now={props.now}
+            />
+          )}
         </TableCell>
-      ))}
-      {Array.from({ length: props.pad }, (_, i) => (
-        <td key={`pad-${i}`} aria-hidden="true" />
       ))}
     </TableRow>
   )
