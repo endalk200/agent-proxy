@@ -531,32 +531,30 @@ const withLimits = (daemon: FakeDaemon) => {
 }
 
 describe("the limit windows", () => {
-  it("show every account's windows, a column for each window the pool reports and — where an account has none", async () => {
+  it("show every account's windows in one table, a column for each window any account reports, — where an account has none and a blank where its provider has no such window", async () => {
     show(withLimits(threeAccounts()))
     const limits = await findCard("Limit windows")
-    const claude = within(limits).getByRole("table", { name: "Claude limit windows" })
-    await waitFor(() => expect(tableOf(claude)[0]?.["5-hour"]).toBe("58% left resets in 2h 14m"))
-    expect(tableOf(claude)).toEqual([
+    const table = within(limits).getByRole("table", { name: "Limit windows" })
+    await waitFor(() => expect(tableOf(table)[0]?.["5-hour"]).toBe("58% left resets in 2h 14m"))
+    expect(tableOf(table)).toEqual([
       {
-        Claude: "Work , Active",
+        Account: "Work , Active",
         "5-hour": "58% left resets in 2h 14m",
         Weekly: "29% left resets in 3d 2h",
         "Fable weekly": "7% left resets in 2d 2h",
       },
       {
-        Claude: "Home , Active",
+        Account: "Home , Active",
         "5-hour": "Used up resets in 47m",
         Weekly: "65% left resets in 1d 6h",
         "Fable weekly": "—",
       },
-    ])
-    expect(tableOf(within(limits).getByRole("table", { name: "Codex limit windows" }))).toEqual([
       {
-        Codex: "carol , Active",
+        Account: "carol , Active",
         "5-hour": "88% left resets in 4h 0m",
         Weekly: "50% left resets in 6d 0h",
-        // The spacer that lines Codex's columns up with Claude's.
-        "": "",
+        // Codex has no Fable weekly window: blank, not "not read yet".
+        "Fable weekly": "",
       },
     ])
   })
@@ -636,7 +634,7 @@ describe("live updates", () => {
     const daemon = withLimits(threeAccounts())
     show(daemon)
     const claude = within(await findCard("Limit windows")).getByRole("table", {
-      name: "Claude limit windows",
+      name: "Limit windows",
     })
     await waitFor(() => expect(tableOf(claude)[0]?.["5-hour"]).toBe("58% left resets in 2h 14m"))
     daemon.setLimits("a1", [
@@ -645,7 +643,7 @@ describe("live updates", () => {
     ])
     await waitFor(() => expect(tableOf(claude)[0]?.["5-hour"]).toBe("56% left resets in 2h 14m"))
     // No account reports a Fable weekly window any more, so its column goes.
-    expect(Object.keys(tableOf(claude)[0] ?? {})).toEqual(["Claude", "5-hour", "Weekly"])
+    expect(Object.keys(tableOf(claude)[0] ?? {})).toEqual(["Account", "5-hour", "Weekly"])
   })
 
   it("say how long ago the last request finished", async () => {
