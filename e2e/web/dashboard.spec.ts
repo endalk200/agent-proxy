@@ -101,7 +101,7 @@ test("opens on the usage dashboard at /, with the range in the address", async (
   )
   await expect(
     page.getByRole("region", { name: "Limit windows" }).getByRole("table", {
-      name: "Claude limit windows",
+      name: "Limit windows",
     }),
   ).toBeVisible()
 
