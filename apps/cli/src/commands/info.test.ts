@@ -24,6 +24,7 @@ const TestEnvironment = Layer.mergeAll(
     arch: "x64",
     binary: Option.none(),
     realHome: Option.some("/home/me"),
+    interactive: false,
   }),
 )
 
