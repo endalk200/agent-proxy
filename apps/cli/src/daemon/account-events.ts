@@ -112,18 +112,21 @@ export class AccountEvents extends Context.Service<
         const readAt = yield* Clock.currentTimeMillis
         const next = yield* read
         yield* remember(next.list, readAt)
-        return next
+        return { ...next, readAt }
       })
 
       const first = yield* readAndRemember.pipe(
         Effect.orElseSucceed(() => ({
           accounts: [] as ReadonlyArray<Account>,
           list: { accounts: [], pools: [] } as AccountList,
+          readAt: 0,
         })),
       )
       /** The accounts as last read, and as last published. */
       let held: ReadonlyArray<Account> = first.accounts
       let current: AccountList = first.list
+      /** When `current` was worked out: a window that resets after it may have moved the pools. */
+      let currentAt = first.readAt
 
       /** Waits for a signal, or for the first running cooldown to end or known limit window to reset. */
       const untilChanged = Effect.flatMap(Clock.currentTimeMillis, (now) => {
@@ -131,11 +134,13 @@ export class AccountEvents extends Context.Service<
           account.cooldownEndsAt === null ? [] : [Date.parse(account.cooldownEndsAt)],
         )
         // A limit window that resets changes its account's headroom, and so
-        // perhaps the order new sessions go in, with nothing written.
+        // perhaps the order new sessions go in, with nothing written. One that
+        // reset after `current` was worked out, even before this wait began,
+        // is due at once: a busy watcher must not miss it.
         const resets = current.accounts.flatMap((account) =>
           limits
             .known(account.id)
-            .flatMap((window) => (window.resetsAt > now ? [window.resetsAt] : [])),
+            .flatMap((window) => (window.resetsAt > currentAt ? [window.resetsAt] : [])),
         )
         const ends = [...cooldownEnds, ...resets]
         if (ends.length === 0) return changes.next
@@ -151,6 +156,7 @@ export class AccountEvents extends Context.Service<
         const happened = accountEvents(current, next.list)
         held = next.accounts
         current = next.list
+        currentAt = next.readAt
         yield* publish(happened)
       })
 
@@ -163,9 +169,11 @@ export class AccountEvents extends Context.Service<
        * first, so no client sees a pool that disagrees with its accounts.
        */
       const repool = Effect.gen(function* () {
+        const at = yield* Clock.currentTimeMillis
         const next = toAccountList(held, yield* router.view)
         const happened = accountEvents(current, next)
         current = next
+        currentAt = at
         yield* publish(happened)
       })
 
