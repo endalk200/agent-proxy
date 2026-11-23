@@ -1,5 +1,5 @@
 import { expect, layer } from "@effect/vitest"
-import { Effect, Fiber } from "effect"
+import { DateTime, Effect, Fiber } from "effect"
 import { TestClock } from "effect/testing"
 
 import {
@@ -19,14 +19,16 @@ import { HOUR, makeHome, NOW, services } from "../support/usage-home.ts"
 
 const json = (body: unknown, init: ResponseInit = {}) => Response.json(body, init)
 
-/** Waits in real time until `check` passes, failing after two seconds. */
+/**
+ * Waits in real time until `check` passes, failing after about two seconds.
+ * It counts tries, not time: the test clock never moves on its own.
+ */
 const eventually = <A>(read: Effect.Effect<A>, check: (value: A) => boolean) =>
   Effect.gen(function* () {
-    const deadline = Date.now() + 2000
-    for (;;) {
+    for (let tries = 1; ; tries++) {
       const value = yield* read
       if (check(value)) return value
-      if (Date.now() > deadline) {
+      if (tries >= 200) {
         throw new Error(`still not as expected: ${JSON.stringify(value)}`)
       }
       yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)))
@@ -642,7 +644,7 @@ layer(services)("limit resets", (it) => {
       const after = yield* home.api("GET", "/api/accounts")
       expect(after.json.accounts[0]).toMatchObject({
         status: "cooling-down",
-        cooldownEndsAt: new Date(NOW + 120_000).toISOString(),
+        cooldownEndsAt: DateTime.formatIso(DateTime.makeUnsafe(NOW + 120_000)),
       })
     }),
   )
