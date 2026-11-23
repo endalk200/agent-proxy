@@ -19,12 +19,16 @@
 - `accounts-remove` prints `Removed Claude account "<label>" (<email>) and its credentials.`, deletes its file, and, when it held its priority alone, moves the accounts below it up one; a request already streaming on it completes, and the next request goes to the next account. Its limit windows go with it, but its recorded usage stays: the web Dashboard's Accounts card lists it as `Removed account` (see [Web dashboard](./web-dashboard.md) `dashboard-breakdowns`).
 - `accounts-refresh` refreshes an account's tokens an hour (Claude) or a day (Codex) before they expire, disabled accounts included, one refresh per account at a time, and stores the new pair before using it, logging `"account tokens refreshed"`.
 - `accounts-needs-sign-in` flags an account Needs sign-in, logging `"account needs sign-in"` with a `reason`, only when the provider refuses its refresh (`The refresh was refused: …`); `accounts add <provider>` for that account clears the flag. Any other failed refresh leaves the account Active, its token in hand still serving, logs `"account tokens not refreshed; will retry"` with a `reason`, and is tried again 5 minutes later with the same refresh token: one that cannot reach the provider (`Could not reach …`, or `Could not reach … securely (<code>)` for a failed TLS handshake, as on a captive portal), that it answers with a 5xx or 429, that gets no answer within 30 seconds, or whose connection drops after sending. A daemon stopped mid-refresh refreshes again once it starts. If the provider had spent the token after all, it refuses the retry, and the account goes to Needs sign-in then.
+- `accounts-resets-column` adds a RESETS column (each account's count of limit resets, blank for none) before STATUS while any account holds one, and `--json` gives each account `limitResets`.
+- `accounts-resets` (`accounts resets [<account>] [--json]`) prints a table of account, provider, reset name, the windows it refills, and its expiry (local time, the year too when not this year; `(not usable now: <reason>)` after it when the provider says so), the soonest first; `<Provider> account "<label>" (<email>) holds no limit resets.` for an account with none, `No account holds a limit reset.` for all.
+- `accounts-redeem` (`accounts redeem <account> [--reset <name|id>] [--yes]`) picks the reset by its whole name or id, else the start of either, ignoring case; with none named it takes the only one, and fails listing them (`… holds <n> limit resets. Name one with --reset:`) when there are several; a name fitting several fails listing those. It then prints `Redeem "<name>" on <account>?`, each window it refills with its `<n>% used`, the provider's side effect (`Claude keeps this account's weekly reset day.` / `Codex moves this account's weekly refresh to a week from now.`) and its expiry, and asks `Redeem? [y/N]`; only y/yes redeems, else `Nothing redeemed.`. `--yes` skips the question; without a terminal and without `--yes` it fails `Not redeemed: there is no terminal to confirm at. …`. Redeemed prints `Redeemed "<name>" on <Provider> account "<label>".`; a refusal or unknown outcome fails with the daemon's message.
 - `accounts-not-running` fails with the daemon-down hint and starts nothing.
 
 ## How to get to it (user POV)
 
 - Run `agent-proxy accounts [--json]`.
 - Run `agent-proxy accounts add claude|codex [--label <label>] [--no-browser]`, then sign in to Claude or ChatGPT in the browser, or paste the URL the browser was redirected to.
+- Run `agent-proxy accounts resets [<account>] [--json]` and `agent-proxy accounts redeem <account> [--reset <name|id>] [--yes]`.
 - Run `agent-proxy accounts set <account> [--label <label>] [--priority <n> | --share-priority-with <account>]`, `agent-proxy accounts enable <account>`, `agent-proxy accounts disable <account>`, or `agent-proxy accounts remove <account>`.
 - Send a proxy request (see [Claude proxy](./claude-proxy.md)) after disabling, enabling or removing an account, or while removing the one serving it.
 - Press Ctrl-C while `accounts add` waits.
@@ -79,6 +83,7 @@ Preconditions:
 
 ## Gotchas
 
+- `verify cli` has no terminal on stdin, so `accounts redeem` without `--yes` always fails there; drive the question through `verify shell` with a terminal, or answer it from a FIFO as the paste drive does.
 - `accounts` and `accounts --json` show no limit windows or usage; those are on the web dashboard's Accounts page and Dashboard (see [Web dashboard](./web-dashboard.md)).
 - `verify cli` has no stdin, so the paste path is driven through `verify shell` with a FIFO; keep the FIFO's writer open (`exec 3>`) or `accounts add` sees end of input.
 - `accounts add claude` without `--no-browser` opens the machine's real browser at claude.com; do not run it unattended.
