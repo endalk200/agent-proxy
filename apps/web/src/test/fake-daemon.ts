@@ -1,6 +1,7 @@
 import type {
   AccountLimits,
   ClientName,
+  LimitReset,
   LimitWindow,
   OpenEventStream,
   BreakdownAccount,
@@ -33,6 +34,11 @@ import type {
  * test's time zone, priced by `prices`. `limits` holds each account's last
  * known limit windows; a refresh reads `providerLimits`, as the daemon reads
  * each provider's usage endpoint. `record` and `setLimits` stream their event.
+ *
+ * Limit resets live with the limits: `setLimitResets` holds an account's and
+ * streams the change. A redeem answers `redeemAnswer` (redeemed when unset):
+ * a redeemed one is dropped from the account's limit resets, which then
+ * stream as `limits-changed`, as the daemon reads the account again.
  */
 
 export interface FakeAccount {
@@ -161,6 +167,22 @@ export interface FakePrice {
   readonly cacheWrite?: number
 }
 
+/** A limit reset as the daemon reports it. */
+export type FakeLimitReset = LimitReset
+
+/**
+ * An account's limits as the daemon holds them; a daemon from before limit
+ * resets leaves out `limitResets` and `canBuyReset`.
+ */
+export type FakeLimits = Omit<AccountLimits, "limitResets" | "canBuyReset"> &
+  Partial<Pick<AccountLimits, "limitResets" | "canBuyReset">>
+
+/** How the fake answers a redeem: an outcome and its message, or an error with its status. */
+export type FakeRedeemAnswer =
+  | { readonly outcome: "redeemed" | "unknown"; readonly message: string }
+  | { readonly outcome: "refused"; readonly reason: string; readonly message: string }
+  | { readonly status: number; readonly error: string }
+
 /** A limit window as a provider reports it, before the daemon stamps when. */
 export type FakeWindow = Omit<LimitWindow, "asOf"> & { readonly asOf?: number }
 
@@ -225,14 +247,26 @@ export interface FakeDaemon {
   formerAccounts: Array<FormerAccount>
   /** List prices by model id; a model left out is unpriced. */
   prices: Record<string, FakePrice>
-  /** Each account's last known limit windows; setting it streams nothing. */
-  limits: Array<AccountLimits>
+  /** Each account's last known limit windows and limit resets; setting it streams nothing. */
+  limits: Array<FakeLimits>
   /** What each account's provider usage endpoint reports when read; an account left out fails its read. */
   providerLimits: Record<string, ReadonlyArray<FakeWindow>>
   /** Records a request the proxy finished, and streams `usage-recorded`. */
   readonly record: (row: FakeUsageRow) => void
   /** Sets account `accountId`'s limit windows (each `asOf` now unless given), and streams `limits-changed`. */
   readonly setLimits: (accountId: string, windows: ReadonlyArray<FakeWindow>) => void
+  /** Sets account `accountId`'s limit resets, and whether it can buy one, and streams `limits-changed`. */
+  readonly setLimitResets: (
+    accountId: string,
+    resets: ReadonlyArray<FakeLimitReset>,
+    canBuyReset?: boolean,
+  ) => void
+  /** How the next redeems are answered; redeemed when unset. */
+  redeemAnswer: FakeRedeemAnswer | undefined
+  /** While true, a redeem waits until it is set false again. */
+  holdRedeem: boolean
+  /** Each redeem the dashboard asked for, as "a1 full-reset-2611". */
+  readonly redeems: Array<string>
   /** Each `/api/usage/*` call the dashboard made, as "summary?range=7d&tz=…". */
   readonly usageCalls: Array<string>
   /** Each `POST /api/limits/refresh`, as "all" or the account id. */
@@ -387,17 +421,29 @@ export const fakeDaemon = (
     for (const event of eventsBetween(before, accounts, daemon.pools)) broadcast(event)
   }
 
-  /** Holds `windows` as account `accountId`'s limits, and streams the change. */
+  /** Account `accountId`'s limits as held, or as never read. */
+  const limitsOf = (accountId: string): FakeLimits =>
+    daemon.limits.find((held) => held.accountId === accountId) ?? {
+      accountId,
+      asOf: null,
+      windows: [],
+    }
+
+  /** Holds `limits` as an account's, and streams the change. */
+  const holdAccountLimits = (limits: FakeLimits) => {
+    daemon.limits = [...daemon.limits.filter((held) => held.accountId !== limits.accountId), limits]
+    broadcast({ type: "limits-changed", limits })
+  }
+
+  /** Holds `windows` as account `accountId`'s limits, keeping its limit resets, and streams the change. */
   const holdLimits = (accountId: string, windows: ReadonlyArray<FakeWindow>) => {
     const now = Date.now()
     const stamped = windows.map((window) => ({ ...window, asOf: window.asOf ?? now }))
-    const limits: AccountLimits = {
-      accountId,
+    holdAccountLimits({
+      ...limitsOf(accountId),
       asOf: stamped.length === 0 ? null : Math.max(...stamped.map((window) => window.asOf)),
       windows: stamped,
-    }
-    daemon.limits = [...daemon.limits.filter((held) => held.accountId !== accountId), limits]
-    broadcast({ type: "limits-changed", limits })
+    })
   }
 
   const daemon: FakeDaemon = {
@@ -476,6 +522,15 @@ export const fakeDaemon = (
       })
     },
     setLimits: holdLimits,
+    setLimitResets: (accountId, resets, canBuyReset) =>
+      holdAccountLimits({
+        ...limitsOf(accountId),
+        limitResets: resets,
+        ...(canBuyReset === undefined ? {} : { canBuyReset }),
+      }),
+    redeemAnswer: undefined,
+    holdRedeem: false,
+    redeems: [],
     logins: [],
     signInAs: { providerAccountId: "acct-new", email: "new@example.com", plan: "Max 5x" },
     loginRefusal: undefined,
@@ -513,6 +568,15 @@ export const fakeDaemon = (
         })
       }
       if (loginRoute !== null) return loginCall(method, loginRoute[1], loginRoute[2], init?.body)
+      const redeemRoute = /^\/api\/accounts\/([^/]+)\/limit-resets\/([^/]+)\/redeem$/.exec(
+        url.pathname,
+      )
+      if (redeemRoute !== null && method === "POST") {
+        return redeemCall(
+          decodeURIComponent(redeemRoute[1] ?? ""),
+          decodeURIComponent(redeemRoute[2] ?? ""),
+        )
+      }
       const accountId = /^\/api\/accounts\/([^/]+)$/.exec(url.pathname)?.[1]
       if (accountId !== undefined && (method === "PATCH" || method === "DELETE")) {
         const body: unknown =
@@ -736,15 +800,35 @@ export const fakeDaemon = (
   }
 
   /** Every account's limits, in the order the daemon holds its accounts. */
-  function limitsList(): ReadonlyArray<AccountLimits> {
-    return daemon.accounts.map(
-      (held) =>
-        daemon.limits.find((limits) => limits.accountId === held.id) ?? {
-          accountId: held.id,
-          asOf: null,
-          windows: [],
-        },
-    )
+  function limitsList(): ReadonlyArray<FakeLimits> {
+    return daemon.accounts.map((held) => limitsOf(held.id))
+  }
+
+  async function redeemCall(accountId: string, resetId: string): Promise<Response> {
+    daemon.redeems.push(`${accountId} ${resetId}`)
+    await new Promise<void>((resolve) => {
+      const wait = () => (daemon.holdRedeem ? setTimeout(wait, 5) : resolve())
+      wait()
+    })
+    const held = daemon.accounts.find((candidate) => candidate.id === accountId)
+    if (held === undefined) return json({ error: `No account ${accountId}.` }, 404)
+    const limits = limitsOf(accountId)
+    if (!(limits.limitResets ?? []).some((candidate) => candidate.id === resetId)) {
+      return json({ error: `${held.label} holds no limit reset ${resetId}.` }, 404)
+    }
+    const answer = daemon.redeemAnswer ?? {
+      outcome: "redeemed",
+      message: "Redeemed. The account's limit windows are read again.",
+    }
+    if ("status" in answer) return json({ error: answer.error }, answer.status)
+    if (answer.outcome === "redeemed") {
+      // The daemon reads the account again: one limit reset fewer.
+      holdAccountLimits({
+        ...limits,
+        limitResets: (limits.limitResets ?? []).filter((candidate) => candidate.id !== resetId),
+      })
+    }
+    return json({ ...answer, limits: limitsOf(accountId) })
   }
 
   async function refreshCall(body: string): Promise<Response> {

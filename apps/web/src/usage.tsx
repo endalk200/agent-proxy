@@ -52,6 +52,8 @@ export interface Usage {
   readonly refreshing: ReadonlySet<string>
   /** Reads fresh limit windows for one account, or every account. */
   readonly refresh: (accountId?: string) => void
+  /** Shows one account's limits as the daemon just answered them, as after a redeem. */
+  readonly applyLimits: (limits: AccountLimits) => void
   /** The latest request the daemon reported finishing since the page opened. */
   readonly lastRecorded: UsageRecord | undefined
   readonly subscribe: (listener: (change: Change) => void) => () => void
@@ -110,6 +112,12 @@ export function useUsageFeed(
 
   useEffect(loadLimits, [loadLimits])
 
+  const applyLimits = useCallback((changed: AccountLimits) => {
+    changedSince.current.set(changed.accountId, changed)
+    // Until the first full read answers, one account's limits are not all of them.
+    setLimits((last) => (last === undefined ? last : new Map(last).set(changed.accountId, changed)))
+  }, [])
+
   const onUsage = useCallback(
     (event: UsageEvent | { type: "opened" }) => {
       switch (event.type) {
@@ -119,18 +127,14 @@ export function useUsageFeed(
           for (const listener of listeners.current) listener({ type: "reopened" })
           return
         case "limits-changed":
-          changedSince.current.set(event.limits.accountId, event.limits)
-          // Until the first full read answers, one account's limits are not all of them.
-          setLimits((last) =>
-            last === undefined ? last : new Map(last).set(event.limits.accountId, event.limits),
-          )
+          applyLimits(event.limits)
           return
         case "usage-recorded":
           setLastRecorded(event.usage)
           for (const listener of listeners.current) listener({ type: "recorded" })
       }
     },
-    [loadLimits],
+    [loadLimits, applyLimits],
   )
 
   const refresh = useCallback(
@@ -184,10 +188,11 @@ export function useUsageFeed(
       limits,
       refreshing,
       refresh,
+      applyLimits,
       lastRecorded,
       subscribe,
     }),
-    [client, throttle, limits, refreshing, refresh, lastRecorded, subscribe],
+    [client, throttle, limits, refreshing, refresh, applyLimits, lastRecorded, subscribe],
   )
   return { usage, onUsage }
 }

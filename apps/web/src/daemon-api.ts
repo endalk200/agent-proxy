@@ -278,13 +278,62 @@ export interface LimitWindow {
   readonly asOf: number
 }
 
+/**
+ * A limit reset an account holds: a single-use refill of some of its limit
+ * windows, which the owner redeems (see GLOSSARY.md).
+ */
+export interface LimitReset {
+  /** The provider's id for it. */
+  readonly id: string
+  /** The provider's name for it, such as "Full reset". */
+  readonly name: string
+  /** The limit windows it refills. */
+  readonly refills: ReadonlyArray<{ readonly id: string; readonly label: string }>
+  /** When it expires unredeemed, epoch milliseconds; null when it does not. */
+  readonly expiresAt: number | null
+  /** False while the provider won't let it be redeemed, saying why in `unavailableReason`. */
+  readonly usableNow: boolean
+  readonly unavailableReason: string | null
+  readonly asOf: number
+}
+
 /** `GET /api/limits`: one per account the daemon holds. */
 export interface AccountLimits {
   readonly accountId: string
   /** The newest window's `asOf`; null when never observed. */
   readonly asOf: number | null
   readonly windows: ReadonlyArray<LimitWindow>
+  /** Its limit resets, soonest expiry first. */
+  readonly limitResets: ReadonlyArray<LimitReset>
+  /** True when its provider offers it an instant reset to buy (Codex only). */
+  readonly canBuyReset: boolean
 }
+
+/** Why a provider refused a redeem; nothing was spent. */
+export type RedeemRefusal =
+  | "nothing-to-refill"
+  | "already-redeemed"
+  | "cooldown"
+  | "ineligible"
+  | "unavailable"
+  | "rejected"
+
+/**
+ * `POST /api/accounts/:id/limit-resets/:resetId/redeem`: how the redeem went,
+ * in the daemon's plain words, and the account's limits read again after it.
+ */
+export type RedeemResult =
+  | {
+      readonly outcome: "redeemed" | "unknown"
+      readonly message: string
+      readonly limits: AccountLimits
+    }
+  | {
+      readonly outcome: "refused"
+      readonly reason: RedeemRefusal
+      readonly message: string
+      readonly limits: AccountLimits
+    }
 
 /** A request the proxy finished, as `usage-recorded` reports it. */
 export interface UsageRecord {
@@ -351,6 +400,8 @@ export interface DaemonClient {
   readonly limits: () => Promise<ReadonlyArray<AccountLimits>>
   /** `POST /api/limits/refresh`: reads fresh limit windows for one account, or all; answers every account's. */
   readonly refreshLimits: (accountId?: string) => Promise<ReadonlyArray<AccountLimits>>
+  /** `POST /api/accounts/:id/limit-resets/:resetId/redeem`: redeems one of the account's limit resets. */
+  readonly redeemReset: (accountId: string, resetId: string) => Promise<RedeemResult>
 }
 
 // ------------------------------------------------------------------ decoding
@@ -551,9 +602,36 @@ const decodeBreakdown = (value: unknown): UsageBreakdown => {
   }
 }
 
+const decodeLimitReset = (value: unknown): LimitReset => {
+  const json = object(value)
+  return {
+    id: string(json["id"]),
+    name: string(json["name"]),
+    refills: array(json["refills"]).map((window) => {
+      const fields = object(window)
+      return { id: string(fields["id"]), label: string(fields["label"]) }
+    }),
+    expiresAt: nullableNumber(json["expiresAt"]),
+    usableNow: boolean(json["usableNow"]),
+    unavailableReason:
+      json["unavailableReason"] === undefined ? null : nullableString(json["unavailableReason"]),
+    asOf: number(json["asOf"]),
+  }
+}
+
+/** Soonest expiry first; one that never expires last. */
+const bySoonestExpiry = (a: LimitReset, b: LimitReset) =>
+  (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity)
+
 const decodeAccountLimits = (value: unknown): AccountLimits => {
   const json = object(value)
   return {
+    // A daemon from before limit resets sends neither.
+    limitResets:
+      json["limitResets"] === undefined
+        ? []
+        : array(json["limitResets"]).map(decodeLimitReset).toSorted(bySoonestExpiry),
+    canBuyReset: json["canBuyReset"] === undefined ? false : boolean(json["canBuyReset"]),
     accountId: string(json["accountId"]),
     asOf: nullableNumber(json["asOf"]),
     windows: array(json["windows"]).map((window) => {
@@ -571,6 +649,31 @@ const decodeAccountLimits = (value: unknown): AccountLimits => {
 
 const decodeLimits = (value: unknown): ReadonlyArray<AccountLimits> =>
   array(value).map(decodeAccountLimits)
+
+const REFUSALS: ReadonlyArray<RedeemRefusal> = [
+  "nothing-to-refill",
+  "already-redeemed",
+  "cooldown",
+  "ineligible",
+  "unavailable",
+  "rejected",
+]
+
+const decodeRedeem = (value: unknown): RedeemResult => {
+  const json = object(value)
+  const message = string(json["message"])
+  const limits = decodeAccountLimits(json["limits"])
+  const outcome = oneOf(["redeemed", "refused", "unknown"] as const, json["outcome"])
+  return outcome === "refused"
+    ? {
+        outcome,
+        // A refusal a newer daemon names still spent nothing.
+        reason: REFUSALS.find((reason) => reason === json["reason"]) ?? "rejected",
+        message,
+        limits,
+      }
+    : { outcome, message, limits }
+}
 
 const decodeUsageRecord = (value: unknown): UsageRecord => {
   const json = object(value)
@@ -678,6 +781,13 @@ export const browserEventStream: OpenEventStream = (url, handlers) => {
   return { close: () => source.close() }
 }
 
+/**
+ * How long a redeem may go unanswered before it counts as unanswered: longer
+ * than the daemon's own worst case, two 30-second attempts and a re-read of
+ * the account, after any redeem already running.
+ */
+const REDEEM_TIMEOUT_MS = 150_000
+
 export const createDaemonClient = (
   fetchImpl: typeof fetch,
   openEvents: OpenEventStream = browserEventStream,
@@ -685,9 +795,9 @@ export const createDaemonClient = (
   mutationTimeout = 10_000,
 ): DaemonClient => {
   /** A signal that aborts after `mutationTimeout`: no change waits on the daemon forever. */
-  const deadline = () => {
+  const deadline = (timeout = mutationTimeout) => {
     const controller = new AbortController()
-    setTimeout(() => controller.abort(), mutationTimeout)
+    setTimeout(() => controller.abort(), timeout)
     return controller.signal
   }
   const call = async <A>(
@@ -772,5 +882,12 @@ export const createDaemonClient = (
         method: "POST",
         body: accountId === undefined ? {} : { accountId },
       }),
+    redeemReset: (accountId, resetId) =>
+      call(
+        `${accountPath(accountId)}/limit-resets/${encodeURIComponent(resetId)}/redeem`,
+        decodeRedeem,
+        // The daemon asks the provider, may ask once more, then reads the account again.
+        { method: "POST", signal: deadline(REDEEM_TIMEOUT_MS) },
+      ),
   }
 }
