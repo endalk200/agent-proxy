@@ -15,6 +15,12 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
  * so the daemon never reaches a real provider and its usage dashboard has
  * something to show. Both answer any bearer token, seeded ones included.
  *
+ * Each token also holds limit resets: a Claude one a full reset and a Fable
+ * reset (the latter expiring within a week), listed only to Claude Code's
+ * user agent as Claude does, and a Codex one a full reset, with an instant
+ * reset offered to buy. Redeeming one spends it and refills that token's
+ * windows to 0% used.
+ *
  * It runs on Node's HTTP server, so Playwright (under Node) and verification
  * runs (under Bun) can both start it.
  */
@@ -110,11 +116,48 @@ const usedFor = (token: string) => {
 
 const HOUR_MS = 60 * 60 * 1000
 
-/** Claude's usage endpoint: 5-hour, weekly and a Fable weekly window. */
-const claudeUsage = (token: string) => {
-  const used = usedFor(token)
+const DAY_MS = 24 * HOUR_MS
+
+/** The limit resets every token starts with, by provider; each expires that many days after the fake starts. */
+const RESETS: Readonly<
+  Record<FakeProvider, ReadonlyArray<{ id: string; name: string; days: number }>>
+> = {
+  claude: [
+    { id: "full-reset-2611", name: "Full reset", days: 17 },
+    { id: "launch-2610-fable", name: "New model launch: one Fable reset", days: 5 },
+  ],
+  codex: [{ id: "RateLimitResetCredit_fake", name: "Full reset", days: 19 }],
+}
+
+/** Claude's usage endpoint: 5-hour, weekly and a Fable weekly window, and the `cedar_ember` block when asked as Claude Code. */
+const claudeUsage = (
+  token: string,
+  resets: ReadonlyArray<{ id: string; name: string; endsAt: number }>,
+  refilled: boolean,
+  claudeCode: boolean,
+) => {
+  const used = refilled ? { fiveHour: 0, weekly: 0 } : usedFor(token)
   const now = Date.now()
   return {
+    cedar_ember: {
+      eligible: claudeCode,
+      ineligible_reason: claudeCode ? null : "surface",
+      grants: claudeCode
+        ? resets.map((reset) => ({
+            id: reset.id,
+            label: reset.name,
+            ends_at: new Date(reset.endsAt).toISOString(),
+            clears: reset.id.includes("fable")
+              ? ["five_hour", "seven_day_overage_included"]
+              : ["five_hour", "seven_day", "seven_day_overage_included"],
+            usable_now: true,
+            unavailable_reason: null,
+            gives_back_weekly: reset.id.includes("fable"),
+            type: "full",
+          }))
+        : [],
+      cooldown_until: null,
+    },
     five_hour: { utilization: used.fiveHour, resets_at: new Date(now + 2 * HOUR_MS).toISOString() },
     seven_day: { utilization: used.weekly, resets_at: new Date(now + 80 * HOUR_MS).toISOString() },
     limits: [
@@ -129,11 +172,12 @@ const claudeUsage = (token: string) => {
   }
 }
 
-/** The Codex usage endpoint: 5-hour and weekly windows. */
-const codexUsage = (token: string) => {
-  const used = usedFor(token)
+/** The Codex usage endpoint: 5-hour and weekly windows, and how many limit resets the token holds. */
+const codexUsage = (token: string, resets: number, refilled: boolean) => {
+  const used = refilled ? { fiveHour: 0, weekly: 0 } : usedFor(token)
   const now = Math.floor(Date.now() / 1000)
   return {
+    rate_limit_reset_credits: { available_count: resets },
     rate_limit: {
       primary_window: {
         used_percent: used.fiveHour,
@@ -320,11 +364,79 @@ export const startFakeProviders = async (port = 0): Promise<FakeProviders> => {
     })
   }
 
+  const startedAt = Date.now()
+  /** Each token's limit resets not yet redeemed, by provider and token. */
+  const held = new Map<string, Array<{ id: string; name: string; endsAt: number }>>()
+  /** Tokens that redeemed a limit reset, whose windows read 0% used since. */
+  const refilled = new Set<string>()
+  const resetsOf = (provider: FakeProvider, token: string) => {
+    const key = `${provider} ${token}`
+    let resets = held.get(key)
+    if (resets === undefined) {
+      resets = RESETS[provider].map((reset) => ({
+        id: reset.id,
+        name: reset.name,
+        endsAt: startedAt + reset.days * DAY_MS,
+      }))
+      held.set(key, resets)
+    }
+    return resets
+  }
+  /** Spends `token`'s limit reset `id`; false when it holds none by that id. */
+  const redeem = (provider: FakeProvider, token: string, id: unknown) => {
+    const resets = resetsOf(provider, token)
+    const index = resets.findIndex((reset) => reset.id === id)
+    if (index === -1) return false
+    resets.splice(index, 1)
+    refilled.add(`${provider} ${token}`)
+    return true
+  }
+
   const server = createServer((request, response) => {
     void (async () => {
       const url = new URL(request.url ?? "/", "http://fake")
       const [, provider, action] = url.pathname.split("/")
       if (provider !== "claude" && provider !== "codex") return send(response, 404, {})
+      const token = request.headers.authorization?.replace(/^Bearer /, "") ?? ""
+      if (
+        request.method === "POST" &&
+        provider === "claude" &&
+        /^\/claude\/api\/organizations\/[^/]+\/reset_rate_limits$/.test(url.pathname)
+      ) {
+        const body: unknown = JSON.parse(await readBody(request))
+        const id =
+          typeof body === "object" && body !== null && "grant_id" in body
+            ? body.grant_id
+            : undefined
+        return send(response, 200, {
+          result: redeem("claude", token, id) ? "reset" : "unavailable",
+        })
+      }
+      if (url.pathname === "/codex/backend-api/wham/rate-limit-reset-credits") {
+        return send(response, 200, {
+          credits: resetsOf("codex", token).map((reset) => ({
+            id: reset.id,
+            reset_type: "codex_rate_limits",
+            is_supported_by_plan: true,
+            status: "available",
+            expires_at: new Date(reset.endsAt).toISOString(),
+            title: reset.name,
+          })),
+          available_count: resetsOf("codex", token).length,
+          immediate_reset_purchase_eligible: true,
+        })
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/codex/backend-api/wham/rate-limit-reset-credits/consume"
+      ) {
+        const body: unknown = JSON.parse(await readBody(request))
+        const id =
+          typeof body === "object" && body !== null && "credit_id" in body
+            ? body.credit_id
+            : undefined
+        return send(response, 200, { code: redeem("codex", token, id) ? "reset" : "no_credit" })
+      }
       if (request.method === "GET" && action === "authorize") {
         response.writeHead(200, { "content-type": "text/html; charset=utf-8" })
         return response.end(authorizePage(provider, url))
@@ -347,7 +459,19 @@ export const startFakeProviders = async (port = 0): Promise<FakeProviders> => {
       }
       const bearer = request.headers.authorization?.replace(/^Bearer /, "") ?? ""
       if (request.method === "GET" && action === "usage") {
-        return send(response, 200, provider === "claude" ? claudeUsage(bearer) : codexUsage(bearer))
+        const fresh = refilled.has(`${provider} ${bearer}`)
+        return send(
+          response,
+          200,
+          provider === "claude"
+            ? claudeUsage(
+                bearer,
+                resetsOf("claude", bearer),
+                fresh,
+                (request.headers["user-agent"] ?? "").startsWith("claude-cli/"),
+              )
+            : codexUsage(bearer, resetsOf("codex", bearer).length, fresh),
+        )
       }
       if (
         request.method === "POST" &&
