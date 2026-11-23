@@ -1,8 +1,8 @@
-import { Effect, Schema } from "effect"
+import { Clock, Effect, Schema } from "effect"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 
 import { AccountStore } from "../accounts/store.ts"
-import { LimitWindows, toAccountLimits } from "../usage/limit-windows.ts"
+import { LimitWindows } from "../usage/limit-windows.ts"
 import { LimitPoller } from "../usage/poller.ts"
 import { isTimeZone, parseDay, type RangeKey, type UsageRange } from "../usage/ranges.ts"
 import { type UsageQuery, UsageStore, type UsageStoreError } from "../usage/store.ts"
@@ -18,7 +18,8 @@ import { apiError, type LocalOnly } from "./http.ts"
  *   and `to` as inclusive `YYYY-MM-DD` days (7d when left out); `tz`, the
  *   viewer's IANA zone, which calendar days follow (the daemon's own when
  *   left out); and `account`, which narrows every number to one account.
- * - `GET /api/limits` lists every account's limit windows.
+ * - `GET /api/limits` lists every account's limit windows and limit resets,
+ *   and whether its provider offers it an instant reset to buy.
  * - `POST /api/limits/refresh` with `{ "accountId"?: string }` reads the
  *   provider's usage endpoint for that account, or for every account, and
  *   answers every account's limit windows once the reads finish.
@@ -84,11 +85,12 @@ const usageRoute = (
     Effect.catchTag("UsageStoreError", (error) => Effect.succeed(apiError(500, error.message))),
   )
 
-/** Every account's limit windows, in the order `GET /api/accounts` lists accounts. */
+/** Every account's limit windows and limit resets, in the order `GET /api/accounts` lists accounts. */
 const allLimits = Effect.gen(function* () {
   const accounts = yield* (yield* AccountStore).list
   const limits = yield* LimitWindows
-  return accounts.map((account) => toAccountLimits(account.id, limits.known(account.id)))
+  const now = yield* Clock.currentTimeMillis
+  return accounts.map((account) => limits.report(account.id, now))
 })
 
 const RefreshLimits = Schema.Struct({ accountId: Schema.optionalKey(Schema.String) })

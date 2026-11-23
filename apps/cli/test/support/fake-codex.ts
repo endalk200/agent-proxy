@@ -157,6 +157,43 @@ export const usageAnswer = {
 
 const answerUsageDefault: ApiHandler = () => json(usageAnswer)
 
+/** The usage endpoint's answer when the account holds `count` limit resets. */
+export const usageWithResets = (count: number) => ({
+  ...usageAnswer,
+  rate_limit_reset_credits: { available_count: count },
+})
+
+/** One limit reset as `/wham/rate-limit-reset-credits` lists it, as confirmed live on 2026-11-23; `fields` override it. */
+export const resetCredit = (fields: Readonly<Record<string, unknown>> = {}) => ({
+  id: "RateLimitResetCredit_50aa73a98b98819182356790075b56ea",
+  reset_type: "codex_rate_limits",
+  is_supported_by_plan: true,
+  status: "available",
+  granted_at: "2026-11-12T22:27:07.083754Z",
+  expires_at: "2026-12-12T22:27:07.083754Z",
+  redeem_started_at: null,
+  redeemed_at: null,
+  title: "Full reset",
+  description: "Thanks for using Codex! You've been granted one free rate limit reset.",
+  ...fields,
+})
+
+/** `/wham/rate-limit-reset-credits`'s answer listing `credits`. */
+export const resetsAnswer = (
+  credits: ReadonlyArray<Readonly<Record<string, unknown>>>,
+  options: { readonly canBuy?: boolean } = {},
+) => ({
+  credits,
+  available_count: credits.length,
+  total_earned_count: 0,
+  immediate_reset_purchase_eligible: options.canBuy ?? false,
+  history_enabled: true,
+})
+
+const answerResetsDefault: ApiHandler = () => json(resetsAnswer([]))
+
+const answerRedeemDefault: ApiHandler = () => json({ code: "reset", windows_reset: 2 })
+
 /** How the fake answers one refresh request instead of refreshing. */
 type RefreshTrouble =
   | { readonly _tag: "Drop" }
@@ -196,6 +233,14 @@ export interface FakeCodex {
   readonly usageRequests: () => ReadonlyArray<ApiRequest>
   /** Answers every later usage endpoint request with `handler`; the default answers `usageAnswer`. */
   readonly answerUsageWith: (handler: ApiHandler) => void
+  /** The requests for the account's limit resets received so far, oldest first. */
+  readonly resetsRequests: () => ReadonlyArray<ApiRequest>
+  /** Answers every later request for the limit resets with `handler`; the default lists none. */
+  readonly answerResetsWith: (handler: ApiHandler) => void
+  /** The requests to redeem a limit reset received so far, oldest first. */
+  readonly redeemRequests: () => ReadonlyArray<ApiRequest>
+  /** Answers every later redeem request with `handler`; the default answers `{ code: "reset" }`. */
+  readonly answerRedeemWith: (handler: ApiHandler) => void
 }
 
 /** Starts the fake on a free loopback port until the scope closes. */
@@ -215,6 +260,10 @@ export const fakeCodex = Effect.gen(function* () {
   let refreshTrouble: RefreshTrouble | undefined
   const usageRequests: Array<ApiRequest> = []
   let answerUsage: ApiHandler = answerUsageDefault
+  const resetsRequests: Array<ApiRequest> = []
+  let answerResets: ApiHandler = answerResetsDefault
+  const redeemRequests: Array<ApiRequest> = []
+  let answerRedeem: ApiHandler = answerRedeemDefault
 
   /** Answers with a new token pair for `owner`, as both the exchange and a refresh do. */
   const issueTokens = (owner: CodexUser) => {
@@ -386,6 +435,35 @@ export const fakeCodex = Effect.gen(function* () {
             })
             return answerUsage(request)
           }
+          if (
+            request.method === "GET" &&
+            url.pathname === "/backend-api/wham/rate-limit-reset-credits"
+          ) {
+            resetsRequests.push({
+              method: request.method,
+              path: url.pathname + url.search,
+              headers: Object.fromEntries(request.headers),
+              body: "",
+            })
+            return answerResets(request)
+          }
+          if (
+            request.method === "POST" &&
+            url.pathname === "/backend-api/wham/rate-limit-reset-credits/consume"
+          ) {
+            return request
+              .clone()
+              .text()
+              .then((body) => {
+                redeemRequests.push({
+                  method: request.method,
+                  path: url.pathname + url.search,
+                  headers: Object.fromEntries(request.headers),
+                  body,
+                })
+                return answerRedeem(request)
+              })
+          }
           return json({ error: "not_found" }, 404)
         },
       }),
@@ -438,6 +516,14 @@ export const fakeCodex = Effect.gen(function* () {
     usageRequests: () => [...usageRequests],
     answerUsageWith: (handler) => {
       answerUsage = handler
+    },
+    resetsRequests: () => [...resetsRequests],
+    answerResetsWith: (handler) => {
+      answerResets = handler
+    },
+    redeemRequests: () => [...redeemRequests],
+    answerRedeemWith: (handler) => {
+      answerRedeem = handler
     },
   }
   return fake

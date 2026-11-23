@@ -33,6 +33,7 @@ import { ProxyKey } from "../proxy/proxy-key.ts"
 import { buildLabel, RuntimeInfo } from "../runtime-info.ts"
 import { LimitWindows } from "../usage/limit-windows.ts"
 import { LimitPoller } from "../usage/poller.ts"
+import { Redeemer } from "../usage/redeem.ts"
 import { UsageStore } from "../usage/store.ts"
 import { AccountEvents } from "./account-events.ts"
 import { accountRoutes } from "./accounts-routes.ts"
@@ -218,7 +219,8 @@ export const startDaemon = Effect.gen(function* () {
       ).pipe(
         Layer.provide(
           Layer.mergeAll(
-            LimitPoller.layer.pipe(
+            Redeemer.layer.pipe(
+              Layer.provideMerge(LimitPoller.layer),
               Layer.provideMerge(
                 Layer.mergeAll(Logins.layer, CredentialKeeper.layer, AccountEvents.layer),
               ),

@@ -5,25 +5,37 @@ import { Router } from "../accounts/router.ts"
 import { AccountStore } from "../accounts/store.ts"
 import { Logins } from "../logins/logins.ts"
 import { LimitWindows } from "../usage/limit-windows.ts"
+import { Redeemer } from "../usage/redeem.ts"
 import { UsageStore } from "../usage/store.ts"
-import { StartLogin, SubmitCallback, toAccountList, toAccountView, UpdateAccount } from "./api.ts"
+import {
+  StartLogin,
+  SubmitCallback,
+  toAccountListing,
+  toAccountView,
+  UpdateAccount,
+} from "./api.ts"
 import { apiError, type LocalOnly } from "./http.ts"
 
 /**
  * The daemon API's account and login operations:
  *
- * - `GET /api/accounts` lists accounts with their status, and which account
- *   gets each pool's new sessions.
+ * - `GET /api/accounts` lists accounts with their status and limit resets,
+ *   and which account gets each pool's new sessions.
  * - `PATCH /api/accounts/:id` changes an account's label, priority or enabled,
  *   or has it share another account's priority.
  * - `DELETE /api/accounts/:id` removes an account and its limit windows; its
  *   usage stays, under the name the account had.
+ * - `POST /api/accounts/:id/limit-resets/:resetId/redeem` redeems one of the
+ *   account's limit resets, and answers how it went: `redeemed`, `refused`
+ *   (nothing spent) with a reason, or `unknown`, each with a message and
+ *   the account's limits read after it.
  * - `POST /api/logins` starts a login; `GET /api/logins/:id` polls it.
  * - `POST /api/logins/:id/callback` finishes it with a pasted callback URL.
  * - `DELETE /api/logins/:id` cancels it.
  */
 
 const pathId = Effect.map(HttpRouter.params, (params) => params["id"] ?? "")
+const pathResetId = Effect.map(HttpRouter.params, (params) => params["resetId"] ?? "")
 
 const badRequest = (expected: string) => () =>
   Effect.succeed(apiError(400, `Expected a JSON body ${expected}.`))
@@ -43,7 +55,15 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
         Effect.gen(function* () {
           const accounts = yield* (yield* AccountStore).list
           const routing = yield* (yield* Router).view
-          return HttpServerResponse.jsonUnsafe(toAccountList(accounts, routing))
+          const limits = yield* LimitWindows
+          const now = yield* Clock.currentTimeMillis
+          return HttpServerResponse.jsonUnsafe(
+            toAccountListing(
+              accounts,
+              routing,
+              (account) => limits.report(account.id, now).limitResets,
+            ),
+          )
         }).pipe(
           Effect.catchTag("AccountStoreError", (error) =>
             Effect.succeed(apiError(500, error.message)),
@@ -94,6 +114,23 @@ export const accountRoutes = (router: HttpRouter.HttpRouter, localOnly: LocalOnl
         }).pipe(
           Effect.catchTags({
             AccountNotFound: (error) => Effect.succeed(apiError(404, error.message)),
+            AccountStoreError: (error) => Effect.succeed(apiError(500, error.message)),
+          }),
+        ),
+      ),
+    ),
+    router.add(
+      "POST",
+      "/api/accounts/:id/limit-resets/:resetId/redeem",
+      localOnly(
+        Effect.gen(function* () {
+          const result = yield* (yield* Redeemer).redeem(yield* pathId, yield* pathResetId)
+          return HttpServerResponse.jsonUnsafe(result)
+        }).pipe(
+          Effect.catchTags({
+            AccountNotFound: (error) => Effect.succeed(apiError(404, error.message)),
+            LimitResetNotFound: (error) => Effect.succeed(apiError(404, error.message)),
+            RedeemNeedsSignIn: (error) => Effect.succeed(apiError(409, error.message)),
             AccountStoreError: (error) => Effect.succeed(apiError(500, error.message)),
           }),
         ),

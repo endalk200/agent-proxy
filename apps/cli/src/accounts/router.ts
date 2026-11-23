@@ -17,7 +17,8 @@ import { AccountStore, type AccountStoreError } from "./store.ts"
  *   highest-priority Active account; accounts sharing a priority go by the
  *   most headroom, and unknown headroom counts as full.
  * - A limit the provider reports cools the account down until the limit
- *   resets, and raises `AccountChanges`' signal. Cooldowns are kept in the
+ *   resets, and raises `AccountChanges`' signal. A redeemed limit reset ends
+ *   a used-up window's cooldown early. Cooldowns are kept in the
  *   usage store too, so a restarted daemon still skips an account until its
  *   limit resets. Session bindings live in memory only.
  */
@@ -123,6 +124,12 @@ export class Router extends Context.Service<
       seen?: SeenBinding,
     ) => Effect.Effect<void>
     readonly view: Effect.Effect<RoutingView>
+    /**
+     * Ends `account`'s cooldown now when a used-up limit window caused it,
+     * as after the owner redeemed a limit reset. A short rate limit's
+     * cooldown stays: the provider asked to wait.
+     */
+    readonly endWindowCooldown: (account: Account) => Effect.Effect<void>
   }
 >()("agent-proxy/Router") {
   static readonly layer = Layer.effect(
@@ -145,6 +152,10 @@ export class Router extends Context.Service<
             ),
           ),
       )
+
+      // Each account's latest short rate limit, kept even while a longer
+      // window cooldown hides it, so ending that window early leaves it running.
+      const rateLimitedUntil = new Map<string, number>()
 
       const coolingAt = (now: number) => (account: Account) => {
         const cooldown = cooldowns.get(account.id)
@@ -266,11 +277,11 @@ export class Router extends Context.Service<
             }
             return
           }
-          case "RateLimited":
-            return yield* coolDown(account, {
-              until: now + Math.max(MIN_COOLDOWN_MS, signal.retryAfterMs),
-              window: undefined,
-            })
+          case "RateLimited": {
+            const until = now + Math.max(MIN_COOLDOWN_MS, signal.retryAfterMs)
+            rateLimitedUntil.set(account.id, Math.max(until, rateLimitedUntil.get(account.id) ?? 0))
+            return yield* coolDown(account, { until, window: undefined })
+          }
           case "WindowLimited":
             return yield* coolDown(account, {
               until: Math.max(now + MIN_COOLDOWN_MS, signal.resetsAt),
@@ -279,10 +290,36 @@ export class Router extends Context.Service<
         }
       })
 
+      const endWindowCooldown = Effect.fnUntraced(function* (account: Account) {
+        const now = yield* Clock.currentTimeMillis
+        const running = cooldowns.get(account.id)
+        if (running === undefined || running.window === undefined) return
+        cooldowns.delete(account.id)
+        yield* Effect.logInfo("account cooldown ended early").pipe(
+          Effect.annotateLogs({ account: account.id, window: running.window }),
+        )
+        yield* usage
+          .endCooldown(account.id)
+          .pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("could not forget an ended cooldown").pipe(
+                Effect.annotateLogs({ account: account.id, cause: error.message }),
+              ),
+            ),
+          )
+        // A short rate limit the window hid still runs out on its own.
+        const rateLimited = rateLimitedUntil.get(account.id)
+        if (rateLimited !== undefined && rateLimited > now) {
+          return yield* coolDown(account, { until: rateLimited, window: undefined })
+        }
+        yield* changes.signal
+      })
+
       return Router.of({
         choose,
         record,
         view: Effect.map(Clock.currentTimeMillis, viewAt),
+        endWindowCooldown,
       })
     }),
   )

@@ -11,7 +11,7 @@ import {
 
 import { type Account, type Provider, providerNames } from "../accounts/account.ts"
 import type { LimitSignal } from "../accounts/router.ts"
-import type { ObservedWindow, TokenCounts } from "../usage/usage.ts"
+import type { ObservedWindow, ResetsRead, TokenCounts } from "../usage/usage.ts"
 
 /**
  * What every provider adapter's upstream half shares: sending a client's
@@ -74,7 +74,45 @@ export interface UpstreamApi {
     accessToken: string,
     now: number,
   ) => Effect.Effect<WindowsRead>
+  /**
+   * Asks the provider to redeem `account`'s limit reset `resetId`, once.
+   * `requestId` names the attempt: the provider takes a request with the same
+   * id again as the same redeem, so an attempt that got no answer can be
+   * retried with it.
+   */
+  readonly redeemReset: (
+    account: Account,
+    accessToken: string,
+    resetId: string,
+    requestId: string,
+  ) => Effect.Effect<RedeemAnswer>
 }
+
+/**
+ * Why a provider refused to redeem a limit reset, which leaves it unspent:
+ *
+ * - `nothing-to-refill`: the windows it refills are not used enough for it to change anything.
+ * - `already-redeemed`: it was redeemed before.
+ * - `cooldown`: the provider's own wait between two resets has not passed.
+ * - `ineligible`: the account may not redeem it.
+ * - `unavailable`: it is no longer there to redeem.
+ * - `rejected`: the provider turned the request down without saying why it would.
+ */
+export type RedeemRefusal =
+  | "nothing-to-refill"
+  | "already-redeemed"
+  | "cooldown"
+  | "ineligible"
+  | "unavailable"
+  | "rejected"
+
+/** How one attempt to redeem a limit reset went. */
+export type RedeemAnswer =
+  | { readonly _tag: "Redeemed" }
+  /** Nothing was spent; `detail` says more, such as the HTTP status of a `rejected` one. */
+  | { readonly _tag: "Refused"; readonly reason: RedeemRefusal; readonly detail?: string }
+  /** No answer was read, so whether it was redeemed is unknown. */
+  | { readonly _tag: "Unanswered"; readonly reason: string }
 
 /** What a response body says its request spent. */
 export interface SpentTokens {
@@ -84,7 +122,16 @@ export interface SpentTokens {
 
 /** How a read of a provider's usage endpoint went. */
 export type WindowsRead =
-  | { readonly _tag: "Read"; readonly windows: ReadonlyArray<ObservedWindow> }
+  | {
+      readonly _tag: "Read"
+      readonly windows: ReadonlyArray<ObservedWindow>
+      /**
+       * The account's limit resets, read with its windows; none when the
+       * provider's answer about them was missing, failed, or in a shape this
+       * build does not know, so the ones known before stay.
+       */
+      readonly resets: ResetsRead | undefined
+    }
   /** The provider asked the daemon to wait `retryAfterMs` before reading again. */
   | { readonly _tag: "Busy"; readonly retryAfterMs: number }
   | { readonly _tag: "Failed"; readonly reason: string }
@@ -173,7 +220,10 @@ const READ_TIMEOUT = "30 seconds"
 /**
  * GETs a provider's usage endpoint at `url` with `headers`, and reads its
  * windows from the JSON answer with `parse`, which returns none for a shape
- * it does not know.
+ * it does not know. `resets` then reads the account's limit resets, from the
+ * same answer or another request bounded on its own, so one that stalls
+ * never costs the windows already read; it never fails, answering none for
+ * anything it cannot read.
  */
 export const readUsageEndpoint = (
   http: HttpClient.HttpClient,
@@ -181,7 +231,22 @@ export const readUsageEndpoint = (
   headers: Readonly<Record<string, string>>,
   now: number,
   parse: (body: Json) => ReadonlyArray<ObservedWindow> | undefined,
+  resets: (body: Json) => Effect.Effect<ResetsRead | undefined> = () => Effect.undefined,
 ): Effect.Effect<WindowsRead> =>
+  Effect.gen(function* () {
+    const read = yield* readWindowsOnly(http, url, headers, now, parse)
+    if (read._tag !== "Read") return read
+    return { _tag: "Read", windows: read.windows, resets: yield* resets(read.body) } as const
+  })
+
+/** The usage read itself, bounded by `READ_TIMEOUT`, with the answer its windows came from. */
+const readWindowsOnly = (
+  http: HttpClient.HttpClient,
+  url: string,
+  headers: Readonly<Record<string, string>>,
+  now: number,
+  parse: (body: Json) => ReadonlyArray<ObservedWindow> | undefined,
+) =>
   Effect.gen(function* () {
     const response = yield* HttpClientRequest.get(url).pipe(
       HttpClientRequest.setHeaders({ accept: "application/json", ...headers }),
@@ -196,15 +261,60 @@ export const readUsageEndpoint = (
     }
     const body = asObject(yield* response.json)
     const windows = body === undefined ? undefined : parse(body)
-    return windows === undefined
-      ? ({ _tag: "Failed", reason: "an answer of an unknown shape" } as const)
-      : ({ _tag: "Read", windows } as const)
+    if (body === undefined || windows === undefined) {
+      return { _tag: "Failed", reason: "an answer of an unknown shape" } as const
+    }
+    return { _tag: "Read", windows, body } as const
   }).pipe(
     Effect.timeoutOrElse({
       duration: READ_TIMEOUT,
       orElse: () => Effect.succeed({ _tag: "Failed", reason: "no answer in time" } as const),
     }),
     Effect.catch((cause) => Effect.succeed({ _tag: "Failed", reason: cause.message } as const)),
+  )
+
+/** How long one attempt to redeem a limit reset may take. */
+const REDEEM_TIMEOUT = "30 seconds"
+
+/**
+ * POSTs `body` to a provider's redeem endpoint at `url` with `headers`, and
+ * reads the outcome from its JSON answer with `outcome`, which returns none
+ * for one it does not know. A status that refuses the request (4xx) without
+ * an outcome it knows is `rejected`; a redirect, a timeout (408), a server
+ * error, or an answer it cannot read may come after the provider redeemed
+ * it, so it is `Unanswered`.
+ */
+export const postRedeem = (
+  http: HttpClient.HttpClient,
+  url: string,
+  headers: Readonly<Record<string, string>>,
+  body: Readonly<Record<string, unknown>>,
+  outcome: (answer: Json) => RedeemAnswer | undefined,
+): Effect.Effect<RedeemAnswer> =>
+  Effect.gen(function* () {
+    const response = yield* HttpClientRequest.post(url).pipe(
+      HttpClientRequest.setHeaders({ accept: "application/json", ...headers }),
+      HttpClientRequest.bodyJsonUnsafe(body),
+      http.execute,
+      Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+    )
+    const status = response.status
+    const answered =
+      (status >= 200 && status < 300) || (status >= 400 && status < 500 && status !== 408)
+    if (!answered) return { _tag: "Unanswered", reason: `HTTP ${status}` } as const
+    const read = asObject(yield* response.json.pipe(Effect.orElseSucceed(() => undefined)))
+    const known = read === undefined ? undefined : outcome(read)
+    if (known !== undefined) return known
+    return status < 300
+      ? ({ _tag: "Unanswered", reason: "an answer of an unknown shape" } as const)
+      : ({ _tag: "Refused", reason: "rejected", detail: `HTTP ${status}` } as const)
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: REDEEM_TIMEOUT,
+      orElse: () => Effect.succeed({ _tag: "Unanswered", reason: "no answer in time" } as const),
+    }),
+    Effect.catch((cause) => Effect.succeed({ _tag: "Unanswered", reason: cause.message } as const)),
   )
 
 /**

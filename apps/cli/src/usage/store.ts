@@ -10,6 +10,7 @@ import { resolveDataDir } from "../paths.ts"
 import { contextSizes, costOf } from "./prices.ts"
 import { bucketIndex, resolveRange, type ResolvedRange, type UsageRange } from "./ranges.ts"
 import {
+  type KnownResets,
   type KnownWindow,
   noTokens,
   type TokenCounts,
@@ -22,8 +23,8 @@ import {
 /**
  * The usage store (ADR-0009): one SQLite file, `usage.sqlite` in the data
  * directory, that the daemon alone opens. It keeps a row per proxied
- * generation request, forever, each account's last-known limit windows and
- * running cooldown, and the name of every account the daemon has held, so
+ * generation request, forever, each account's last-known limit windows,
+ * limit resets and running cooldown, and the name of every account the daemon has held, so
  * usage of an account since removed still says whose it was.
  * Callers record rows and windows and ask range questions; none of them sees
  * SQL, and equivalent cost is computed here at query time, never stored.
@@ -158,8 +159,15 @@ export class UsageStore extends Context.Service<
       windows: ReadonlyArray<KnownWindow>,
       removed: ReadonlyArray<string>,
     ) => Effect.Effect<void, UsageStoreError>
-    /** Forgets `accountId`'s limit windows; its usage rows stay. */
+    /** Forgets `accountId`'s limit windows and limit resets; its usage rows stay. */
     readonly forgetWindows: (accountId: string) => Effect.Effect<void, UsageStoreError>
+    /** Every account's last-known limit resets. */
+    readonly resets: Effect.Effect<ReadonlyMap<string, KnownResets>, UsageStoreError>
+    /** Stores `resets` as all of `accountId`'s limit resets, replacing those it had. */
+    readonly saveResets: (
+      accountId: string,
+      resets: KnownResets,
+    ) => Effect.Effect<void, UsageStoreError>
     /** Every account's cooldown still running at `now`; those that ended are dropped. */
     readonly cooldowns: (
       now: number,
@@ -169,6 +177,8 @@ export class UsageStore extends Context.Service<
       accountId: string,
       cooldown: StoredCooldown,
     ) => Effect.Effect<void, UsageStoreError>
+    /** Forgets `accountId`'s cooldown, which ended before its time. */
+    readonly endCooldown: (accountId: string) => Effect.Effect<void, UsageStoreError>
     /**
      * Remembers `accounts` as held, by their names in a list of the accounts
      * read from `readAt`. An account removed after `readAt` stays removed,
@@ -247,7 +257,8 @@ const notRecorded = (file: string, cause: unknown) =>
 /**
  * The store for a database the daemon could not open: it records nothing,
  * so no request waits on it or logs about it, and every usage question is
- * answered with `reason`. Limit windows and cooldowns are kept in memory only.
+ * answered with `reason`. Limit windows, limit resets and cooldowns are kept
+ * in memory only.
  */
 const unavailable = (reason: string) => {
   const refused = Effect.fail(new UsageStoreError({ message: reason }))
@@ -259,8 +270,11 @@ const unavailable = (reason: string) => {
     windows: Effect.succeed(new Map()),
     saveWindows: () => Effect.void,
     forgetWindows: () => Effect.void,
+    resets: Effect.succeed(new Map()),
+    saveResets: () => Effect.void,
     cooldowns: () => Effect.succeed(new Map()),
     saveCooldown: () => Effect.void,
+    endCooldown: () => Effect.void,
     rememberAccounts: () => Effect.void,
     rememberRemoved: () => Effect.void,
   })
@@ -316,6 +330,22 @@ const MIGRATIONS: ReadonlyArray<string> = [
      account_id TEXT PRIMARY KEY,
      until INTEGER NOT NULL,
      window_id TEXT
+   );`,
+  `CREATE TABLE limit_resets (
+     account_id TEXT NOT NULL,
+     reset_id TEXT NOT NULL,
+     name TEXT NOT NULL,
+     refills TEXT NOT NULL,
+     expires_at INTEGER,
+     usable_now INTEGER NOT NULL,
+     unavailable_reason TEXT,
+     as_of INTEGER NOT NULL,
+     PRIMARY KEY (account_id, reset_id)
+   );
+   CREATE TABLE limit_reset_offers (
+     account_id TEXT PRIMARY KEY,
+     can_buy INTEGER NOT NULL,
+     as_of INTEGER NOT NULL
    );`,
 ]
 
@@ -470,6 +500,37 @@ const make = (db: Database) => {
     "DELETE FROM limit_windows WHERE account_id = $account AND window_id = $id",
   )
   const deleteWindows = db.query("DELETE FROM limit_windows WHERE account_id = $account")
+  const allResets = db.query<
+    {
+      account_id: string
+      reset_id: string
+      name: string
+      refills: string
+      expires_at: number | null
+      usable_now: number
+      unavailable_reason: string | null
+      as_of: number
+    },
+    []
+  >(
+    `SELECT account_id, reset_id, name, refills, expires_at, usable_now, unavailable_reason, as_of
+     FROM limit_resets ORDER BY rowid`,
+  )
+  const allOffers = db.query<{ account_id: string; can_buy: number; as_of: number }, []>(
+    "SELECT account_id, can_buy, as_of FROM limit_reset_offers",
+  )
+  const insertReset = db.query(
+    `INSERT INTO limit_resets
+       (account_id, reset_id, name, refills, expires_at, usable_now, unavailable_reason, as_of)
+     VALUES ($account, $id, $name, $refills, $expiresAt, $usableNow, $reason, $asOf)`,
+  )
+  const deleteResets = db.query("DELETE FROM limit_resets WHERE account_id = $account")
+  const upsertOffer = db.query(
+    `INSERT INTO limit_reset_offers (account_id, can_buy, as_of) VALUES ($account, $canBuy, $asOf)
+     ON CONFLICT (account_id) DO UPDATE SET can_buy = excluded.can_buy, as_of = excluded.as_of`,
+  )
+  const deleteOffer = db.query("DELETE FROM limit_reset_offers WHERE account_id = $account")
+  const deleteCooldown = db.query("DELETE FROM cooldowns WHERE account_id = $account")
   const deleteEndedCooldowns = db.query("DELETE FROM cooldowns WHERE until <= $now")
   const allCooldowns = db.query<
     { account_id: string; until: number; window_id: string | null },
@@ -711,7 +772,68 @@ const make = (db: Database) => {
 
   const forgetWindows = (accountId: string) =>
     attempt("Could not forget the limit windows", () => {
-      deleteWindows.run({ account: accountId })
+      db.transaction(() => {
+        deleteWindows.run({ account: accountId })
+        deleteResets.run({ account: accountId })
+        deleteOffer.run({ account: accountId })
+      })()
+    })
+
+  const resets = attempt("Could not read the limit resets", () => {
+    const byAccount = new Map<string, KnownResets>(
+      allOffers
+        .all()
+        .map((row): [string, KnownResets] => [
+          row.account_id,
+          { resets: [], canBuy: row.can_buy === 1, asOf: row.as_of },
+        ]),
+    )
+    for (const row of allResets.all()) {
+      const known = byAccount.get(row.account_id) ?? { resets: [], canBuy: false, asOf: row.as_of }
+      const refills: unknown = JSON.parse(row.refills)
+      byAccount.set(row.account_id, {
+        ...known,
+        resets: [
+          ...known.resets,
+          {
+            id: row.reset_id,
+            name: row.name,
+            refills: Array.isArray(refills)
+              ? refills.filter((id): id is string => typeof id === "string")
+              : [],
+            expiresAt: row.expires_at ?? undefined,
+            usableNow: row.usable_now === 1,
+            unavailableReason: row.unavailable_reason ?? undefined,
+          },
+        ],
+      })
+    }
+    return byAccount
+  })
+
+  const saveResets = (accountId: string, known: KnownResets) =>
+    attempt("Could not save the limit resets", () => {
+      db.transaction(() => {
+        deleteResets.run({ account: accountId })
+        for (const reset of known.resets) {
+          insertReset.run({
+            account: accountId,
+            id: reset.id,
+            name: reset.name,
+            refills: JSON.stringify(reset.refills),
+            expiresAt: reset.expiresAt ?? null,
+            usableNow: reset.usableNow ? 1 : 0,
+            reason: reset.unavailableReason ?? null,
+            asOf: known.asOf,
+          })
+        }
+        upsertOffer.run({ account: accountId, canBuy: known.canBuy ? 1 : 0, asOf: known.asOf })
+      })()
+    })
+
+  const endCooldown = (accountId: string) =>
+    attempt("Could not end the cooldown", () => {
+      deleteCooldown.run({ account: accountId })
     })
 
   const cooldowns = (now: number) =>
@@ -758,8 +880,11 @@ const make = (db: Database) => {
     windows,
     saveWindows,
     forgetWindows,
+    resets,
+    saveResets,
     cooldowns,
     saveCooldown,
+    endCooldown,
     rememberAccounts,
     rememberRemoved,
   })

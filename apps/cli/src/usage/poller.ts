@@ -31,7 +31,9 @@ import { LimitWindows } from "./limit-windows.ts"
  *   accounts at once is what got CLIProxyAPI's users HTTP 429s.
  * - A provider that answers 429 is not read again until its `Retry-After`
  *   passes, an hour at most.
- * - Accounts that need sign-in or are disabled are skipped.
+ * - Accounts that need sign-in or are disabled are skipped, except that a
+ *   disabled account is read right after the owner redeems one of its
+ *   limit resets.
  * - A read that fails leaves the last-known windows as they were, with their
  *   old "as of"; it is logged, never surfaced as an error.
  */
@@ -53,6 +55,12 @@ export class LimitPoller extends Context.Service<
   {
     /** Reads `accountId`'s windows, or every account's, and returns once the reads finish. */
     readonly refresh: (accountId?: string) => Effect.Effect<void>
+    /**
+     * Reads `account`'s windows and limit resets now, outside the schedule,
+     * even when it is disabled, as after the owner redeemed one of its limit
+     * resets. A provider's 429 wait still holds.
+     */
+    readonly readNow: (account: Account) => Effect.Effect<void>
   }
 >()("agent-proxy/LimitPoller") {
   static readonly layer = Layer.effect(
@@ -80,12 +88,15 @@ export class LimitPoller extends Context.Service<
         ),
       )
 
-      /** Reads `account`'s windows from its provider's usage endpoint, one account at a time. */
-      const read = (account: Account) =>
+      /**
+       * Reads `account`'s windows from its provider's usage endpoint, one
+       * account at a time; `evenDisabled` reads a disabled one too.
+       */
+      const read = (account: Account, evenDisabled = false) =>
         reading.withPermit(
           Effect.gen(function* () {
             const now = yield* Clock.currentTimeMillis
-            if (!servable(account)) {
+            if (account.needsSignIn || (!account.enabled && !evenDisabled)) {
               lastRead.set(account.id, now)
               return
             }
@@ -105,6 +116,7 @@ export class LimitPoller extends Context.Service<
               case "Read":
                 return yield* limits.observe(account.id, result.windows, "endpoint", at, {
                   complete: true,
+                  resets: result.resets,
                 })
               case "Busy":
                 busyUntil[account.provider] = at + Math.min(MAX_RETRY_AFTER_MS, result.retryAfterMs)
@@ -128,7 +140,7 @@ export class LimitPoller extends Context.Service<
         Effect.flatMap(accounts, (all) =>
           Effect.forEach(
             all.filter((account) => accountId === undefined || account.id === accountId),
-            read,
+            (account) => read(account),
             { discard: true },
           ),
         )
@@ -180,7 +192,7 @@ export class LimitPoller extends Context.Service<
         }
         const all = yield* accounts
         const due = all.filter((account) => (dueAt(account) ?? Infinity) <= now)
-        yield* Effect.forEach(due, read, { discard: true })
+        yield* Effect.forEach(due, (account) => read(account), { discard: true })
         const after = yield* Clock.currentTimeMillis
         // A deadline the pass ran past is due at once, not dropped.
         const nextAt = Math.min(everyoneAt, ...all.map((account) => dueAt(account) ?? Infinity))
@@ -190,7 +202,7 @@ export class LimitPoller extends Context.Service<
         })
       }).pipe(Effect.forever, Effect.forkScoped)
 
-      return LimitPoller.of({ refresh })
+      return LimitPoller.of({ refresh, readNow: (account) => read(account, true) })
     }),
   )
 }

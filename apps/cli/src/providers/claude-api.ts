@@ -2,7 +2,13 @@ import { Context, Effect, Layer } from "effect"
 import { type Headers, HttpClient } from "effect/http"
 
 import type { LimitSignal } from "../accounts/router.ts"
-import { noTokens, type ObservedWindow, type TokenCounts } from "../usage/usage.ts"
+import {
+  noTokens,
+  type ObservedReset,
+  type ObservedWindow,
+  type ResetsRead,
+  type TokenCounts,
+} from "../usage/usage.ts"
 import { ProviderEndpoints } from "./endpoints.ts"
 import {
   asObject,
@@ -10,7 +16,9 @@ import {
   finite,
   type Json,
   numberHeader,
+  postRedeem,
   readUsageEndpoint,
+  type RedeemAnswer,
   retryAfterMs,
   sendUpstream,
   shareOf,
@@ -198,6 +206,129 @@ const claudeEndpointWindows = (
     : all.flatMap((windows) => windows ?? [])
 }
 
+/** The active per-model weekly windows' model names in a usage answer, such as "Fable". */
+const scopedModels = (body: Json): ReadonlyArray<string> =>
+  (Array.isArray(body["limits"]) ? body["limits"] : []).flatMap((value) => {
+    const limit = asObject(value)
+    const model = asObject(asObject(limit?.["scope"])?.["model"])?.["display_name"]
+    return limit?.["kind"] === "weekly_scoped" &&
+      limit["is_active"] === true &&
+      typeof model === "string" &&
+      model.trim() !== ""
+      ? [model.trim()]
+      : []
+  })
+
+/** The windows a grant's `clears` names, in the daemon's ids; the others it clears are not windows the daemon shows. */
+const CLEARED_WINDOWS: Readonly<Record<string, string>> = {
+  five_hour: "five-hour",
+  seven_day: "weekly",
+}
+
+/**
+ * One grant of Claude's `cedar_ember` program as a limit reset, or none when
+ * it is not in a shape this reads. A grant that `gives_back_weekly` gives
+ * back the weekly usage spent on its model, which its label names: it
+ * refills that model's per-model weekly window, when the answer has one.
+ */
+const claudeReset = (value: unknown, models: ReadonlyArray<string>): ObservedReset | undefined => {
+  const grant = asObject(value)
+  const id = grant?.["id"]
+  const label = grant?.["label"]
+  const clears = grant?.["clears"]
+  const usable = grant?.["usable_now"]
+  const reason = grant?.["unavailable_reason"]
+  if (
+    grant === undefined ||
+    typeof id !== "string" ||
+    id === "" ||
+    typeof label !== "string" ||
+    !Array.isArray(clears) ||
+    typeof usable !== "boolean" ||
+    (reason !== undefined && reason !== null && typeof reason !== "string")
+  ) {
+    return undefined
+  }
+  const named = label.toLowerCase()
+  const givesBack =
+    grant["gives_back_weekly"] === true
+      ? models
+          .filter((model) => named.includes(model.toLowerCase()))
+          .map((model) => `weekly:${model}`)
+      : []
+  const refills = [
+    ...new Set([
+      ...clears.flatMap((clear) =>
+        typeof clear === "string" && CLEARED_WINDOWS[clear] !== undefined
+          ? [CLEARED_WINDOWS[clear]]
+          : [],
+      ),
+      ...givesBack,
+    ]),
+  ]
+  return {
+    id,
+    name: label.trim() === "" ? id : label.trim(),
+    refills,
+    expiresAt: instant(grant["ends_at"]),
+    usableNow: usable,
+    unavailableReason: typeof reason === "string" && reason !== "" ? reason : undefined,
+  }
+}
+
+/**
+ * The limit resets Claude's usage endpoint lists in its `cedar_ember` block,
+ * or none when it lists none it can be trusted on: the block is missing or
+ * unreadable, or Claude did not take the daemon for Claude Code
+ * (`ineligible_reason: "surface"`). Any other answer is the account's
+ * resets, an empty list included.
+ */
+const claudeResets = (body: Json): ResetsRead | undefined => {
+  const status = asObject(body["cedar_ember"])
+  if (status === undefined || status["ineligible_reason"] === "surface") return undefined
+  const grants = status["grants"]
+  if (!Array.isArray(grants)) return undefined
+  const models = scopedModels(body)
+  const resets = grants.map((grant) => claudeReset(grant, models))
+  return resets.every((reset) => reset !== undefined) ? { resets, canBuy: false } : undefined
+}
+
+/**
+ * The version Claude Code's user agent names when no Claude Code request has
+ * been proxied yet: the newest the daemon was checked against.
+ */
+const CLAUDE_CODE_VERSION = "2.1.330"
+
+/** The version a Claude Code user agent names: `claude-cli/2.1.330 (external, cli)` names 2.1.330. */
+const claudeCodeVersion = (agent: string | undefined) =>
+  /^claude-cli\/(\d[\w.+-]*)/.exec(agent?.trim() ?? "")?.[1]
+
+/** What Claude's `reset_rate_limits` answer's `result` says of a redeem. */
+const claudeRedeemed = (answer: Json): RedeemAnswer | undefined => {
+  switch (answer["result"]) {
+    case "reset":
+      return { _tag: "Redeemed" }
+    case "already_used":
+      return { _tag: "Refused", reason: "already-redeemed" }
+    case "not_limited":
+      return { _tag: "Refused", reason: "nothing-to-refill" }
+    case "cooldown":
+      return { _tag: "Refused", reason: "cooldown" }
+    case "ineligible":
+      return { _tag: "Refused", reason: "ineligible" }
+    case "unavailable":
+      return { _tag: "Refused", reason: "unavailable" }
+    default:
+      return undefined
+  }
+}
+
+/** The organization half of a Claude account's provider id, `<account uuid>:<organization uuid>`. */
+const organizationOf = (providerAccountId: string) => {
+  const organization = providerAccountId.split(":")[1]?.trim()
+  return organization === undefined || organization === "" ? undefined : organization
+}
+
 /** The session Claude Code (and opencode's Claude Agent, which runs it) names; subagents carry their parent's (spike #6). */
 const SESSION_HEADER = "x-claude-code-session-id"
 
@@ -207,9 +338,21 @@ export class ClaudeApi extends Context.Service<ClaudeApi, UpstreamApi>()("agent-
     Effect.gen(function* () {
       const { claude: endpoints } = yield* ProviderEndpoints
       const http = yield* HttpClient.HttpClient
+      // Claude lists limit resets only to Claude Code (ADR-0010): the
+      // daemon's own calls name the version of the newest one it proxied.
+      let version = CLAUDE_CODE_VERSION
+      const ownHeaders = (accessToken: string) => ({
+        authorization: `Bearer ${accessToken}`,
+        "anthropic-beta": OAUTH_BETA,
+        "user-agent": `claude-cli/${version} (external, cli)`,
+      })
+      const usageUrl = new URL(endpoints.usageUrl)
+      usageUrl.searchParams.set("cedar_ember", "1")
+      usageUrl.searchParams.set("skip_spend", "1")
 
       return ClaudeApi.of({
         send: Effect.fn("ClaudeApi.send")(function* (request, _account, accessToken) {
+          version = claudeCodeVersion(request.headers["user-agent"]) ?? version
           const headers = forwardedHeaders(request.headers, {
             authorization: `Bearer ${accessToken}`,
             "anthropic-beta": withOAuthBeta(request.headers["anthropic-beta"]),
@@ -223,11 +366,28 @@ export class ClaudeApi extends Context.Service<ClaudeApi, UpstreamApi>()("agent-
         readWindows: (_account, accessToken, now) =>
           readUsageEndpoint(
             http,
-            endpoints.usageUrl,
-            { authorization: `Bearer ${accessToken}`, "anthropic-beta": OAUTH_BETA },
+            usageUrl.toString(),
+            ownHeaders(accessToken),
             now,
             (body) => claudeEndpointWindows(body, now),
+            (body) => Effect.succeed(claudeResets(body)),
           ),
+        redeemReset: (account, accessToken, resetId, requestId) => {
+          const organization = organizationOf(account.providerAccountId)
+          return organization === undefined
+            ? Effect.succeed<RedeemAnswer>({
+                _tag: "Refused",
+                reason: "ineligible",
+                detail: "the account names no organization; sign in to it again",
+              })
+            : postRedeem(
+                http,
+                `${endpoints.apiBaseUrl}/api/organizations/${encodeURIComponent(organization)}/reset_rate_limits`,
+                ownHeaders(accessToken),
+                { program: "cedar_ember", grant_id: resetId, request_id: requestId },
+                claudeRedeemed,
+              )
+        },
       })
     }),
   )
