@@ -34,6 +34,7 @@ import {
   step,
 } from "./model.ts"
 import { PlanBadge } from "./RemoveAccount.tsx"
+import { LimitResetsPanel } from "./resets.tsx"
 import { ProviderMark, Tip } from "./ui.tsx"
 
 /**
@@ -265,6 +266,7 @@ function SheetBody(props: {
 
           <TabsContent className="flex flex-col gap-8" value="overview">
             <AccountLimitsPanel account={account} pool={pool} readOnly={readOnly} now={props.now} />
+            <LimitResetsPanel account={account} readOnly={readOnly} now={props.now} />
             <AccountWeek account={account} now={props.now} />
             <dl className="flex flex-col border-y border-border">
               <Fact term="Priority">

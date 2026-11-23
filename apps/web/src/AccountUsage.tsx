@@ -31,7 +31,13 @@ export function AccountLimitsPanel(props: {
   const limits =
     usage.limits === undefined
       ? undefined
-      : (usage.limits.get(account.id) ?? { accountId: account.id, asOf: null, windows: [] })
+      : (usage.limits.get(account.id) ?? {
+          accountId: account.id,
+          asOf: null,
+          windows: [],
+          limitResets: [],
+          canBuyReset: false,
+        })
   const columns = windowColumns(props.pool.map((member) => usage.limits?.get(member.id)))
   const refreshing = isRefreshing(usage, account.id)
   const headingId = useId()

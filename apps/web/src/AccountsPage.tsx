@@ -66,6 +66,7 @@ import {
   step,
 } from "./model.ts"
 import { PlanBadge } from "./RemoveAccount.tsx"
+import { liveResets, ResetsBadge } from "./resets.tsx"
 import type { SignInRequest } from "./SignIn.tsx"
 import { ProviderMark, Tip } from "./ui.tsx"
 import { isRefreshing, useUsage } from "./usage.tsx"
@@ -605,7 +606,8 @@ function AccountRow(props: {
   const { account, controls, level, drop } = props
   const { readOnly } = controls
   const usage = useUsage()
-  const windows = usage.limits?.get(account.id)?.windows
+  const limits = usage.limits?.get(account.id)
+  const windows = limits?.windows
   const refreshing = isRefreshing(usage, account.id)
   const [renaming, setRenaming] = useState(false)
   // A rename ended from the keyboard hands focus back to the label's button.
@@ -755,6 +757,7 @@ function AccountRow(props: {
             </button>
           )}
           <PlanBadge account={account} />
+          <ResetsBadge resets={liveResets(limits, props.now)} now={props.now} />
           {props.serving && (
             <>
               {" "}
