@@ -90,6 +90,10 @@ export interface SeededAccount {
   readonly priority?: number
   readonly enabled?: boolean
   readonly needsSignIn?: boolean
+  /** The provider's id for it; `provider-<id>` by default. */
+  readonly providerAccountId?: string
+  /** Its plan; `Pro` by default. */
+  readonly plan?: string
 }
 
 /**
@@ -166,6 +170,8 @@ export const makeHome = (
       settings: {
         readonly enabled?: boolean
         readonly needsSignIn?: boolean
+        readonly providerAccountId?: string
+        readonly plan?: string
         /** Its tokens; by default `token-<id>`, good until 2099. */
         readonly credentials?: {
           readonly accessToken: string
@@ -182,9 +188,9 @@ export const makeHome = (
           JSON.stringify({
             id,
             provider,
-            providerAccountId: `provider-${id}`,
+            providerAccountId: settings.providerAccountId ?? `provider-${id}`,
             email: `${id}@example.com`,
-            plan: "Pro",
+            plan: settings.plan ?? "Pro",
             label: id,
             priority,
             enabled: settings.enabled ?? true,

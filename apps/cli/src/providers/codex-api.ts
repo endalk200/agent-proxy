@@ -1,8 +1,9 @@
-import { Context, Effect, Layer } from "effect"
-import { type Headers, HttpClient } from "effect/http"
+import { Clock, Context, Effect, Layer } from "effect"
+import { type Headers, HttpClient, HttpClientRequest } from "effect/http"
 
+import type { Account } from "../accounts/account.ts"
 import type { LimitSignal } from "../accounts/router.ts"
-import type { ObservedWindow } from "../usage/usage.ts"
+import type { ObservedReset, ObservedWindow, ResetsRead } from "../usage/usage.ts"
 import { ProviderEndpoints } from "./endpoints.ts"
 import {
   asObject,
@@ -12,8 +13,10 @@ import {
   type Json,
   numberHeader,
   parseObject,
+  postRedeem,
   type ProxiedRequest,
   readUsageEndpoint,
+  type RedeemAnswer,
   retryAfterMs,
   sendUpstream,
   shareOf,
@@ -168,6 +171,124 @@ const codexEndpointWindows = (
     : windows.flatMap((read) => read ?? [])
 }
 
+/** The headers of the daemon's own requests as `account`: those Codex sends. */
+const ownHeaders = (account: Account, accessToken: string) => ({
+  authorization: `Bearer ${accessToken}`,
+  "chatgpt-account-id": account.providerAccountId,
+})
+
+/** The longest a 429's `Retry-After` keeps the daemon from listing limit resets. */
+const MAX_RETRY_AFTER_MS = 60 * 60 * 1000
+
+/** How long a read of the account's limit resets may take. */
+const RESETS_TIMEOUT = "30 seconds"
+
+/** A time Codex gives as an ISO string. */
+const isoInstant = (value: unknown) => {
+  if (typeof value !== "string") return undefined
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? undefined : parsed
+}
+
+/**
+ * The windows a Codex limit reset refills, which follow the plan (OpenAI's
+ * help center): on Pro the weekly window, on every other plan the 5-hour and
+ * weekly windows.
+ */
+const codexRefills = (account: Account): ReadonlyArray<string> =>
+  account.plan.trim().toLowerCase() === "pro" ? ["weekly"] : ["five-hour", "weekly"]
+
+/**
+ * One of `/wham/rate-limit-reset-credits`' `credits` as a limit reset: none
+ * for one already spent or of another kind, and `undefined` for one not in a
+ * shape this reads.
+ */
+const codexReset = (
+  value: unknown,
+  refills: ReadonlyArray<string>,
+): ReadonlyArray<ObservedReset> | undefined => {
+  const credit = asObject(value)
+  const id = credit?.["id"]
+  const title = credit?.["title"]
+  if (credit === undefined || typeof id !== "string" || id === "") return undefined
+  if (credit["status"] !== "available") return []
+  if (credit["reset_type"] !== undefined && credit["reset_type"] !== "codex_rate_limits") return []
+  const supported = credit["is_supported_by_plan"] !== false
+  return [
+    {
+      id,
+      name: typeof title === "string" && title.trim() !== "" ? title.trim() : "Limit reset",
+      refills,
+      expiresAt: isoInstant(credit["expires_at"]),
+      usableNow: supported,
+      unavailableReason: supported ? undefined : "Not available on this plan",
+    },
+  ]
+}
+
+/**
+ * The account's limit resets, from `/wham/rate-limit-reset-credits` as the
+ * account, read at every usage read, even when the usage answer counts none:
+ * only the list says whether the account may buy an instant reset. Anything
+ * missing or unreadable is none known, so the ones known before stay. A list
+ * that answers 429 is not asked again until `busy` says its `Retry-After`
+ * has passed.
+ */
+const codexResets = (
+  http: HttpClient.HttpClient,
+  url: string,
+  account: Account,
+  headers: Readonly<Record<string, string>>,
+  busy: { until: number },
+): Effect.Effect<ResetsRead | undefined> => {
+  return Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis
+    if (busy.until > now) return undefined
+    const response = yield* HttpClientRequest.get(url).pipe(
+      HttpClientRequest.setHeaders({ accept: "application/json", ...headers }),
+      http.execute,
+      Effect.provideService(HttpClient.TracerPropagationEnabled, false),
+    )
+    if (response.status === 429) {
+      // The wait counts from the answer, which may have been slow to come.
+      const answeredAt = yield* Clock.currentTimeMillis
+      busy.until =
+        answeredAt + Math.min(MAX_RETRY_AFTER_MS, retryAfterMs(response.headers, answeredAt))
+      return undefined
+    }
+    if (response.status !== 200) return undefined
+    const body = asObject(yield* response.json)
+    const credits = body?.["credits"]
+    if (body === undefined || !Array.isArray(credits)) return undefined
+    const refills = codexRefills(account)
+    const read = credits.map((credit) => codexReset(credit, refills))
+    if (!read.every((resets) => resets !== undefined)) return undefined
+    return {
+      resets: read.flatMap((resets) => resets ?? []),
+      canBuy: body["immediate_reset_purchase_eligible"] === true,
+    }
+  }).pipe(
+    Effect.timeoutOrElse({ duration: RESETS_TIMEOUT, orElse: () => Effect.undefined }),
+    Effect.orElseSucceed(() => undefined),
+  )
+}
+
+/** What the Codex backend's `consume` answer's `code` says of a redeem. */
+const codexRedeemed = (answer: Json): RedeemAnswer | undefined => {
+  switch (answer["code"]) {
+    case "reset":
+      return { _tag: "Redeemed" }
+    case "nothing_to_reset":
+      return { _tag: "Refused", reason: "nothing-to-refill" }
+    case "already_redeemed":
+      return { _tag: "Refused", reason: "already-redeemed" }
+    case "no_credit":
+      return { _tag: "Refused", reason: "unavailable" }
+    default:
+      return undefined
+  }
+}
+
 /**
  * The session a request belongs to: Codex's `session-id` header, else the
  * body's `prompt_cache_key`, which opencode sends without the header (spike
@@ -187,6 +308,9 @@ export class CodexApi extends Context.Service<CodexApi, UpstreamApi>()("agent-pr
     Effect.gen(function* () {
       const { codex: endpoints } = yield* ProviderEndpoints
       const http = yield* HttpClient.HttpClient
+      const resetsUrl = `${endpoints.apiBaseUrl}/backend-api/wham/rate-limit-reset-credits`
+      // When the reset list may be asked again after a 429; one wait for every account, as the poller's.
+      const resetsBusy = { until: 0 }
 
       return CodexApi.of({
         send: Effect.fn("CodexApi.send")(function* (request, account, accessToken) {
@@ -204,12 +328,19 @@ export class CodexApi extends Context.Service<CodexApi, UpstreamApi>()("agent-pr
           readUsageEndpoint(
             http,
             endpoints.usageUrl,
-            {
-              authorization: `Bearer ${accessToken}`,
-              "chatgpt-account-id": account.providerAccountId,
-            },
+            ownHeaders(account, accessToken),
             now,
             (body) => codexEndpointWindows(body, now),
+            () =>
+              codexResets(http, resetsUrl, account, ownHeaders(account, accessToken), resetsBusy),
+          ),
+        redeemReset: (account, accessToken, resetId, requestId) =>
+          postRedeem(
+            http,
+            `${resetsUrl}/consume`,
+            ownHeaders(account, accessToken),
+            { redeem_request_id: requestId, credit_id: resetId },
+            codexRedeemed,
           ),
       })
     }),

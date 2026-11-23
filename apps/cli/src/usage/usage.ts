@@ -102,3 +102,36 @@ export const windowLabel = (id: string) =>
 export const compareWindows = (a: { readonly id: string }, b: { readonly id: string }) =>
   (BASE_WINDOWS[a.id]?.order ?? 2) - (BASE_WINDOWS[b.id]?.order ?? 2) ||
   windowLabel(a.id).localeCompare(windowLabel(b.id))
+
+/**
+ * What a provider says about one of an account's limit resets (GLOSSARY.md,
+ * *Limit reset*): a single-use grant the owner redeems to refill some of
+ * the account's limit windows early.
+ */
+export interface ObservedReset {
+  /** The provider's id for it, which a redeem names. */
+  readonly id: string
+  /** The provider's name for it, such as "Full reset". */
+  readonly name: string
+  /** The ids of the windows it refills, such as `five-hour` and `weekly`. */
+  readonly refills: ReadonlyArray<string>
+  /** When it expires unredeemed, epoch milliseconds; none when the provider gives no end. */
+  readonly expiresAt: number | undefined
+  /** False when the provider says it cannot be redeemed right now. */
+  readonly usableNow: boolean
+  /** Why it cannot be redeemed right now, in the provider's words. */
+  readonly unavailableReason: string | undefined
+}
+
+/** What one read says about an account's limit resets. */
+export interface ResetsRead {
+  readonly resets: ReadonlyArray<ObservedReset>
+  /** True when the provider offers the account an instant reset to buy (Codex only). */
+  readonly canBuy: boolean
+}
+
+/** An account's limit resets as the daemon last knew them. */
+export interface KnownResets extends ResetsRead {
+  /** When the provider said it, epoch milliseconds. */
+  readonly asOf: number
+}

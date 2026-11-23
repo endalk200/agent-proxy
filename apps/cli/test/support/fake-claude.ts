@@ -161,6 +161,64 @@ export const usageAnswer = {
 
 const answerUsageDefault: ApiHandler = () => json(usageAnswer)
 
+/**
+ * Claude's limit reset status, the `cedar_ember` block its usage endpoint
+ * adds when asked with `?cedar_ember=1`, as confirmed live on 2026-11-23.
+ * Claude lists grants only to Claude Code, which it knows by its
+ * `claude-cli/<version> (external, cli)` user agent; to anything else it
+ * answers `ineligible_reason: "surface"`.
+ */
+export const limitResetStatus = (
+  request: Request,
+  grants: ReadonlyArray<Readonly<Record<string, unknown>>>,
+  options: { readonly ineligibleReason?: string } = {},
+) =>
+  (request.headers.get("user-agent") ?? "").startsWith("claude-cli/")
+    ? {
+        eligible: options.ineligibleReason === undefined,
+        ineligible_reason: options.ineligibleReason ?? null,
+        at_limit: false,
+        exhausted: [],
+        grants,
+        next_grant_id: null,
+        weekly_resets_at: null,
+        cooldown_until: null,
+      }
+    : {
+        eligible: false,
+        ineligible_reason: "surface",
+        at_limit: false,
+        exhausted: [],
+        grants: [],
+        next_grant_id: null,
+        weekly_resets_at: null,
+        cooldown_until: null,
+      }
+
+/** One grant in `cedar_ember.grants`, shaped like the November 2026 full reset; `fields` override it. */
+export const resetGrant = (fields: Readonly<Record<string, unknown>> = {}) => ({
+  id: "full-reset-2611",
+  label: "Full reset",
+  resets_total: 1,
+  resets_left: 1,
+  starts_at: "2026-11-10T18:00:00+00:00",
+  ends_at: "2026-12-10T22:00:00+00:00",
+  clears: ["five_hour", "seven_day", "seven_day_overage_included"],
+  paused: false,
+  usable_now: true,
+  use_requires_limit: false,
+  percent_used: { five_hour: 12, seven_day: 34, seven_day_overage_included: 0 },
+  blocking: [],
+  arm: null,
+  type: "full",
+  unavailable_reason: null,
+  gives_back_weekly: false,
+  ...fields,
+})
+
+const answerRedeemDefault: ApiHandler = () =>
+  json({ result: "reset", reason: null, resets_left: 0, cleared: ["five_hour", "seven_day"] })
+
 /** How the fake answers one refresh request instead of refreshing. */
 type RefreshTrouble =
   | { readonly _tag: "Hold"; readonly arrived: () => void; readonly released: Promise<void> }
@@ -222,6 +280,10 @@ export interface FakeClaude {
   readonly answerUsageWith: (handler: ApiHandler) => void
   /** The most usage endpoint requests that were ever in flight at once. */
   readonly peakUsageInFlight: () => number
+  /** The requests to redeem a limit reset received so far, oldest first; `path` names the organization. */
+  readonly redeemRequests: () => ReadonlyArray<ApiRequest>
+  /** Answers every later redeem request with `handler`; the default answers `{ result: "reset" }`. */
+  readonly answerRedeemWith: (handler: ApiHandler) => void
 }
 
 /** Starts the fake on a free loopback port until the scope closes. */
@@ -242,6 +304,8 @@ export const fakeClaude = Effect.gen(function* () {
   let answerUsage: ApiHandler = answerUsageDefault
   let usageInFlight = 0
   let peakUsageInFlight = 0
+  const redeemRequests: Array<ApiRequest> = []
+  let answerRedeem: ApiHandler = answerRedeemDefault
 
   /** Issues a new token pair to `owner`. */
   const grant = (owner: ClaudeUser) => {
@@ -409,6 +473,16 @@ export const fakeClaude = Effect.gen(function* () {
     }
   }
 
+  const redeem = async (request: Request, url: URL) => {
+    redeemRequests.push({
+      method: request.method,
+      path: url.pathname + url.search,
+      headers: Object.fromEntries(request.headers),
+      body: await request.clone().text(),
+    })
+    return answerRedeem(request)
+  }
+
   const server = yield* Effect.acquireRelease(
     Effect.sync(() =>
       Bun.serve({
@@ -430,6 +504,12 @@ export const fakeClaude = Effect.gen(function* () {
           }
           if (url.pathname.startsWith("/v1/messages")) {
             return api(request, url)
+          }
+          if (
+            request.method === "POST" &&
+            /^\/api\/organizations\/[^/]+\/reset_rate_limits$/.test(url.pathname)
+          ) {
+            return redeem(request, url)
           }
           return json({ error: "not_found" }, 404)
         },
@@ -495,6 +575,10 @@ export const fakeClaude = Effect.gen(function* () {
       answerUsage = handler
     },
     peakUsageInFlight: () => peakUsageInFlight,
+    redeemRequests: () => [...redeemRequests],
+    answerRedeemWith: (handler) => {
+      answerRedeem = handler
+    },
   }
   return fake
 })

@@ -82,6 +82,8 @@ layer(services)("limit windows", (it) => {
             },
             { id: "weekly", label: "Weekly", usedPct: 34, resetsAt: 1_795_500_000_000, asOf: NOW },
           ],
+          limitResets: [],
+          canBuyReset: false,
         }
         expect((yield* events.next("limits-changed"))["limits"]).toEqual(expected)
         expect(yield* home.limits).toEqual([expected])
@@ -212,9 +214,11 @@ layer(services)("limit windows", (it) => {
                 asOf: NOW,
               },
             ],
+            limitResets: [],
+            canBuyReset: false,
           },
-          { accountId: "off", asOf: null, windows: [] },
-          { accountId: "out", asOf: null, windows: [] },
+          { accountId: "off", asOf: null, windows: [], limitResets: [], canBuyReset: false },
+          { accountId: "out", asOf: null, windows: [], limitResets: [], canBuyReset: false },
           {
             accountId: "cx",
             asOf: NOW,
@@ -234,6 +238,8 @@ layer(services)("limit windows", (it) => {
                 asOf: NOW,
               },
             ],
+            limitResets: [],
+            canBuyReset: false,
           },
         ])
         // Read as each account, the way its provider's own clients do.

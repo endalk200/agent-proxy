@@ -2,7 +2,7 @@ import { Schema } from "effect"
 
 import { type Account, AccountStatus, Provider } from "../accounts/account.ts"
 import type { RoutingView } from "../accounts/router.ts"
-import type { AccountLimits } from "../usage/limit-windows.ts"
+import type { AccountLimits, LimitResetView as LimitReset } from "../usage/limit-windows.ts"
 import type { ClientName, TokenCounts, UsageStatus } from "../usage/usage.ts"
 
 /**
@@ -61,12 +61,41 @@ export const PoolView = Schema.Struct({
 })
 export type PoolView = typeof PoolView.Type
 
-/** `GET /api/accounts`: every account, and a pool for each provider that has one. */
+/** Every account, and a pool for each provider that has one, as the event stream reports them. */
 export const AccountList = Schema.Struct({
   accounts: Schema.Array(AccountView),
   pools: Schema.Array(PoolView),
 })
 export type AccountList = typeof AccountList.Type
+
+/** One of an account's limit resets, as the daemon API reports it. */
+export const LimitResetView = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  /** The windows it refills, by id and the owner's name for each. */
+  refills: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
+  /** When it expires unredeemed, epoch milliseconds; null when the provider gives no end. */
+  expiresAt: Schema.NullOr(Schema.Finite),
+  usableNow: Schema.Boolean,
+  /** Why it cannot be redeemed right now, in the provider's words. */
+  unavailableReason: Schema.NullOr(Schema.String),
+  asOf: Schema.Finite,
+})
+export type LimitResetView = typeof LimitResetView.Type
+
+/** An account as `GET /api/accounts` lists it: with its limit resets, the soonest to expire first. */
+export const ListedAccount = Schema.Struct({
+  ...AccountView.fields,
+  limitResets: Schema.Array(LimitResetView),
+})
+export type ListedAccount = typeof ListedAccount.Type
+
+/** `GET /api/accounts`: every account with its limit resets, and a pool for each provider that has one. */
+export const AccountListing = Schema.Struct({
+  accounts: Schema.Array(ListedAccount),
+  pools: Schema.Array(PoolView),
+})
+export type AccountListing = typeof AccountListing.Type
 
 /** A pool for each provider that has an account, as `routing` sees them now. */
 export const toPools = (
@@ -85,6 +114,68 @@ export const toAccountList = (
   accounts: accounts.map((account) => toAccountView(account, routing)),
   pools: toPools(accounts, routing),
 })
+
+/** `GET /api/accounts`'s answer, each account with the limit resets `resetsOf` gives. */
+export const toAccountListing = (
+  accounts: ReadonlyArray<Account>,
+  routing: RoutingView,
+  resetsOf: (account: Account) => ReadonlyArray<LimitReset>,
+): AccountListing => ({
+  accounts: accounts.map((account) => ({
+    ...toAccountView(account, routing),
+    limitResets: resetsOf(account),
+  })),
+  pools: toPools(accounts, routing),
+})
+
+/** An account's limit windows and limit resets, as `GET /api/limits` reports them. */
+export const LimitsView = Schema.Struct({
+  accountId: Schema.String,
+  asOf: Schema.NullOr(Schema.Finite),
+  windows: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      label: Schema.String,
+      usedPct: Schema.Finite,
+      resetsAt: Schema.Finite,
+      asOf: Schema.Finite,
+    }),
+  ),
+  limitResets: Schema.Array(LimitResetView),
+  canBuyReset: Schema.Boolean,
+})
+export type LimitsView = typeof LimitsView.Type
+
+/** Why a provider refused to redeem a limit reset; nothing was spent. */
+export const RedeemRefusal = Schema.Literals([
+  "nothing-to-refill",
+  "already-redeemed",
+  "cooldown",
+  "ineligible",
+  "unavailable",
+  "rejected",
+])
+
+/** `POST /api/accounts/:id/limit-resets/:resetId/redeem`: how the redeem went. */
+export const RedeemResult = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("redeemed"),
+    message: Schema.String,
+    limits: LimitsView,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("refused"),
+    reason: RedeemRefusal,
+    message: Schema.String,
+    limits: LimitsView,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literal("unknown"),
+    message: Schema.String,
+    limits: LimitsView,
+  }),
+])
+export type RedeemResult = typeof RedeemResult.Type
 
 /**
  * The first message on `GET /api/events`: every account and pool as they are
