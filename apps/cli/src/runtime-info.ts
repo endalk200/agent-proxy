@@ -36,6 +36,8 @@ export class RuntimeInfo extends Context.Service<
      * says; `None` when the record cannot be read.
      */
     readonly realHome: Option.Option<string>
+    /** True when standard input is a terminal, so a question can be answered there. */
+    readonly interactive: boolean
   }
 >()("agent-proxy/RuntimeInfo") {
   /** Reads the current process, running from source. Reports Bun when running under Bun, Node otherwise. */
@@ -55,6 +57,7 @@ const current = (binary: Option.Option<Binary>) => {
     arch: process.arch,
     binary,
     realHome: homeFromUserRecord(),
+    interactive: process.stdin.isTTY,
   })
 }
 

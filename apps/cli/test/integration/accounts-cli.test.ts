@@ -18,11 +18,20 @@ import { TestClock } from "effect/testing"
 
 import { Browser, BrowserError } from "../../src/browser.ts"
 import { runCli } from "../../src/cli.ts"
-import { AccountList } from "../../src/daemon/api.ts"
+import { AccountList, AccountListing } from "../../src/daemon/api.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
-import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
+import {
+  alice,
+  bob,
+  type ClaudeUser,
+  type FakeClaude,
+  fakeClaude,
+  resetGrant,
+  limitResetStatus,
+  usageAnswer,
+} from "../support/fake-claude.ts"
 import { carol, dave, fakeCodex } from "../support/fake-codex.ts"
 import { noLaunchd } from "../support/no-launchd.ts"
 
@@ -51,15 +60,18 @@ const browserThatSignsInAndLingers = Browser.of({
 /** A browser that is never seen: opening it does nothing. */
 const browserThatIdles = Browser.of({ open: () => Effect.void })
 
-/** A terminal whose typed lines come from `lines`. */
-const terminalTyping = (lines: Queue.Queue<string>) =>
+/** A terminal whose typed lines come from `lines`, and whose prompts collect in `shown`. */
+const terminalTyping = (lines: Queue.Queue<string>, shown: Array<string>) =>
   Terminal.make({
     columns: Effect.succeed(80),
     rows: Effect.succeed(24),
     size: Effect.die("unused"),
     readInput: Effect.die("unused"),
     readLine: Queue.take(lines),
-    display: () => Effect.void,
+    display: (text) =>
+      Effect.sync(() => {
+        shown.push(text)
+      }),
   })
 
 /** The URL a browser that cannot reach the daemon ends up on after signing in. */
@@ -107,8 +119,17 @@ const makeHome = (
     const output: Array<string> = []
     const typed = yield* Queue.unbounded<string>()
 
-    /** Runs `agent-proxy <argv>` in this home; its stdout lines collect in `output`. */
-    const cli = (argv: ReadonlyArray<string>, browser: Browser["Service"] = browserThatSignsIn) =>
+    const shown: Array<string> = []
+
+    /**
+     * Runs `agent-proxy <argv>` in this home; its stdout lines collect in
+     * `output`. It runs without a terminal unless `atTerminal`.
+     */
+    const cli = (
+      argv: ReadonlyArray<string>,
+      browser: Browser["Service"] = browserThatSignsIn,
+      { atTerminal = false }: { readonly atTerminal?: boolean } = {},
+    ) =>
       Effect.gen(function* () {
         const start = output.length
         const console: Console.Console = {
@@ -127,7 +148,8 @@ const makeHome = (
           Effect.provideService(Console.Console, console),
           Effect.provideService(ConfigProvider.ConfigProvider, ConfigProvider.fromEnvRecord(env)),
           Effect.provideService(Browser, browser),
-          Effect.provideService(Terminal.Terminal, terminalTyping(typed)),
+          Effect.provideService(Terminal.Terminal, terminalTyping(typed, shown)),
+          Effect.updateService(RuntimeInfo, (runtime) => ({ ...runtime, interactive: atTerminal })),
         )
         return output.slice(start).join("\n")
       })
@@ -164,7 +186,7 @@ const makeHome = (
 
     /** The accounts and pools `accounts --json` reports. */
     const list = Effect.flatMap(cli(["accounts", "--json"]), (json) =>
-      Schema.decodeEffect(Schema.fromJsonString(AccountList))(json),
+      Schema.decodeEffect(Schema.fromJsonString(AccountListing))(json),
     )
 
     /** `<priority> <label>` for each account, in the order `accounts` lists them. */
@@ -205,9 +227,24 @@ const makeHome = (
       })
     })
 
+    /** Waits until `accounts --json` lists `count` limit resets in all. */
+    const resetsListed = (count: number) =>
+      list.pipe(
+        Effect.map(({ accounts }) =>
+          accounts.reduce((sum, account) => sum + account.limitResets.length, 0),
+        ),
+        Effect.repeat({
+          schedule: Schedule.spaced("20 millis"),
+          until: (listed) => listed === count,
+          times: 250,
+        }),
+      )
+
     return {
       codex,
       cli,
+      shown,
+      resetsListed,
       runDaemon,
       printed,
       typed,
@@ -752,6 +789,236 @@ layer(
         expect(yield* home.order).toEqual(["1 bob"])
         expect(yield* home.accountFiles).toHaveLength(1)
         expect(yield* home.accountFiles).not.toContain(`${work?.id}.json`)
+      }),
+    ),
+  )
+  it.effect("accounts shows how many limit resets each account holds, and lists them", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        claude.answerUsageWith((request) => {
+          const alices =
+            request.headers.get("authorization") === `Bearer ${claude.issuedAccessTokens()[0]}`
+          return Response.json({
+            ...usageAnswer,
+            limits: [
+              {
+                kind: "weekly_scoped",
+                is_active: true,
+                scope: { model: { display_name: "Fable" } },
+                utilization: 80,
+                resets_at: "2099-05-30T00:00:00Z",
+              },
+            ],
+            cedar_ember: limitResetStatus(
+              request,
+              alices
+                ? [
+                    resetGrant({
+                      id: "launch-2610-fable",
+                      label: "New model launch: one Fable reset",
+                      ends_at: "2099-07-01T06:30:00Z",
+                      clears: ["five_hour", "seven_day_overage_included"],
+                      gives_back_weekly: true,
+                    }),
+                    resetGrant({ ends_at: "2099-06-01T06:30:00Z" }),
+                  ]
+                : [],
+            ),
+          })
+        })
+        yield* home.runDaemon
+        yield* home.add(alice, ["--label", "Work"])
+        yield* home.add(bob)
+        yield* home.resetsListed(2)
+
+        expect(yield* home.cli(["accounts"])).toBe(
+          [
+            "PROVIDER  LABEL  EMAIL              PLAN     PRIORITY  RESETS  STATUS",
+            "claude    Work   alice@example.com  Max 20x  1         2       Active",
+            "claude    bob    bob@example.com    Pro      2                 Active",
+            "",
+            'New Claude sessions go to "Work", then "bob".',
+          ].join("\n"),
+        )
+        // Soonest to expire first.
+        expect(yield* home.cli(["accounts", "resets"])).toBe(
+          [
+            "ACCOUNT  PROVIDER  RESET                              REFILLS               EXPIRES",
+            "Work     claude    Full reset                         5-hour, Weekly        Jun 1 2099 15:30",
+            "Work     claude    New model launch: one Fable reset  5-hour, Fable weekly  Jul 1 2099 15:30",
+          ].join("\n"),
+        )
+        expect(yield* home.cli(["accounts", "resets", "bob"])).toBe(
+          'Claude account "bob" (bob@example.com) holds no limit resets.',
+        )
+        const listed: unknown = JSON.parse(
+          yield* home.cli(["accounts", "resets", "Work", "--json"]),
+        )
+        expect(listed).toEqual([
+          expect.objectContaining({
+            label: "Work",
+            limitResets: [
+              expect.objectContaining({ id: "full-reset-2611", name: "Full reset" }),
+              expect.objectContaining({ id: "launch-2610-fable" }),
+            ],
+          }),
+        ])
+        expect((yield* home.list).accounts[0]?.limitResets).toHaveLength(2)
+      }),
+    ),
+  )
+
+  it.effect("accounts redeem asks first, showing what it refills, then redeems", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        let grants = [resetGrant({ ends_at: "2099-06-01T06:30:00Z" })]
+        claude.answerUsageWith((request) =>
+          Response.json({ ...usageAnswer, cedar_ember: limitResetStatus(request, grants) }),
+        )
+        yield* home.runDaemon
+        yield* home.add(alice, ["--label", "Work"])
+        yield* home.resetsListed(1)
+
+        // Answered no: nothing is redeemed.
+        yield* Queue.offer(home.typed, "n")
+        expect(
+          yield* home.cli(["accounts", "redeem", "Work"], undefined, { atTerminal: true }),
+        ).toBe(
+          [
+            'Redeem "Full reset" on Claude account "Work" (alice@example.com)?',
+            "  It refills:",
+            "    5-hour  12% used",
+            "    Weekly  34% used",
+            "  Claude keeps this account's weekly reset day.",
+            "  It expires Jun 1 2099 15:30. A redeem can't be undone.",
+            "Nothing redeemed.",
+          ].join("\n"),
+        )
+        expect(home.shown.at(-1)).toBe("Redeem? [y/N] ")
+        expect(claude.redeemRequests()).toHaveLength(0)
+
+        // Answered yes.
+        grants = []
+        yield* Queue.offer(home.typed, "y")
+        const redeemed = yield* home.cli(["accounts", "redeem", "Work"], undefined, {
+          atTerminal: true,
+        })
+        expect(redeemed.split("\n").at(-1)).toBe('Redeemed "Full reset" on Claude account "Work".')
+        expect(claude.redeemRequests()).toHaveLength(1)
+        expect((yield* home.list).accounts[0]?.limitResets).toEqual([])
+      }),
+    ),
+  )
+
+  it.effect("accounts redeem names a reset by the start of its name or id", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        claude.answerUsageWith((request) =>
+          Response.json({
+            ...usageAnswer,
+            cedar_ember: limitResetStatus(request, [
+              resetGrant({ ends_at: "2099-06-01T06:30:00Z" }),
+              resetGrant({
+                id: "launch-2610-fable",
+                label: "Fable reset",
+                ends_at: "2099-07-01T06:30:00Z",
+              }),
+              resetGrant({
+                id: "full-weekly",
+                label: "Full weekly reset",
+                ends_at: "2099-08-01T06:30:00Z",
+              }),
+            ]),
+          }),
+        )
+        yield* home.runDaemon
+        yield* home.add(alice, ["--label", "Work"])
+        yield* home.resetsListed(3)
+
+        const severalLines = [
+          "  Full reset         full-reset-2611    expires Jun 1 2099 15:30",
+          "  Fable reset        launch-2610-fable  expires Jul 1 2099 15:30",
+          "  Full weekly reset  full-weekly        expires Aug 1 2099 15:30",
+        ]
+        expect(yield* home.fails(["accounts", "redeem", "Work", "--yes"])).toBe(
+          [
+            'Claude account "Work" holds 3 limit resets. Name one with --reset:',
+            ...severalLines,
+          ].join("\n"),
+        )
+        expect(yield* home.fails(["accounts", "redeem", "Work", "--reset", "FULL", "--yes"])).toBe(
+          [
+            '"FULL" matches 2 limit resets. Name one by more of its name or id:',
+            "  Full reset         full-reset-2611  expires Jun 1 2099 15:30",
+            "  Full weekly reset  full-weekly      expires Aug 1 2099 15:30",
+          ].join("\n"),
+        )
+        expect(
+          yield* home.fails(["accounts", "redeem", "Work", "--reset", "weekly", "--yes"]),
+        ).toBe(
+          [
+            'No limit reset of Claude account "Work" matches "weekly". Name one by the start of its name or id:',
+            ...severalLines,
+          ].join("\n"),
+        )
+        expect(claude.redeemRequests()).toHaveLength(0)
+
+        // Its whole name, and the start of its id.
+        yield* home.cli(["accounts", "redeem", "Work", "--reset", "full reset", "--yes"])
+        yield* home.cli(["accounts", "redeem", "Work", "--reset", "launch", "--yes"])
+        expect(
+          claude.redeemRequests().map((request) => JSON.parse(request.body)["grant_id"]),
+        ).toEqual(["full-reset-2611", "launch-2610-fable"])
+      }),
+    ),
+  )
+
+  it.effect("accounts redeem never redeems without a terminal to ask at, unless --yes", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const claude = yield* fakeClaude
+        const home = yield* makeHome(claude)
+        claude.answerUsageWith((request) =>
+          Response.json({ ...usageAnswer, cedar_ember: limitResetStatus(request, [resetGrant()]) }),
+        )
+        yield* home.runDaemon
+        yield* home.add(alice, ["--label", "Work"])
+        yield* home.resetsListed(1)
+
+        expect(yield* home.fails(["accounts", "redeem", "Work"])).toBe(
+          "Not redeemed: there is no terminal to confirm at. Run it again with --yes to redeem without asking.",
+        )
+        expect(claude.redeemRequests()).toHaveLength(0)
+
+        // A refusal fails, saying why.
+        claude.answerRedeemWith(() => Response.json({ result: "not_limited" }))
+        expect(yield* home.fails(["accounts", "redeem", "Work", "--yes"])).toBe(
+          '"Full reset" was not redeemed: the windows it refills still have room, so it would change nothing. Nothing was spent.',
+        )
+
+        claude.answerRedeemWith(() => Response.json({ result: "reset" }))
+        expect(yield* home.cli(["accounts", "redeem", "Work", "--yes"])).toBe(
+          'Redeemed "Full reset" on Claude account "Work".',
+        )
+      }),
+    ),
+  )
+
+  it.effect("accounts redeem says when an account holds no limit reset to redeem", () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const home = yield* makeHome(yield* fakeClaude)
+        yield* home.runDaemon
+        yield* home.add(alice, ["--label", "Work"])
+        expect(yield* home.fails(["accounts", "redeem", "Work", "--yes"])).toBe(
+          'Claude account "Work" (alice@example.com) holds no limit resets.',
+        )
       }),
     ),
   )

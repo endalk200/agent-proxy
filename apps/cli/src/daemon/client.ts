@@ -3,11 +3,13 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http"
 
 import { resolveStateDir } from "../paths.ts"
 import {
-  AccountList,
+  AccountListing,
   AccountView,
   ApiError,
+  LimitsView,
   LoginView,
   ProxyKeyView,
+  RedeemResult,
   type StartLogin,
   type UpdateAccount,
 } from "./api.ts"
@@ -139,8 +141,25 @@ const callApi = <A>(
     )
   })
 
-/** Every account the daemon holds, with its status. */
-export const listAccounts = callApi(HttpClientRequest.get("/api/accounts"), AccountList)
+/** Every account the daemon holds, with its status and limit resets. */
+export const listAccounts = callApi(HttpClientRequest.get("/api/accounts"), AccountListing)
+
+/** Every account's limit windows and limit resets. */
+export const listLimits = callApi(HttpClientRequest.get("/api/limits"), Schema.Array(LimitsView))
+
+/**
+ * Redeems an account's limit reset. The daemon answers once the provider
+ * has, and the account's limits are read again: its worst case is two
+ * 30-second attempts and a re-read, after any redeem already running.
+ */
+export const redeemReset = (accountId: string, resetId: string) =>
+  callApi(
+    HttpClientRequest.post(
+      `/api/accounts/${encodeURIComponent(accountId)}/limit-resets/${encodeURIComponent(resetId)}/redeem`,
+    ),
+    RedeemResult,
+    "150 seconds",
+  )
 
 /** Changes an account's label, priority or enabled, and returns it as stored. */
 export const updateAccount = (id: string, settings: UpdateAccount) =>

@@ -68,6 +68,7 @@ const makeHome = (options: Options = {}) =>
           ? Option.none()
           : Option.some({ path: INSTALLED, commit: "abc1234", dirty: false }),
       realHome: Option.some(options.realHome === false ? "/Users/owner" : home),
+      interactive: false,
     })
 
     /** Every call to launchd and to the processes, in order. */
