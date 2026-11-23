@@ -37,8 +37,12 @@ _Avoid_: Weight, order, tier
 ### Usage
 
 **Limit window**:
-A provider's rolling allowance for one account, such as Claude's 5-hour, weekly, and per-model weekly (Fable) windows, or Codex's 5-hour and weekly windows. It has a share used and a time it resets; the provider owns both, and the proxy only observes them.
+A provider's rolling allowance for one account, such as Claude's 5-hour, weekly, and per-model weekly (Fable) windows, or Codex's 5-hour and weekly windows. It has a share used and a time it resets; the provider owns both, and the proxy observes them, changing them only when the owner redeems a limit reset.
 _Avoid_: Quota, rate limit, usage limit, headroom (that is the router's view of the tightest window)
+
+**Limit reset**:
+A single-use grant from the provider that refills some of an account's limit windows before they would reset on their own. The owner **redeems** it; an unredeemed one may expire.
+_Avoid_: Quota reset, reset credit, banked reset, grant, usage credits (those are pay-as-you-go billing past a limit)
 
 **Usage**:
 The requests that went through the proxy and the tokens each one spent, as the provider counted them.
