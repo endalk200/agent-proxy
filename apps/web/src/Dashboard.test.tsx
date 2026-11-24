@@ -369,13 +369,79 @@ describe("the token trend", () => {
   })
 })
 
+/** The legend beside a breakdown's donut, one entry per slice. */
+const legendOf = (name: string, measure = "tokens") =>
+  within(card(name))
+    .getAllByRole("listitem")
+    .filter((item) => item.closest(`[aria-label="${name} by ${measure}"]`) !== null)
+    .map(textOf)
+const pick = (name: string, button: "Cost" | "Tokens" | "Table" | "Chart") =>
+  fireEvent.click(within(card(name)).getByRole("button", { name: button }))
+
+/** The style of the swatch beside the Accounts legend entry whose text matches `name`. */
+const swatch = (name: RegExp) =>
+  within(card("Accounts"))
+    .getAllByRole("listitem")
+    .find((item) => name.test(textOf(item)))
+    ?.querySelector("i")
+    ?.getAttribute("style")
+
 describe("the breakdowns", () => {
-  it("list each model's tokens, equivalent cost and share, an unpriced one marked Unpriced", async () => {
+  it("show each model's share of tokens as a donut beside its legend, largest first", async () => {
     show(withUsage())
-    await within(await findCard("Models")).findByRole("table")
+    const models = await findCard("Models")
+    expect(
+      (await within(models).findByRole("img", { name: /^Models by tokens/ })).getAttribute(
+        "aria-label",
+      ),
+    ).toBe("Models by tokens: claude-opus-5-5 95.4%, gpt-6.1-sol 4.6%")
+    expect(textOf(models)).toContain("Share of tokens, the last 7 days")
+    expect(legendOf("Models")).toEqual(["claude-opus-5-5 4.61M 95%", "gpt-6.1-sol 220K 5%"])
+  })
+
+  it("measure models in equivalent cost, leaving an unpriced one out of the donut", async () => {
+    show(withUsage())
+    await within(await findCard("Models")).findByRole("img", { name: /^Models by tokens/ })
+    pick("Models", "Cost")
+    expect(textOf(card("Models"))).toContain("Share of equivalent cost, the last 7 days")
+    expect(legendOf("Models", "equivalent cost")).toEqual(["claude-opus-5-5 $17.81 100%"])
+    expect(textOf(card("Models"))).toContain("Left out, with no known list price: gpt-6.1-sol.")
+  })
+
+  it("fold the models past the fifth into Other, naming them on hover", async () => {
+    const daemon = withUsage()
+    for (const [i, model] of ["m-one", "m-two", "m-three", "m-four", "m-five"].entries()) {
+      daemon.usage.push(
+        usageRow({ at: NOW - HOUR, accountId: "a1", model, tokens: { output: 1000 * (5 - i) } }),
+      )
+    }
+    show(daemon)
+    await within(await findCard("Models")).findByRole("img", { name: /^Models by tokens/ })
+    expect(legendOf("Models")).toEqual([
+      "claude-opus-5-5 4.61M 95%",
+      "gpt-6.1-sol 220K 5%",
+      "m-one 5,000 <1%",
+      "m-two 4,000 <1%",
+      "m-three 3,000 <1%",
+      "Other (2) 3,000 <1%",
+    ])
+    expect(within(card("Models")).getByText("Other (2)").closest("li")?.title).toBe(
+      "m-four, m-five",
+    )
+  })
+
+  it("list each model's tokens, equivalent cost and share in a table, an unpriced one marked Unpriced", async () => {
+    show(withUsage())
+    await within(await findCard("Models")).findByRole("img", { name: /^Models by tokens/ })
+    pick("Models", "Table")
     expect(tableOf(within(card("Models")).getByRole("table"))).toEqual([
       { Model: "claude-opus-5-5", Tokens: "4.61M", "Equivalent cost": "$17.81", Share: "95.4%" },
       { Model: "gpt-6.1-sol", Tokens: "220K", "Equivalent cost": "Unpriced", Share: "4.6%" },
+    ])
+    pick("Models", "Cost")
+    expect(tableOf(within(card("Models")).getByRole("table"))).toEqual([
+      { Model: "claude-opus-5-5", Tokens: "4.61M", "Equivalent cost": "$17.81", Share: "100.0%" },
+      { Model: "gpt-6.1-sol", Tokens: "220K", "Equivalent cost": "Unpriced", Share: "—" },
     ])
   })
 
@@ -394,47 +460,98 @@ describe("the breakdowns", () => {
       removedAt: NOW - HOUR,
     })
     show(daemon)
-    await within(await findCard("Accounts")).findByRole("table")
+    await within(await findCard("Accounts")).findByRole("img", { name: /^Accounts by tokens/ })
+    expect(legendOf("Accounts")).toEqual([
+      "Home , Active 4.6M 95%",
+      "carol , Active 220K 5%",
+      "Work , Active 12K <1%",
+      "Old work Removed 200 <1%",
+      "Removed account 100 <1%",
+    ])
+    pick("Accounts", "Table")
     expect(tableOf(within(card("Accounts")).getByRole("table"))).toEqual([
       {
         Account: "Home , Active",
         Requests: "1",
         Tokens: "4.6M",
         "Equivalent cost": "$17.75",
-        Share: "95%",
+        Share: "95.2%",
       },
       {
         Account: "carol , Active",
         Requests: "1",
         Tokens: "220K",
         "Equivalent cost": "Unpriced",
-        Share: "5%",
+        Share: "4.6%",
       },
       {
         Account: "Work , Active",
         Requests: "2",
         Tokens: "12K",
         "Equivalent cost": "$0.06",
-        Share: "<1%",
+        Share: "0.2%",
       },
       {
         Account: "Old work Removed",
         Requests: "1",
         Tokens: "200",
         "Equivalent cost": "<$0.01",
-        Share: "<1%",
+        Share: "<0.1%",
       },
       {
         Account: "Removed account",
         Requests: "1",
         Tokens: "100",
         "Equivalent cost": "<$0.01",
-        Share: "<1%",
+        Share: "<0.1%",
       },
     ])
 
     fireEvent.click(within(card("Accounts")).getByRole("button", { name: /^carol/ }))
     await screen.findByRole("dialog", { name: "carol" })
+  })
+
+  it("keep each account's colour while others are reordered or removed", async () => {
+    const daemon = withUsage()
+    show(daemon)
+    await within(await findCard("Accounts")).findByRole("img", { name: /^Accounts by tokens/ })
+    const home = swatch(/^Home/)
+    const carol = swatch(/^carol/)
+    expect(home).not.toBe(carol)
+    daemon.update("a2", { priority: 1 })
+    daemon.update("a1", { priority: 2 })
+    await waitFor(() => expect(swatch(/^Home/)).toBe(home))
+    expect(swatch(/^carol/)).toBe(carol)
+    daemon.forget("a1")
+    await waitFor(() => expect(legendOf("Accounts")).toContain("Work Removed 12K <1%"))
+    expect(swatch(/^Home/)).toBe(home)
+    expect(swatch(/^carol/)).toBe(carol)
+  })
+
+  it("mark an account's cost that leaves out an unpriced model's tokens", async () => {
+    const daemon = withUsage()
+    daemon.usage.push(
+      usageRow({
+        at: NOW - HOUR,
+        accountId: "a2",
+        model: "gpt-6.1-sol",
+        tokens: { uncached: 1000, output: 1000 },
+      }),
+    )
+    show(daemon)
+    await within(await findCard("Accounts")).findByRole("img", { name: /^Accounts by tokens/ })
+    pick("Accounts", "Cost")
+    expect(legendOf("Accounts", "equivalent cost")[0]).toBe("Home , Active $17.75 * 100%")
+    expect(textOf(card("Accounts"))).toContain(
+      "Left out, with no known list price: carol. Partly left out: Home.",
+    )
+  })
+
+  it("open an account's sheet from its legend entry", async () => {
+    show(withUsage())
+    await within(await findCard("Accounts")).findByRole("img", { name: /^Accounts by tokens/ })
+    fireEvent.click(within(card("Accounts")).getByRole("button", { name: /^Home/ }))
+    expect(await screen.findByRole("dialog", { name: "Home" })).toBeDefined()
   })
 
   it("name an account renamed and then removed by its last name, without waiting for new usage", async () => {
@@ -445,11 +562,7 @@ describe("the breakdowns", () => {
     daemon.update("a1", { label: "Office" })
     await within(accounts).findByRole("button", { name: /^Office/ })
     daemon.forget("a1")
-    await waitFor(() =>
-      expect(
-        tableOf(within(card("Accounts")).getByRole("table")).map((row) => row["Account"]),
-      ).toContain("Office Removed"),
-    )
+    await waitFor(() => expect(legendOf("Accounts")).toContain("Office Removed 12K <1%"))
   })
 })
 
@@ -587,7 +700,9 @@ describe("live updates", () => {
     const daemon = withUsage()
     show(daemon)
     expect(await kpi("Requests")).toMatch(/^Requests 4 /)
-    const models = await within(await findCard("Models")).findByRole("table")
+    const models = await findCard("Models")
+    fireEvent.click(within(models).getByRole("button", { name: "Table" }))
+    const table = await within(models).findByRole("table")
     const summaries = () => daemon.usageCalls.filter((call) => call.startsWith("summary")).length
     const before = summaries()
 
@@ -601,7 +716,7 @@ describe("live updates", () => {
     })
     expect(summaries()).toBe(before + 1)
     // Breakdowns wait up to 15 seconds after their last load.
-    expect(tableOf(models)[0]?.["Tokens"]).toBe("4.61M")
+    expect(tableOf(table)[0]?.["Tokens"]).toBe("4.61M")
   })
 
   it("show new KPIs while requests keep finishing, though each answer takes longer than the throttle", async () => {
@@ -623,7 +738,8 @@ describe("live updates", () => {
   it("refetch the charts and breakdowns too, at their own pace", async () => {
     const daemon = withUsage()
     show(daemon, { kpis: 50, charts: 300 })
-    await within(await findCard("Models")).findByRole("table")
+    fireEvent.click(within(await findCard("Models")).getByRole("button", { name: "Table" }))
+    await within(card("Models")).findByRole("table")
     daemon.record(usageRow({ at: NOW, accountId: "a1", tokens: { uncached: 1_000_000 } }))
     await waitFor(() =>
       expect(tableOf(within(card("Models")).getByRole("table"))[0]?.["Tokens"]).toBe("5.61M"),

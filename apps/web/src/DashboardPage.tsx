@@ -1,5 +1,5 @@
 import { ArrowRight, CalendarDays, TriangleAlert } from "lucide-react"
-import { type ReactNode, useState } from "react"
+import { type ReactNode, useMemo, useState } from "react"
 
 import { PageContent, PageHeader } from "@/components/page"
 import { Badge } from "@/components/ui/badge"
@@ -35,10 +35,15 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 
 import {
+  Donut,
   Legend,
+  OTHER,
   SegBar,
   seriesColor,
-  ShareBar,
+  hashOf,
+  SLOT_COUNT,
+  type Slice,
+  slotColor,
   Sparkline,
   StackedColumns,
   useHeight,
@@ -736,18 +741,18 @@ function CardGrid(props: DashboardProps & { list: AccountList; range: UsageRange
       aria-busy={loading}
     >
       <KpiRow answer={summary} range={range} />
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(0,1fr)]">
-        <TrendCard answer={series} range={range} metric={metric} setMetric={setMetric} />
+      <TrendCard answer={series} range={range} metric={metric} setMetric={setMetric} />
+      <div className="grid gap-6 xl:grid-cols-2">
+        <AccountsCard
+          answer={byAccount}
+          range={range}
+          list={list}
+          openId={props.openId}
+          openAccount={props.openAccount}
+        />
         <ModelsCard answer={byModel} range={range} />
       </div>
       <LimitsCard list={list} openAccount={props.openAccount} />
-      <AccountsCard
-        answer={byAccount}
-        range={range}
-        list={list}
-        openId={props.openId}
-        openAccount={props.openAccount}
-      />
     </div>
   )
 }
@@ -809,10 +814,8 @@ function TrendCard(props: {
 }
 
 /**
- * The trend's columns, as tall as the card lets them be: beside Models the
- * card grows to Models' height, and the chart fills it rather than leaving a
- * gap. The chart sits in an absolute box so its own height never feeds back
- * into the card's.
+ * The trend's columns, as tall as the card lets them be. The chart sits in an
+ * absolute box so its own height never feeds back into the card's.
  */
 function TrendChart(props: { series: UsageSeries }) {
   const [ref, height] = useHeight<HTMLDivElement>(288)
@@ -897,75 +900,6 @@ function TrendTable(props: { series: UsageSeries }) {
         </TableBody>
       </Table>
     </div>
-  )
-}
-
-function ModelsCard(props: {
-  answer: UsageAnswer<{ readonly rows: ReadonlyArray<BreakdownRow> }>
-  range: UsageRange
-}) {
-  const rows = props.answer.data?.rows
-  return (
-    <DashCard id="dash-models" title="Models" sub="Tokens, equivalent cost and share">
-      {rows === undefined ? (
-        <Pending error={props.answer.error} short />
-      ) : rows.length === 0 ? (
-        <Empty>No requests in {rangeWords(props.range)}.</Empty>
-      ) : (
-        <>
-          <SegBar
-            label="Share of tokens by model"
-            height={10}
-            parts={rows.map((row) => ({
-              key: row.key,
-              value: row.totalTokens,
-              color: seriesColor(row.key),
-            }))}
-          />
-          <Table aria-labelledby="dash-models">
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead scope="col" className={HEAD}>
-                  Model
-                </TableHead>
-                <TableHead scope="col" className={cn(HEAD, NUM)}>
-                  Tokens
-                </TableHead>
-                <TableHead scope="col" className={cn(HEAD, NUM)}>
-                  Equivalent cost
-                </TableHead>
-                <TableHead scope="col" className={cn(HEAD, NUM)}>
-                  Share
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((row) => (
-                <TableRow key={row.key}>
-                  <TableHead scope="row" className={cn(CELL, "max-w-56")}>
-                    <span className="flex min-w-0 items-center gap-2.5">
-                      <span
-                        className="size-2.5 shrink-0"
-                        style={{ background: seriesColor(row.key) }}
-                        aria-hidden="true"
-                      />
-                      <span className="truncate">{row.key}</span>
-                    </span>
-                  </TableHead>
-                  <TableCell className={cn(CELL, NUM)}>{compact(row.totalTokens)}</TableCell>
-                  <TableCell className={cn(CELL, NUM)}>
-                    <CostCell row={row} />
-                  </TableCell>
-                  <TableCell className={cn(CELL, NUM, "text-muted-foreground")}>
-                    {pct(row.share)}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </>
-      )}
-    </DashCard>
   )
 }
 
@@ -1063,6 +997,381 @@ function LimitRow(props: {
   )
 }
 
+// ------------------------------------------------------------ the breakdowns
+
+/** What a breakdown measures its rows in. */
+type Measure = "tokens" | "cost"
+
+const MEASURES: ReadonlyArray<readonly [Measure, string]> = [
+  ["tokens", "Tokens"],
+  ["cost", "Cost"],
+]
+
+const measureWords: Readonly<Record<Measure, string>> = {
+  tokens: "tokens",
+  cost: "equivalent cost",
+}
+
+const measureText: Readonly<Record<Measure, (n: number) => string>> = {
+  tokens: compact,
+  cost: usd,
+}
+
+/** A breakdown row measured one way: its value (null when unpriced) and share of the whole. */
+interface Measured {
+  readonly row: BreakdownRow
+  readonly value: number | null
+  readonly share: number | null
+}
+
+/** `rows` by `measure`, largest first; rows with no price last, in cost. */
+const measureRows = (rows: ReadonlyArray<BreakdownRow>, measure: Measure) => {
+  const valueOf = (row: BreakdownRow) => (measure === "tokens" ? row.totalTokens : row.costUsd)
+  const total = rows.reduce((sum, row) => sum + (valueOf(row) ?? 0), 0)
+  return rows
+    .map((row): Measured => {
+      const value = valueOf(row)
+      return { row, value, share: value === null || total === 0 ? null : value / total }
+    })
+    .toSorted((a, b) => (b.value ?? -1) - (a.value ?? -1))
+}
+
+/** The donut's slices: at most six, any past the fifth folded into one grey Other. */
+const MAX_SLICES = 6
+const OTHER_SLICE = "other"
+
+const slicesOf = (
+  measured: ReadonlyArray<Measured>,
+  label: (row: BreakdownRow) => string,
+  color: (row: BreakdownRow) => string,
+): { slices: ReadonlyArray<Slice>; folded: ReadonlyArray<Measured> } => {
+  const shown = measured.filter((item) => (item.value ?? 0) > 0)
+  const kept = shown.length > MAX_SLICES ? shown.slice(0, MAX_SLICES - 1) : shown
+  const folded = shown.slice(kept.length)
+  const slices = kept.map((item): Slice => ({
+    key: item.row.key,
+    label: label(item.row),
+    value: item.value ?? 0,
+    share: item.share ?? 0,
+    color: color(item.row),
+  }))
+  if (folded.length > 0) {
+    slices.push({
+      key: OTHER_SLICE,
+      label: `Other (${folded.length})`,
+      value: folded.reduce((sum, item) => sum + (item.value ?? 0), 0),
+      share: folded.reduce((sum, item) => sum + (item.share ?? 0), 0),
+      color: seriesColor(OTHER),
+    })
+  }
+  return { slices, folded }
+}
+
+/** How a breakdown names, colours and opens its rows. */
+interface BreakdownKind {
+  readonly id: string
+  readonly title: string
+  /** The table's first column. */
+  readonly noun: string
+  readonly label: (row: BreakdownRow) => string
+  readonly color: (row: BreakdownRow) => string
+  readonly renderName: (row: BreakdownRow) => ReactNode
+  /** The props of a row that stands for `row`: an account's opens its sheet. */
+  readonly rowProps?: (row: BreakdownRow) => React.HTMLAttributes<HTMLElement> & {
+    "data-account-row"?: string
+    "data-state"?: string | undefined
+  }
+  /** Adds a Requests column. */
+  readonly requests?: boolean
+}
+
+/**
+ * A breakdown card: the range's usage split by account or by model, measured
+ * in tokens or equivalent cost, as a donut beside its legend or as a table.
+ */
+function BreakdownCard(props: {
+  kind: BreakdownKind
+  answer: UsageAnswer<{ readonly rows: ReadonlyArray<BreakdownRow> }>
+  range: UsageRange
+}) {
+  const { kind } = props
+  const [measure, setMeasure] = useState<Measure>("tokens")
+  const [asTable, setAsTable] = useState(false)
+  const rows = props.answer.data?.rows
+  // Kept while the rows and measure hold, so the donut is not redrawn mid-sweep.
+  const measured = useMemo(
+    () => (rows === undefined ? undefined : measureRows(rows, measure)),
+    [rows, measure],
+  )
+  return (
+    <DashCard
+      id={kind.id}
+      title={kind.title}
+      sub={`Share of ${measureWords[measure]}, ${rangeWords(props.range)}`}
+      action={
+        <div className="flex flex-wrap justify-end gap-2">
+          <Seg
+            label={`Measure ${kind.title.toLowerCase()} in`}
+            options={MEASURES}
+            value={measure}
+            onChange={setMeasure}
+          />
+          <Seg
+            label={`Show ${kind.title.toLowerCase()} as`}
+            options={[
+              ["chart", "Chart"],
+              ["table", "Table"],
+            ]}
+            value={asTable ? "table" : "chart"}
+            onChange={(shown) => setAsTable(shown === "table")}
+          />
+        </div>
+      }
+    >
+      {measured === undefined ? (
+        <Pending error={props.answer.error} short />
+      ) : measured.length === 0 ? (
+        <Empty>No requests in {rangeWords(props.range)}.</Empty>
+      ) : asTable ? (
+        <BreakdownTable kind={kind} measured={measured} measure={measure} />
+      ) : (
+        <BreakdownChart kind={kind} measured={measured} measure={measure} range={props.range} />
+      )}
+    </DashCard>
+  )
+}
+
+/** The donut, the total in its hole, beside a legend with each slice's value and share. */
+function BreakdownChart(props: {
+  kind: BreakdownKind
+  measured: ReadonlyArray<Measured>
+  measure: Measure
+  range: UsageRange
+}) {
+  const { kind, measure } = props
+  const [active, setActive] = useState<string | undefined>()
+  const { slices, folded } = useMemo(
+    () => slicesOf(props.measured, kind.label, kind.color),
+    [props.measured, kind],
+  )
+  // In cost, what the donut leaves out: rows with no price at all, and rows
+  // whose cost leaves out an unpriced model's tokens.
+  const leftOut = (rows: ReadonlyArray<Measured>) =>
+    rows.map((item) => kind.label(item.row)).join(", ")
+  const unpriced = props.measured.filter((item) => item.value === null)
+  const partly = props.measured.filter((item) => item.value !== null && item.row.partlyUnpriced)
+  const note = [
+    unpriced.length > 0 ? `Left out, with no known list price: ${leftOut(unpriced)}.` : "",
+    partly.length > 0 ? `Partly left out: ${leftOut(partly)}.` : "",
+  ]
+    .filter((sentence) => sentence !== "")
+    .join(" ")
+  if (slices.length === 0) {
+    return <Empty>No priced usage in {rangeWords(props.range)}.</Empty>
+  }
+  const text = measureText[measure]
+  const hovered = slices.find((slice) => slice.key === active)
+  const total = slices.reduce((sum, slice) => sum + slice.value, 0)
+  const byKey = new Map(props.measured.map((item) => [item.row.key, item.row] as const))
+  return (
+    // The donut sits beside its legend when the card has room, above it when not.
+    <div className="@container flex flex-1 flex-col justify-center">
+      <div className="flex flex-col items-center gap-6 @min-[30rem]:flex-row">
+        <Donut
+          slices={slices}
+          size={192}
+          label={`${kind.title} by ${measureWords[measure]}`}
+          active={active}
+          onActive={setActive}
+        >
+          {hovered === undefined ? (
+            <>
+              <b className="text-xl font-semibold tabular-nums">{text(total)}</b>
+              <span className="text-xs text-muted-foreground">{measureWords[measure]}</span>
+            </>
+          ) : (
+            <>
+              <b className="text-xl font-semibold tabular-nums">{pct(hovered.share)}</b>
+              <span className="max-w-full truncate text-xs">{hovered.label}</span>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {text(hovered.value)}
+              </span>
+            </>
+          )}
+        </Donut>
+        <div className="flex w-full min-w-0 flex-1 flex-col gap-3">
+          <ul
+            className="flex flex-col"
+            aria-label={`${kind.title} by ${measureWords[measure]}`}
+            onPointerLeave={() => setActive(undefined)}
+          >
+            {slices.map((slice) => {
+              const row = byKey.get(slice.key)
+              return (
+                <li
+                  key={slice.key}
+                  {...(row === undefined ? {} : kind.rowProps?.(row))}
+                  className={cn(
+                    "flex h-10 items-center gap-3 border-b border-border/60 text-sm transition-opacity last:border-0",
+                    row !== undefined && kind.rowProps !== undefined && "cursor-pointer",
+                    active !== undefined && active !== slice.key && "opacity-45",
+                  )}
+                  title={
+                    row === undefined
+                      ? folded.map((item) => kind.label(item.row)).join(", ")
+                      : undefined
+                  }
+                  onPointerEnter={() => setActive(slice.key)}
+                >
+                  <i
+                    className="size-2.5 shrink-0"
+                    style={{ background: slice.color }}
+                    aria-hidden="true"
+                  />
+                  <span className="flex min-w-0 flex-1">
+                    {row === undefined ? slice.label : kind.renderName(row)}
+                  </span>
+                  <span className="tabular-nums">
+                    {measure === "cost" && row !== undefined ? (
+                      <CostCell row={row} />
+                    ) : (
+                      text(slice.value)
+                    )}
+                  </span>
+                  <span className="w-12 text-right text-muted-foreground tabular-nums">
+                    {pct(slice.share, 0)}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+          {measure === "cost" && note !== "" && (
+            <p className="text-xs text-muted-foreground">{note}</p>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Every row of a breakdown, largest first by the card's measure. */
+function BreakdownTable(props: {
+  kind: BreakdownKind
+  measured: ReadonlyArray<Measured>
+  measure: Measure
+}) {
+  const { kind, measure } = props
+  // Requests only where the card has room for a fifth column.
+  const REQUESTS = "hidden @min-[32rem]:table-cell"
+  return (
+    <div className="@container">
+      <Table aria-labelledby={kind.id}>
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead scope="col" className={HEAD}>
+              {kind.noun}
+            </TableHead>
+            {kind.requests === true && (
+              <TableHead scope="col" className={cn(HEAD, NUM, REQUESTS)}>
+                Requests
+              </TableHead>
+            )}
+            <TableHead
+              scope="col"
+              className={cn(HEAD, NUM, measure === "tokens" && "text-foreground")}
+            >
+              Tokens
+            </TableHead>
+            <TableHead
+              scope="col"
+              className={cn(HEAD, NUM, measure === "cost" && "text-foreground")}
+            >
+              Equivalent cost
+            </TableHead>
+            <TableHead scope="col" className={cn(HEAD, NUM)}>
+              Share
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {props.measured.map(({ row, share }) => {
+            const own = kind.rowProps?.(row)
+            return (
+              <TableRow
+                key={row.key}
+                {...own}
+                className={cn(own?.onClick !== undefined && "cursor-pointer")}
+              >
+                <TableHead scope="row" className={cn(CELL, "max-w-56")}>
+                  <span className="flex min-w-0 items-center gap-2.5">
+                    <i
+                      className="size-2.5 shrink-0"
+                      style={{ background: kind.color(row) }}
+                      aria-hidden="true"
+                    />
+                    {kind.renderName(row)}
+                  </span>
+                </TableHead>
+                {kind.requests === true && (
+                  <TableCell className={cn(CELL, NUM, REQUESTS)}>
+                    {count(row.requests.total)}
+                  </TableCell>
+                )}
+                <TableCell className={cn(CELL, NUM)}>{compact(row.totalTokens)}</TableCell>
+                <TableCell className={cn(CELL, NUM)}>
+                  <CostCell row={row} />
+                </TableCell>
+                <TableCell className={cn(CELL, NUM, "text-muted-foreground")}>
+                  {share === null ? "—" : pct(share)}
+                </TableCell>
+              </TableRow>
+            )
+          })}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
+const MODELS: BreakdownKind = {
+  id: "dash-models",
+  title: "Models",
+  noun: "Model",
+  label: (row) => row.key,
+  color: (row) => seriesColor(row.key),
+  renderName: (row) => <span className="truncate">{row.key}</span>,
+}
+
+function ModelsCard(props: {
+  answer: UsageAnswer<{ readonly rows: ReadonlyArray<BreakdownRow> }>
+  range: UsageRange
+}) {
+  return <BreakdownCard kind={MODELS} answer={props.answer} range={props.range} />
+}
+
+/**
+ * Each account's colour slot: the one its id hashes to, or the next free one
+ * when an account added before it holds that. An account keeps its colour
+ * whatever its rank, priority or pool order, and through removals unless the
+ * one removed had pushed it along.
+ */
+const accountSlots = (accounts: ReadonlyArray<Account>): ReadonlyMap<string, number> => {
+  const slots = new Map<string, number>()
+  const taken = new Set<number>()
+  const byAge = accounts.toSorted(
+    (a, b) => a.addedAt.localeCompare(b.addedAt) || a.id.localeCompare(b.id),
+  )
+  for (const account of byAge) {
+    let slot = hashOf(account.id) % SLOT_COUNT
+    for (let tries = 1; taken.has(slot) && tries < SLOT_COUNT; tries++) {
+      slot = (slot + 1) % SLOT_COUNT
+    }
+    taken.add(slot)
+    slots.set(account.id, slot)
+  }
+  return slots
+}
+
 function AccountsCard(props: {
   answer: UsageAnswer<{ readonly rows: ReadonlyArray<BreakdownRow> }>
   range: UsageRange
@@ -1070,85 +1379,54 @@ function AccountsCard(props: {
   openId: string | undefined
   openAccount: (account: Account) => void
 }) {
-  const rows = props.answer.data?.rows
-  const lastNames = useLastNames(props.list)
-  return (
-    <DashCard
-      id="dash-accounts"
-      title="Accounts"
-      sub={`Usage per account, ${rangeWords(props.range)}`}
-    >
-      {rows === undefined ? (
-        <Pending error={props.answer.error} short />
-      ) : rows.length === 0 ? (
-        <Empty>No requests in {rangeWords(props.range)}.</Empty>
-      ) : (
-        <Table aria-labelledby="dash-accounts">
-          <TableHeader>
-            <TableRow className="hover:bg-transparent">
-              <TableHead scope="col" className={HEAD}>
-                Account
-              </TableHead>
-              <TableHead scope="col" className={cn(HEAD, NUM)}>
-                Requests
-              </TableHead>
-              <TableHead scope="col" className={cn(HEAD, NUM)}>
-                Tokens
-              </TableHead>
-              <TableHead scope="col" className={cn(HEAD, NUM)}>
-                Equivalent cost
-              </TableHead>
-              <TableHead scope="col" className={cn(HEAD, NUM, "w-40")}>
-                Share
-              </TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((row) => {
-              const account = props.list.accounts.find((held) => held.id === row.key)
-              return (
-                <TableRow
-                  key={row.key}
-                  className={cn(account !== undefined && "cursor-pointer")}
-                  data-state={
-                    account !== undefined && props.openId === account.id ? "selected" : undefined
-                  }
-                  data-account-row={account === undefined ? undefined : ""}
-                  onClick={account === undefined ? undefined : () => props.openAccount(account)}
-                >
-                  <TableHead scope="row" className={CELL}>
-                    {account === undefined ? (
-                      <RemovedAccountName account={lastNames.get(row.key) ?? row.account} />
-                    ) : (
-                      <span className="inline-flex min-w-0 items-center gap-2.5">
-                        <ProviderMark provider={account.provider} size={14} />
-                        <RowLink
-                          account={account}
-                          onOpen={(event) => {
-                            event.stopPropagation()
-                            props.openAccount(account)
-                          }}
-                        />
-                      </span>
-                    )}
-                  </TableHead>
-                  <TableCell className={cn(CELL, NUM)}>{count(row.requests.total)}</TableCell>
-                  <TableCell className={cn(CELL, NUM)}>{compact(row.totalTokens)}</TableCell>
-                  <TableCell className={cn(CELL, NUM)}>
-                    <CostCell row={row} />
-                  </TableCell>
-                  <TableCell className={cn(CELL, NUM)}>
-                    <span className="inline-flex items-center justify-end gap-3">
-                      <ShareBar fraction={row.share} />
-                      <span className="w-9 text-muted-foreground">{pct(row.share, 0)}</span>
-                    </span>
-                  </TableCell>
-                </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
-      )}
-    </DashCard>
-  )
+  const { list, openId, openAccount } = props
+  const lastNames = useLastNames(list)
+  const kind = useMemo((): BreakdownKind => {
+    const held = (row: BreakdownRow) => list.accounts.find((account) => account.id === row.key)
+    const slots = accountSlots(list.accounts)
+    return {
+      id: "dash-accounts",
+      title: "Accounts",
+      noun: "Account",
+      requests: true,
+      label: (row) =>
+        held(row)?.label ??
+        lastNames.get(row.key)?.label ??
+        row.account?.label ??
+        "Removed account",
+      // One no longer held is grey.
+      color: (row) => {
+        const slot = slots.get(row.key)
+        return slot === undefined ? seriesColor(OTHER) : slotColor(slot)
+      },
+      renderName: (row) => {
+        const account = held(row)
+        if (account === undefined) {
+          return <RemovedAccountName account={lastNames.get(row.key) ?? row.account} />
+        }
+        return (
+          <span className="inline-flex min-w-0 items-center gap-2.5">
+            <ProviderMark provider={account.provider} size={14} />
+            <RowLink
+              account={account}
+              onOpen={(event) => {
+                event.stopPropagation()
+                openAccount(account)
+              }}
+            />
+          </span>
+        )
+      },
+      rowProps: (row) => {
+        const account = held(row)
+        if (account === undefined) return {}
+        return {
+          "data-account-row": "",
+          "data-state": openId === account.id ? "selected" : undefined,
+          onClick: () => openAccount(account),
+        }
+      },
+    }
+  }, [list, lastNames, openId, openAccount])
+  return <BreakdownCard kind={kind} answer={props.answer} range={props.range} />
 }
