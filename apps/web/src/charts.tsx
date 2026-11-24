@@ -1,5 +1,7 @@
 import { areaY, barY, defineChart, dot, lineY, ruleY, stack } from "@tanstack/charts"
-import { Chart } from "@tanstack/charts/react"
+import { motion } from "@tanstack/charts/motion"
+import { pie, polar, radialArc } from "@tanstack/charts/polar"
+import { Chart } from "@tanstack/charts/react/core"
 import { scaleBand } from "@tanstack/charts/scales/band"
 import { scaleLinear } from "@tanstack/charts/scales/linear"
 import {
@@ -35,7 +37,13 @@ import {
  * every chart says in words what it shows. Marks follow the dataviz skill:
  * 2px lines, columns at most 24px wide, a 2px surface gap between stacked
  * segments, a hairline grid, a crosshair or per-column tooltip.
+ *
+ * Every chart draws through TanStack's motion renderer: columns grow from
+ * the baseline, lines and slices sweep in, and new data springs from what is
+ * on screen to where it now belongs. It snaps instead for a reader who asks
+ * for reduced motion, and on resize.
  */
+const MOTION = motion({ transition: { type: "spring", stiffness: 180, damping: 26 } })
 
 /**
  * Model families that keep a fixed categorical slot (1–6), so a model's
@@ -50,9 +58,14 @@ export const modelSlot = (id: string): number => {
   const parts = id.toLowerCase().split(/[^a-z0-9]+/)
   const family = FAMILIES.findIndex((name) => parts.includes(name))
   if (family !== -1) return family + 1
+  return FAMILIES.length + 1 + (hashOf(id) % 2)
+}
+
+/** A stable non-negative hash of `id`. */
+export const hashOf = (id: string): number => {
   let hash = 0
   for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
-  return FAMILIES.length + 1 + (hash % 2)
+  return hash
 }
 
 /**
@@ -70,6 +83,13 @@ const SLOT_COLORS = [
   "var(--chart-7)",
   "var(--chart-8)",
 ]
+
+/** How many categorical colours there are. */
+export const SLOT_COUNT = SLOT_COLORS.length
+
+/** The colour of categorical slot `index` (from 0), for entities other than models. */
+export const slotColor = (index: number) =>
+  SLOT_COLORS[index % SLOT_COLORS.length] ?? "var(--chart-other)"
 
 /** The series that holds every model past the few a chart names. */
 export const OTHER = "Other"
@@ -92,16 +112,17 @@ export const metricText: Record<
 }
 
 /**
- * A ref and its element's content box size along `axis`. Before the element
- * is laid out (and where nothing lays it out, as in tests) the size is
+ * A ref, its element's content box size along `axis`, and whether it has
+ * been read yet, which happens before the first paint. Before the element is
+ * laid out (and where nothing lays it out, as in tests) the size is
  * `fallback`.
  */
 function useSize<E extends HTMLElement>(
   axis: "width" | "height",
   fallback: number,
-): [RefObject<E | null>, number] {
+): [RefObject<E | null>, number, boolean] {
   const ref = useRef<E>(null)
-  const [size, setSize] = useState(0)
+  const [size, setSize] = useState<number | undefined>()
   useLayoutEffect(() => {
     const el = ref.current
     if (el === null) return
@@ -113,7 +134,21 @@ function useSize<E extends HTMLElement>(
     observer.observe(el)
     return () => observer.disconnect()
   }, [axis])
-  return [ref, size > 0 ? size : fallback]
+  return [ref, size !== undefined && size > 0 ? size : fallback, size !== undefined]
+}
+
+/**
+ * `items`, or the equal array it last returned. A chart rebuilt mid-entrance
+ * restarts as an update and loses its entrance, so a parent that recomputes
+ * the same numbers each render must not hand the chart a new definition.
+ */
+function useSameItems<T>(items: ReadonlyArray<T>): ReadonlyArray<T> {
+  const [kept, setKept] = useState(items)
+  const same =
+    kept === items ||
+    (kept.length === items.length && kept.every((item, i) => String(item) === String(items[i])))
+  if (!same) setKept(items)
+  return same ? kept : items
 }
 
 /** A ref and its element's content width, `fallback` until it is laid out. */
@@ -190,9 +225,10 @@ export function Sparkline(props: {
   label: string
 }) {
   const height = props.height ?? 48
-  const [ref, width] = useWidth<HTMLDivElement>(240)
+  const [ref, width, read] = useWidth<HTMLDivElement>(240)
   const [hover, setHover] = useState<number | undefined>()
-  const { values, zero } = props
+  const { zero } = props
+  const values = useSameItems(props.values)
   const n = values.length
   const present = values.filter((v): v is number => v !== null)
 
@@ -269,16 +305,25 @@ export function Sparkline(props: {
       ref={ref}
       className={cn("relative w-full", CHART_INK)}
       style={{ height }}
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a drawn chart is one image; <img> cannot hold it
+      role="img"
+      aria-label={props.label}
       onPointerMove={onPointerMove}
       onPointerLeave={() => setHover(undefined)}
     >
-      <Chart
-        definition={definition}
-        height={height}
-        initialWidth={width}
-        tabIndex={-1}
-        ariaLabel={props.label}
-      />
+      {/* Drawn once its width is read, so the line sweeps in at its own size. */}
+      {read && (
+        <div aria-hidden="true">
+          <Chart
+            definition={definition}
+            renderer={MOTION}
+            height={height}
+            initialWidth={width}
+            tabIndex={-1}
+            ariaLabel={props.label}
+          />
+        </div>
+      )}
       {hover !== undefined && (
         <span
           aria-hidden="true"
@@ -384,54 +429,71 @@ export function StackedColumns(props: { series: UsageSeries; height?: number; la
     const candidates = series.buckets
       .map((bucket) => bucket.t)
       .filter((t) => (midnightsOnly ? isMidnight(t) : dayBuckets || new Date(t).getMinutes() === 0))
+    // Built for the chart's own width, so a resize relays it out without
+    // replacing the definition, which would cut the entrance short.
     return defineChart({
-      marks: [
-        barY(segments, {
-          x: "t",
-          y: "value",
-          z: "key",
-          fill: (segment) =>
-            hover === undefined || hover === segment.i
-              ? seriesColor(segment.key)
-              : dim(seriesColor(segment.key)),
-          // Stack in the series' own order, so the tooltip, which lists the
-          // keys top to bottom, always matches the segments.
-          layout: stack({ order: series.keys }),
-          // A 2px gap of card between stacked segments; dropped when columns
-          // are too thin to keep a visible fill under it (a long range on a
-          // narrow screen).
-          stroke: "var(--card)",
-          strokeWidth: (width * (1 - BAND_PADDING)) / Math.max(1, n) >= 4 ? 1 : 0,
-          maxThickness: 24,
-          // The theme's small radius on each column's top, not between segments.
-          radius: { end: 3, stack: "outer" },
-        }),
-        ruleY([0], { stroke: "currentColor", strokeOpacity: 0.35 }),
-      ],
-      scales: {
-        x: {
-          scale: () => scaleBand<number>().padding(BAND_PADDING),
-          axis: {
-            line: false,
-            ticks: { values: candidates, size: 0, format: (t: number) => xLabel(t, dayBuckets) },
-            tickLabels: { thin: { minGap: 24 } },
+      chart: ({ width: chartWidth }) => ({
+        marks: [
+          barY(segments, {
+            x: "t",
+            y: "value",
+            z: "key",
+            // A segment is a bucket's model, so live updates grow it in place.
+            key: (segment) => `${segment.t}:${segment.key}`,
+            // Each segment grows from its own floor, so a column's segments
+            // rising together would float apart. They rise layer by layer
+            // instead, each on the one below, and the column rises as one.
+            motion: (context) => {
+              if (context.phase !== "enter") return undefined
+              const layer = Math.max(0, series.keys.indexOf(context.datum?.key ?? ""))
+              return {
+                delay: layer * LAYER_MS,
+                transition: { type: "tween", duration: LAYER_MS, easing: "ease-out" },
+              }
+            },
+            fill: (segment) =>
+              hover === undefined || hover === segment.i
+                ? seriesColor(segment.key)
+                : dim(seriesColor(segment.key)),
+            // Stack in the series' own order, so the tooltip, which lists the
+            // keys top to bottom, always matches the segments.
+            layout: stack({ order: series.keys }),
+            // A 2px gap of card between stacked segments; dropped when columns
+            // are too thin to keep a visible fill under it (a long range on a
+            // narrow screen).
+            stroke: "var(--card)",
+            strokeWidth: (chartWidth * (1 - BAND_PADDING)) / Math.max(1, n) >= 4 ? 1 : 0,
+            maxThickness: 24,
+            // The theme's small radius on each column's top, not between segments.
+            radius: { end: 3, stack: "outer" },
+          }),
+          ruleY([0], { stroke: "currentColor", strokeOpacity: 0.35 }),
+        ],
+        scales: {
+          x: {
+            scale: () => scaleBand<number>().padding(BAND_PADDING),
+            axis: {
+              line: false,
+              ticks: { values: candidates, size: 0, format: (t: number) => xLabel(t, dayBuckets) },
+              tickLabels: { thin: { minGap: 24 } },
+            },
+          },
+          y: {
+            scale: scaleLinear,
+            nice: 4,
+            grid: { stroke: "currentColor", strokeOpacity: 0.12 },
+            axis: {
+              line: false,
+              ticks: { count: 4, size: 0, format: (v: number) => text.axis(v) },
+            },
           },
         },
-        y: {
-          scale: scaleLinear,
-          nice: 4,
-          grid: { stroke: "currentColor", strokeOpacity: 0.12 },
-          axis: {
-            line: false,
-            ticks: { count: 4, size: 0, format: (v: number) => text.axis(v) },
-          },
-        },
-      },
+      }),
       focus: "group-x",
       focusRing: false,
       keyboard: false,
     })
-  }, [series, hover, text, width, n])
+  }, [series, hover, text, n])
 
   const onKey = (event: KeyboardEvent<HTMLDivElement>) => {
     const keys: Record<string, (h: number | undefined) => number> = {
@@ -474,6 +536,7 @@ export function StackedColumns(props: { series: UsageSeries; height?: number; la
       <div aria-hidden="true">
         <Chart
           definition={definition}
+          renderer={MOTION}
           height={height}
           initialWidth={width}
           tabIndex={-1}
@@ -517,6 +580,9 @@ export function StackedColumns(props: { series: UsageSeries; height?: number; la
   )
 }
 
+/** How long each layer of a stacked column takes to rise as it enters. */
+const LAYER_MS = 240
+
 /** The share of each column's slot left empty around it. */
 const BAND_PADDING = 0.22
 
@@ -540,14 +606,15 @@ export function DayBars(props: {
   height?: number
 }) {
   const height = props.height ?? 112
-  const [ref, width] = useWidth<HTMLDivElement>(380)
+  const [ref, width, read] = useWidth<HTMLDivElement>(380)
+  const days = useSameItems(props.days)
   const [hover, setHover] = useState<number | undefined>()
   const definition = useMemo(
     () =>
       defineChart({
         marks: [
           barY(
-            props.days.map(([t, value], i) => ({ i, t, value })),
+            days.map(([t, value], i) => ({ i, t, value })),
             {
               x: "t",
               y: "value",
@@ -570,10 +637,10 @@ export function DayBars(props: {
         focusRing: false,
         keyboard: false,
       }),
-    [props.days, hover],
+    [days, hover],
   )
-  const hovered = hover === undefined ? undefined : props.days[hover]
-  const n = Math.max(1, props.days.length)
+  const hovered = hover === undefined ? undefined : days[hover]
+  const n = Math.max(1, days.length)
   return (
     <div
       ref={ref}
@@ -584,16 +651,20 @@ export function DayBars(props: {
       aria-label={props.label}
       onPointerLeave={() => setHover(undefined)}
     >
-      <div aria-hidden="true">
-        <Chart
-          definition={definition}
-          height={height}
-          initialWidth={width}
-          tabIndex={-1}
-          ariaLabel={props.label}
-          onFocusChange={(point) => setHover(point === null ? undefined : point.datum.i)}
-        />
-      </div>
+      {/* Drawn once its width is read, so the bars rise at their own size. */}
+      {read && (
+        <div aria-hidden="true">
+          <Chart
+            definition={definition}
+            renderer={MOTION}
+            height={height}
+            initialWidth={width}
+            tabIndex={-1}
+            ariaLabel={props.label}
+            onFocusChange={(point) => setHover(point === null ? undefined : point.datum.i)}
+          />
+        </div>
+      )}
       {hovered !== undefined && hover !== undefined && (
         <ChartTip x={((hover + 0.5) / n) * width} width={width} top={-6}>
           <b className="font-semibold tabular-nums">{props.format(hovered[1])}</b>
@@ -635,21 +706,6 @@ export function SegBar(props: {
   )
 }
 
-/** A share of a whole, as a short track with a fill. */
-export function ShareBar(props: { fraction: number }) {
-  return (
-    <span
-      className="inline-block h-1.5 w-20 overflow-hidden rounded-full bg-foreground/10 align-middle"
-      aria-hidden="true"
-    >
-      <span
-        className="block h-full rounded-full bg-foreground/60"
-        style={{ width: `${Math.max(props.fraction > 0 ? 1.5 : 0, props.fraction * 100)}%` }}
-      />
-    </span>
-  )
-}
-
 /**
  * A legend: a swatch that mirrors the mark, then the model's name; `OTHER`
  * says how many models it holds, and names them on hover.
@@ -685,5 +741,88 @@ export function Legend(props: {
         ),
       )}
     </ul>
+  )
+}
+
+// -------------------------------------------------------------------- donut
+
+/** One slice of a donut: an entity's value, and its share of the whole. */
+export interface Slice {
+  /** Stable across updates, so a slice springs to its new angle. */
+  readonly key: string
+  readonly label: string
+  readonly value: number
+  readonly share: number
+  readonly color: string
+}
+
+/**
+ * A donut of `slices` in their given order, from 12 o'clock, a 2px card gap
+ * between slices. Hovering a slice reports its key and dims the rest; the
+ * hole holds `children`.
+ */
+export function Donut(props: {
+  slices: ReadonlyArray<Slice>
+  size: number
+  label: string
+  active: string | undefined
+  onActive: (key: string | undefined) => void
+  children?: ReactNode
+}) {
+  const { slices, active } = props
+  const definition = useMemo(
+    () =>
+      defineChart({
+        marks: [
+          polar({
+            inset: 2,
+            marks: [
+              radialArc(pie(slices, { value: "value" }), {
+                key: "key",
+                innerRadius: ({ radius }) => radius * 0.66,
+                cornerRadius: 3,
+                fill: (slice) =>
+                  active === undefined || active === slice.key ? slice.color : dim(slice.color),
+                stroke: "var(--card)",
+                strokeWidth: 2,
+              }),
+            ],
+            scales: { angle: null, radius: null },
+          }),
+        ],
+        scales: { x: null, y: null },
+        guides: false,
+        focusRing: false,
+        keyboard: false,
+      }),
+    [slices, active],
+  )
+  return (
+    <div
+      className="relative shrink-0"
+      style={{ width: props.size, height: props.size }}
+      // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role -- a drawn chart is one image; <img> cannot hold it
+      role="img"
+      aria-label={`${props.label}: ${slices.map((slice) => `${slice.label} ${pct(slice.share)}`).join(", ")}`}
+      onPointerLeave={() => props.onActive(undefined)}
+    >
+      <div aria-hidden="true">
+        <Chart
+          definition={definition}
+          renderer={MOTION}
+          width={props.size}
+          height={props.size}
+          tabIndex={-1}
+          ariaLabel={props.label}
+          onFocusChange={(point) => props.onActive(point?.datum.key)}
+        />
+      </div>
+      <div
+        className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-9 text-center"
+        aria-hidden="true"
+      >
+        {props.children}
+      </div>
+    </div>
   )
 }
