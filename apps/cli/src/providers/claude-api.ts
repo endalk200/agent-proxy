@@ -277,6 +277,7 @@ const claudeReset = (value: unknown, models: ReadonlyArray<string>): ObservedRes
     id,
     name: label.trim() === "" ? id : label.trim(),
     refills,
+    grantedAt: instant(grant["starts_at"]),
     expiresAt: instant(grant["ends_at"]),
     usableNow: usable,
     unavailableReason: typeof reason === "string" && reason !== "" ? reason : undefined,

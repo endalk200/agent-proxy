@@ -118,7 +118,13 @@ const HOUR_MS = 60 * 60 * 1000
 
 const DAY_MS = 24 * HOUR_MS
 
-/** The limit resets every token starts with, by provider; each expires that many days after the fake starts. */
+/** How many days before the fake starts its limit resets were granted. */
+const GRANTED_DAYS_AGO = 3
+
+/**
+ * The limit resets every token starts with, by provider; each was granted
+ * `GRANTED_DAYS_AGO` days before the fake starts and expires that many days after.
+ */
 const RESETS: Readonly<
   Record<FakeProvider, ReadonlyArray<{ id: string; name: string; days: number }>>
 > = {
@@ -132,7 +138,7 @@ const RESETS: Readonly<
 /** Claude's usage endpoint: 5-hour, weekly and a Fable weekly window, and the `cedar_ember` block when asked as Claude Code. */
 const claudeUsage = (
   token: string,
-  resets: ReadonlyArray<{ id: string; name: string; endsAt: number }>,
+  resets: ReadonlyArray<{ id: string; name: string; grantedAt: number; endsAt: number }>,
   refilled: boolean,
   claudeCode: boolean,
 ) => {
@@ -146,6 +152,7 @@ const claudeUsage = (
         ? resets.map((reset) => ({
             id: reset.id,
             label: reset.name,
+            starts_at: new Date(reset.grantedAt).toISOString(),
             ends_at: new Date(reset.endsAt).toISOString(),
             clears: reset.id.includes("fable")
               ? ["five_hour", "seven_day_overage_included"]
@@ -379,7 +386,10 @@ export const startFakeProviders = async (port = 0): Promise<FakeProviders> => {
 
   const startedAt = Date.now()
   /** Each token's limit resets not yet redeemed, by provider and token. */
-  const held = new Map<string, Array<{ id: string; name: string; endsAt: number }>>()
+  const held = new Map<
+    string,
+    Array<{ id: string; name: string; grantedAt: number; endsAt: number }>
+  >()
   /** Tokens that redeemed a limit reset, whose windows read 0% used since. */
   const refilled = new Set<string>()
   const resetsOf = (provider: FakeProvider, token: string) => {
@@ -389,6 +399,7 @@ export const startFakeProviders = async (port = 0): Promise<FakeProviders> => {
       resets = RESETS[provider].map((reset) => ({
         id: reset.id,
         name: reset.name,
+        grantedAt: startedAt - GRANTED_DAYS_AGO * DAY_MS,
         endsAt: startedAt + reset.days * DAY_MS,
       }))
       held.set(key, resets)
@@ -432,6 +443,7 @@ export const startFakeProviders = async (port = 0): Promise<FakeProviders> => {
             reset_type: "codex_rate_limits",
             is_supported_by_plan: true,
             status: "available",
+            granted_at: new Date(reset.grantedAt).toISOString(),
             expires_at: new Date(reset.endsAt).toISOString(),
             title: reset.name,
           })),

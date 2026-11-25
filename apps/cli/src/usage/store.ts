@@ -347,6 +347,7 @@ const MIGRATIONS: ReadonlyArray<string> = [
      can_buy INTEGER NOT NULL,
      as_of INTEGER NOT NULL
    );`,
+  "ALTER TABLE limit_resets ADD COLUMN granted_at INTEGER;",
 ]
 
 const openDatabase = (file: string) => {
@@ -506,6 +507,7 @@ const make = (db: Database) => {
       reset_id: string
       name: string
       refills: string
+      granted_at: number | null
       expires_at: number | null
       usable_now: number
       unavailable_reason: string | null
@@ -513,7 +515,8 @@ const make = (db: Database) => {
     },
     []
   >(
-    `SELECT account_id, reset_id, name, refills, expires_at, usable_now, unavailable_reason, as_of
+    `SELECT account_id, reset_id, name, refills, granted_at, expires_at, usable_now,
+            unavailable_reason, as_of
      FROM limit_resets ORDER BY rowid`,
   )
   const allOffers = db.query<{ account_id: string; can_buy: number; as_of: number }, []>(
@@ -521,8 +524,9 @@ const make = (db: Database) => {
   )
   const insertReset = db.query(
     `INSERT INTO limit_resets
-       (account_id, reset_id, name, refills, expires_at, usable_now, unavailable_reason, as_of)
-     VALUES ($account, $id, $name, $refills, $expiresAt, $usableNow, $reason, $asOf)`,
+       (account_id, reset_id, name, refills, granted_at, expires_at, usable_now,
+        unavailable_reason, as_of)
+     VALUES ($account, $id, $name, $refills, $grantedAt, $expiresAt, $usableNow, $reason, $asOf)`,
   )
   const deleteResets = db.query("DELETE FROM limit_resets WHERE account_id = $account")
   const upsertOffer = db.query(
@@ -801,6 +805,7 @@ const make = (db: Database) => {
             refills: Array.isArray(refills)
               ? refills.filter((id): id is string => typeof id === "string")
               : [],
+            grantedAt: row.granted_at ?? undefined,
             expiresAt: row.expires_at ?? undefined,
             usableNow: row.usable_now === 1,
             unavailableReason: row.unavailable_reason ?? undefined,
@@ -821,6 +826,7 @@ const make = (db: Database) => {
             id: reset.id,
             name: reset.name,
             refills: JSON.stringify(reset.refills),
+            grantedAt: reset.grantedAt ?? null,
             expiresAt: reset.expiresAt ?? null,
             usableNow: reset.usableNow ? 1 : 0,
             reason: reset.unavailableReason ?? null,

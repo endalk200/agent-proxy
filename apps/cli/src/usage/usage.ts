@@ -115,6 +115,8 @@ export interface ObservedReset {
   readonly name: string
   /** The ids of the windows it refills, such as `five-hour` and `weekly`. */
   readonly refills: ReadonlyArray<string>
+  /** When the provider granted it, epoch milliseconds; none when the provider does not say. */
+  readonly grantedAt: number | undefined
   /** When it expires unredeemed, epoch milliseconds; none when the provider gives no end. */
   readonly expiresAt: number | undefined
   /** False when the provider says it cannot be redeemed right now. */

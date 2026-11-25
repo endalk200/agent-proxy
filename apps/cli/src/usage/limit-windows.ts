@@ -30,6 +30,8 @@ export interface LimitResetView {
   readonly name: string
   /** The windows it refills, by id and the owner's name for each. */
   readonly refills: ReadonlyArray<{ readonly id: string; readonly label: string }>
+  /** When the provider granted it, epoch milliseconds; null when the provider does not say. */
+  readonly grantedAt: number | null
   /** When it expires unredeemed, epoch milliseconds; null when the provider gives no end. */
   readonly expiresAt: number | null
   readonly usableNow: boolean
@@ -87,6 +89,7 @@ const toAccountLimits = (
         .map((id) => ({ id }))
         .toSorted(compareWindows)
         .map(({ id }) => ({ id, label: windowLabel(id) })),
+      grantedAt: reset.grantedAt ?? null,
       expiresAt: reset.expiresAt ?? null,
       usableNow: reset.usableNow,
       unavailableReason: reset.unavailableReason ?? null,
