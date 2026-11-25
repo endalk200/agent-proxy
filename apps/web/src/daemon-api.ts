@@ -276,6 +276,16 @@ export interface LimitWindow {
   readonly usedPct: number
   readonly resetsAt: number
   readonly asOf: number
+  /** For a spend limit only: the money spent and the most allowed, in major units. */
+  readonly spend?: WindowSpend | undefined
+}
+
+/** A spend limit's money: 1.26 of 40 USD. */
+export interface WindowSpend {
+  readonly used: number
+  readonly limit: number
+  /** The ISO 4217 code, such as `USD`. */
+  readonly currency: string
 }
 
 /**
@@ -646,8 +656,18 @@ const decodeAccountLimits = (value: unknown): AccountLimits => {
         usedPct: number(fields["usedPct"]),
         resetsAt: number(fields["resetsAt"]),
         asOf: number(fields["asOf"]),
+        spend: fields["spend"] === undefined ? undefined : decodeWindowSpend(fields["spend"]),
       }
     }),
+  }
+}
+
+const decodeWindowSpend = (value: unknown): WindowSpend => {
+  const json = object(value)
+  return {
+    used: number(json["used"]),
+    limit: number(json["limit"]),
+    currency: string(json["currency"]),
   }
 }
 

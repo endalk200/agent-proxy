@@ -348,6 +348,11 @@ const MIGRATIONS: ReadonlyArray<string> = [
      as_of INTEGER NOT NULL
    );`,
   "ALTER TABLE limit_resets ADD COLUMN granted_at INTEGER;",
+  // A spend limit's money, in minor units; null for a window of a plan's allowance.
+  `ALTER TABLE limit_windows ADD COLUMN spend_used_minor INTEGER;
+   ALTER TABLE limit_windows ADD COLUMN spend_limit_minor INTEGER;
+   ALTER TABLE limit_windows ADD COLUMN spend_currency TEXT;
+   ALTER TABLE limit_windows ADD COLUMN spend_exponent INTEGER;`,
 ]
 
 const openDatabase = (file: string) => {
@@ -487,15 +492,28 @@ const make = (db: Database) => {
       resets_at: number
       as_of: number
       source: WindowSource
+      spend_used_minor: number | null
+      spend_limit_minor: number | null
+      spend_currency: string | null
+      spend_exponent: number | null
     },
     []
-  >("SELECT account_id, window_id, used_share, resets_at, as_of, source FROM limit_windows")
+  >(
+    `SELECT account_id, window_id, used_share, resets_at, as_of, source,
+       spend_used_minor, spend_limit_minor, spend_currency, spend_exponent
+     FROM limit_windows`,
+  )
   const upsertWindow = db.query(
-    `INSERT INTO limit_windows (account_id, window_id, used_share, resets_at, as_of, source)
-     VALUES ($account, $id, $used, $resets, $asOf, $source)
+    `INSERT INTO limit_windows (account_id, window_id, used_share, resets_at, as_of, source,
+       spend_used_minor, spend_limit_minor, spend_currency, spend_exponent)
+     VALUES ($account, $id, $used, $resets, $asOf, $source,
+       $spendUsed, $spendLimit, $spendCurrency, $spendExponent)
      ON CONFLICT (account_id, window_id) DO UPDATE SET
        used_share = excluded.used_share, resets_at = excluded.resets_at,
-       as_of = excluded.as_of, source = excluded.source`,
+       as_of = excluded.as_of, source = excluded.source,
+       spend_used_minor = excluded.spend_used_minor,
+       spend_limit_minor = excluded.spend_limit_minor,
+       spend_currency = excluded.spend_currency, spend_exponent = excluded.spend_exponent`,
   )
   const deleteWindow = db.query(
     "DELETE FROM limit_windows WHERE account_id = $account AND window_id = $id",
@@ -747,6 +765,18 @@ const make = (db: Database) => {
         resetsAt: row.resets_at,
         asOf: row.as_of,
         source: row.source,
+        spend:
+          row.spend_used_minor === null ||
+          row.spend_limit_minor === null ||
+          row.spend_currency === null ||
+          row.spend_exponent === null
+            ? undefined
+            : {
+                usedMinor: row.spend_used_minor,
+                limitMinor: row.spend_limit_minor,
+                currency: row.spend_currency,
+                exponent: row.spend_exponent,
+              },
       })
       byAccount.set(row.account_id, list)
     }
@@ -768,6 +798,10 @@ const make = (db: Database) => {
             resets: window.resetsAt,
             asOf: window.asOf,
             source: window.source,
+            spendUsed: window.spend?.usedMinor ?? null,
+            spendLimit: window.spend?.limitMinor ?? null,
+            spendCurrency: window.spend?.currency ?? null,
+            spendExponent: window.spend?.exponent ?? null,
           })
         }
         for (const id of removed) deleteWindow.run({ account: accountId, id })

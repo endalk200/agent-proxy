@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils"
 
 import type { AccountLimits, LimitWindow } from "./daemon-api.ts"
-import { age, timeText, until, weekdayText } from "./format.ts"
+import { age, money, timeText, until, weekdayText } from "./format.ts"
 import { Tip } from "./ui.tsx"
 
 /**
@@ -26,9 +26,17 @@ export const limitTone = (usedPct: number): LimitTone => {
 
 export const isStale = (window: LimitWindow, now: number) => now - window.asOf > STALE_MS
 
-/** "59% left", or "Used up". Rounds down, so it never claims more room than there is. */
+/**
+ * "59% left", or "Used up"; a spend limit says its money, "$1.26 of $40",
+ * even when used up. Rounds down, so it never claims more room than there
+ * is.
+ */
 export const leftText = (window: LimitWindow) =>
-  window.usedPct >= 100 ? "Used up" : `${Math.floor(leftPct(window.usedPct))}% left`
+  window.spend !== undefined
+    ? `${money(window.spend.used, window.spend.currency)} of ${money(window.spend.limit, window.spend.currency)}`
+    : window.usedPct >= 100
+      ? "Used up"
+      : `${Math.floor(leftPct(window.usedPct))}% left`
 
 /** "resets in 2h 14m". */
 export const resetText = (window: LimitWindow, now: number) =>
@@ -134,9 +142,23 @@ export function LimitCell(props: { window: LimitWindow | undefined; now: number 
       // oxlint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focus shows when stale numbers are from
       tabIndex={stale ? 0 : undefined}
     >
-      <span className={cn("text-sm font-semibold whitespace-nowrap tabular-nums", toneText[tone])}>
-        {leftText(window)}
-      </span>
+      {window.spend === undefined ? (
+        <span
+          className={cn("text-sm font-semibold whitespace-nowrap tabular-nums", toneText[tone])}
+        >
+          {leftText(window)}
+        </span>
+      ) : (
+        // The limit wraps under the money spent when the column is narrow.
+        <span className="flex flex-wrap items-baseline gap-x-1 tabular-nums">
+          <span className={cn("text-sm font-semibold whitespace-nowrap", toneText[tone])}>
+            {money(window.spend.used, window.spend.currency)}
+          </span>{" "}
+          <span className="text-xs whitespace-nowrap text-muted-foreground">
+            of {money(window.spend.limit, window.spend.currency)}
+          </span>
+        </span>
+      )}
       <span className="text-xs text-muted-foreground tabular-nums">{resetText(window, now)}</span>
       <Meter usedPct={window.usedPct} className="mt-0.5 basis-full" />
     </span>

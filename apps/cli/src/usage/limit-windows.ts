@@ -7,6 +7,7 @@ import {
   type KnownWindow,
   type ObservedWindow,
   type ResetsRead,
+  type Spend,
   type WindowSource,
   windowLabel,
 } from "./usage.ts"
@@ -41,6 +42,24 @@ export interface LimitResetView {
   readonly asOf: number
 }
 
+/** A spend limit's money, as the daemon API reports it: 1.26 of 40 USD. */
+export interface SpendView {
+  readonly used: number
+  readonly limit: number
+  /** The ISO 4217 code, such as `USD`. */
+  readonly currency: string
+}
+
+/** `spend` in the currency's major units. */
+const spendView = (spend: Spend): SpendView => {
+  const scale = 10 ** spend.exponent
+  return {
+    used: spend.usedMinor / scale,
+    limit: spend.limitMinor / scale,
+    currency: spend.currency,
+  }
+}
+
 /** One account's limit windows, as the daemon API reports them. */
 export interface AccountLimits {
   readonly accountId: string
@@ -53,6 +72,8 @@ export interface AccountLimits {
     readonly usedPct: number
     readonly resetsAt: number
     readonly asOf: number
+    /** For a spend limit only: the money spent and the most allowed, in the currency's major units. */
+    readonly spend?: SpendView | undefined
   }>
   /** Its limit resets that have not expired, the soonest to expire first. */
   readonly limitResets: ReadonlyArray<LimitResetView>
@@ -75,6 +96,7 @@ const toAccountLimits = (
     usedPct: Math.round(window.usedShare * 1000) / 10,
     resetsAt: window.resetsAt,
     asOf: window.asOf,
+    spend: window.spend === undefined ? undefined : spendView(window.spend),
   })),
   limitResets: (resets?.resets ?? [])
     .filter((reset) => reset.expiresAt === undefined || reset.expiresAt > now)

@@ -264,6 +264,44 @@ describe("the account sheet", () => {
     expect(textOf(panel)).toContain("As of just now")
   })
 
+  it("shows a seat that pays for each request its money spent against its spend limit", async () => {
+    const daemon = fakeDaemon({
+      accounts: [account({ id: "e1", label: "Office", plan: "Enterprise · usage-based" })],
+      pools: [{ provider: "claude", newSessionsAccountId: "e1" }],
+    })
+    const monthEnd = Date.parse("2026-12-01T00:00:00Z")
+    daemon.limits = [
+      {
+        accountId: "e1",
+        asOf: NOW - 2 * MIN,
+        windows: [
+          {
+            id: "monthly",
+            label: "Monthly",
+            usedPct: 3.2,
+            resetsAt: monthEnd,
+            asOf: NOW - 2 * MIN,
+            spend: { used: 1.26, limit: 40, currency: "USD" },
+          },
+        ],
+      },
+    ]
+    show(daemon)
+    expect(rowsOf(await table("Claude accounts"))).toEqual([
+      expect.objectContaining({
+        "5-hour": "—",
+        Weekly: "—",
+        Monthly: "$1.26 of $40 resets in 13d 18h",
+      }),
+    ])
+    const panel = within(await sheet("Office")).getByRole("region", { name: "Limit windows" })
+    expect(within(panel).getAllByRole("listitem").map(textOf)).toEqual([
+      "5-hour Not on the Enterprise · usage-based plan",
+      "Weekly Not on the Enterprise · usage-based plan",
+      "Monthly $1.26 of $40 Resets in 13d 18h · Tue 9:00 AM",
+    ])
+  })
+
   it("says when an account's windows are stale, or not read yet", async () => {
     show(accounts())
     await table("Codex accounts")

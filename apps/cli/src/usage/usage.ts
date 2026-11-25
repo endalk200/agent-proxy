@@ -75,6 +75,21 @@ export interface ObservedWindow {
   readonly usedShare: number
   /** When the window resets, epoch milliseconds. */
   readonly resetsAt: number
+  /** For a spend limit, the money behind `usedShare`; none for a window of a plan's allowance. */
+  readonly spend?: Spend | undefined
+}
+
+/**
+ * The money spent in a spend limit (GLOSSARY.md, *Spend limit*) and the most
+ * it allows, in the currency's minor units, as the provider counts them.
+ */
+export interface Spend {
+  readonly usedMinor: number
+  readonly limitMinor: number
+  /** The ISO 4217 code, such as `USD`. */
+  readonly currency: string
+  /** How many decimal places a minor unit is: 2 for cents. */
+  readonly exponent: number
 }
 
 /** Where the daemon learned a limit window. */

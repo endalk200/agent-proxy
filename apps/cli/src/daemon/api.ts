@@ -144,6 +144,10 @@ export const LimitsView = Schema.Struct({
       usedPct: Schema.Finite,
       resetsAt: Schema.Finite,
       asOf: Schema.Finite,
+      /** A spend limit's money spent and most allowed, in major units; only on a spend limit. */
+      spend: Schema.optional(
+        Schema.Struct({ used: Schema.Finite, limit: Schema.Finite, currency: Schema.String }),
+      ),
     }),
   ),
   limitResets: Schema.Array(LimitResetView),

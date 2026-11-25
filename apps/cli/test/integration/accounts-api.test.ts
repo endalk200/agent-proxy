@@ -9,7 +9,14 @@ import { startDaemon } from "../../src/daemon/daemon.ts"
 import { Processes } from "../../src/processes.ts"
 import { ProviderEndpoints, realEndpoints } from "../../src/providers/endpoints.ts"
 import { RuntimeInfo } from "../../src/runtime-info.ts"
-import { alice, bob, type ClaudeUser, type FakeClaude, fakeClaude } from "../support/fake-claude.ts"
+import {
+  alice,
+  bob,
+  carol,
+  type ClaudeUser,
+  type FakeClaude,
+  fakeClaude,
+} from "../support/fake-claude.ts"
 
 // The daemon's account and login API, in-process: a real listener on loopback,
 // HOME and the XDG directories in a temporary directory, and a fake Claude
@@ -232,6 +239,16 @@ layer(services)("daemon account API", (it) => {
           enabled: true,
         }),
       ])
+    }),
+  )
+
+  it.effect("a seat that pays for each request is added with a usage-based plan", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome(yield* fakeClaude)
+      expect(yield* home.signIn(carol)).toMatchObject({
+        status: "succeeded",
+        account: { email: "carol@example.com", plan: "Enterprise · usage-based" },
+      })
     }),
   )
 

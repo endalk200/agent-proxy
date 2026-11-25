@@ -56,6 +56,23 @@ const usd2 = new Intl.NumberFormat("en-US", {
 export const usd = (n: number): string =>
   n >= 10_000 ? usd0.format(n) : n > 0 && n < 0.005 ? "<$0.01" : usd2.format(n)
 
+/**
+ * "$1.26", or "$40" for a whole amount, in `currency`, an ISO 4217 code;
+ * "1.26 XYZ" for a code the browser does not know.
+ */
+export const money = (n: number, currency: string): string => {
+  const whole = Number.isInteger(n)
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      ...(whole ? { minimumFractionDigits: 0, maximumFractionDigits: 0 } : {}),
+    }).format(n)
+  } catch {
+    return `${whole ? n : n.toFixed(2)} ${currency}`
+  }
+}
+
 /** "95.8%" with one digit, "96%" with none; "<0.1%" or "<1%" for a sliver. */
 export const pct = (fraction: number, digits = 1): string => {
   const smallest = 10 ** -digits

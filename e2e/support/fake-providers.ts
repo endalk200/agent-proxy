@@ -70,6 +70,17 @@ const escapeHtml = (text: string) =>
 const claudeProfile = (person: FakePerson) => {
   const [account, organization] = person.providerAccountId.split(":")
   const max = person.plan.startsWith("Max")
+  if (person.plan.startsWith("Enterprise")) {
+    return {
+      account: { uuid: account, email: person.email },
+      organization: {
+        uuid: organization,
+        organization_type: "claude_enterprise",
+        rate_limit_tier: "default_claude_zero",
+        seat_tier: "enterprise_usage_based",
+      },
+    }
+  }
   return {
     account: { uuid: account, email: person.email },
     organization: {
@@ -79,6 +90,34 @@ const claudeProfile = (person: FakePerson) => {
     },
   }
 }
+
+/** True for a Claude token of a seat that pays for each request: any token naming `usage-based`. */
+const isUsageBased = (token: string) => token.includes("usage-based")
+
+/**
+ * Claude's usage endpoint for a seat that pays for each request, as it
+ * answered live on 2026-11-25: no windows, no limit resets for the seat, and
+ * $1.26 of a $40.00 monthly spend limit spent.
+ */
+const claudeUsageBasedUsage = () => ({
+  cedar_ember: {
+    eligible: false,
+    ineligible_reason: "seat",
+    grants: [],
+    cooldown_until: null,
+  },
+  five_hour: null,
+  seven_day: null,
+  limits: [],
+  spend: {
+    used: { amount_minor: 126, currency: "USD", exponent: 2 },
+    limit: { amount_minor: 4000, currency: "USD", exponent: 2 },
+    percent: 3,
+    severity: "normal",
+    enabled: true,
+    disabled_reason: null,
+  },
+})
 
 const jwtPart = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url")
 
@@ -286,6 +325,19 @@ const codexResponse = (model: string) => {
 const limitHeaders = (provider: FakeProvider, token: string): Record<string, string> => {
   const used = usedFor(token)
   const now = Math.floor(Date.now() / 1000)
+  if (provider === "claude" && isUsageBased(token)) {
+    // A seat that pays for each request gives its spend only as a share, as overage.
+    const date = new Date()
+    const monthEnd = String(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1) / 1000)
+    return {
+      "anthropic-ratelimit-unified-status": "allowed",
+      "anthropic-ratelimit-unified-representative-claim": "overage",
+      "anthropic-ratelimit-unified-reset": monthEnd,
+      "anthropic-ratelimit-unified-overage-status": "allowed",
+      "anthropic-ratelimit-unified-overage-utilization": "0.03",
+      "anthropic-ratelimit-unified-overage-reset": monthEnd,
+    }
+  }
   return provider === "claude"
     ? {
         "anthropic-ratelimit-unified-status": "allowed",
@@ -489,12 +541,14 @@ export const startFakeProviders = async (port = 0): Promise<FakeProviders> => {
           response,
           200,
           provider === "claude"
-            ? claudeUsage(
-                bearer,
-                resetsOf("claude", bearer),
-                fresh,
-                (request.headers["user-agent"] ?? "").startsWith("claude-cli/"),
-              )
+            ? isUsageBased(bearer)
+              ? claudeUsageBasedUsage()
+              : claudeUsage(
+                  bearer,
+                  resetsOf("claude", bearer),
+                  fresh,
+                  (request.headers["user-agent"] ?? "").startsWith("claude-cli/"),
+                )
             : codexUsage(bearer, resetsOf("codex", bearer).length, fresh),
         )
       }
