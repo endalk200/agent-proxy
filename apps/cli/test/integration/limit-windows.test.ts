@@ -164,6 +164,30 @@ layer(services)("limit windows", (it) => {
     }),
   )
 
+  it.effect("a spend whose amounts disagree on currency or scale adds no window", () =>
+    Effect.gen(function* () {
+      const consistent = usageBasedAnswer(126, 4_000)
+      const answers = [
+        { ...consistent.spend, used: { amount_minor: 126, currency: "USD", exponent: 3 } },
+        { ...consistent.spend, used: { amount_minor: 126, currency: "EUR", exponent: 2 } },
+        { ...consistent.spend, limit: { amount_minor: 4000, currency: "USD", exponent: -400 } },
+        { ...consistent.spend, used: { amount_minor: 1.5, currency: "USD", exponent: 2 } },
+      ]
+      for (const spend of answers) {
+        const home = yield* makeHome({
+          accounts: [{ provider: "claude", id: "work" }],
+          prepare: ({ claude }) => claude.answerUsageWith(() => json({ ...consistent, spend })),
+        })
+        yield* eventually(
+          Effect.sync(() => home.claude.usageRequests().length),
+          (reads) => reads >= 1,
+        )
+        yield* settle()
+        expect(windowsOf(yield* home.limits, "work")).toEqual([])
+      }
+    }),
+  )
+
   it.effect("a seat's spend survives a restart", () =>
     Effect.gen(function* () {
       let up = true
