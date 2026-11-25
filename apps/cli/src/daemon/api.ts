@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
 import { type Account, AccountStatus, Provider } from "../accounts/account.ts"
 import type { RoutingView } from "../accounts/router.ts"
@@ -74,6 +74,11 @@ export const LimitResetView = Schema.Struct({
   name: Schema.String,
   /** The windows it refills, by id and the owner's name for each. */
   refills: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
+  /**
+   * When the provider granted it, epoch milliseconds; null when the provider
+   * does not say, or the daemon predates grant dates and sends none.
+   */
+  grantedAt: Schema.NullOr(Schema.Finite).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** When it expires unredeemed, epoch milliseconds; null when the provider gives no end. */
   expiresAt: Schema.NullOr(Schema.Finite),
   usableNow: Schema.Boolean,

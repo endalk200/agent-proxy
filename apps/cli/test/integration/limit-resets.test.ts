@@ -120,6 +120,7 @@ layer(services)("limit resets", (it) => {
                 { id: "five-hour", label: "5-hour" },
                 { id: "weekly", label: "Weekly" },
               ],
+              grantedAt: Date.UTC(2026, 10, 10, 18, 0, 0),
               expiresAt: Date.UTC(2026, 11, 10, 22, 0, 0),
               usableNow: true,
               unavailableReason: null,
@@ -167,6 +168,7 @@ layer(services)("limit resets", (it) => {
                         resetCredit({
                           id: "sooner",
                           title: "Referral reset",
+                          granted_at: undefined,
                           expires_at: "2026-11-20T00:00:00Z",
                           is_supported_by_plan: false,
                         }),
@@ -194,6 +196,7 @@ layer(services)("limit resets", (it) => {
                   { id: "five-hour", label: "5-hour" },
                   { id: "weekly", label: "Weekly" },
                 ],
+                grantedAt: null,
                 expiresAt: Date.UTC(2026, 10, 20),
                 usableNow: false,
                 unavailableReason: "Not available on this plan",
@@ -206,6 +209,7 @@ layer(services)("limit resets", (it) => {
                   { id: "five-hour", label: "5-hour" },
                   { id: "weekly", label: "Weekly" },
                 ],
+                grantedAt: Date.UTC(2026, 10, 12, 22, 27, 7, 83),
                 expiresAt: Date.UTC(2027, 0, 5),
                 usableNow: true,
                 unavailableReason: null,
@@ -252,6 +256,10 @@ layer(services)("limit resets", (it) => {
         "soon",
         "later",
       ])
+      // Kept with its grant date, which the list shows beside its expiry.
+      expect(resetsOf(yield* home.limits, "work")[0]?.["grantedAt"]).toBe(
+        Date.UTC(2026, 10, 10, 18, 0, 0),
+      )
 
       yield* TestClock.adjust("2 hours")
       expect(resetsOf(yield* home.limits, "work").map((reset) => reset["id"])).toEqual(["later"])

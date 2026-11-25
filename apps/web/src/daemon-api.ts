@@ -289,6 +289,8 @@ export interface LimitReset {
   readonly name: string
   /** The limit windows it refills. */
   readonly refills: ReadonlyArray<{ readonly id: string; readonly label: string }>
+  /** When the provider granted it, epoch milliseconds; null when the provider does not say. */
+  readonly grantedAt: number | null
   /** When it expires unredeemed, epoch milliseconds; null when it does not. */
   readonly expiresAt: number | null
   /** False while the provider won't let it be redeemed, saying why in `unavailableReason`. */
@@ -611,6 +613,8 @@ const decodeLimitReset = (value: unknown): LimitReset => {
       const fields = object(window)
       return { id: string(fields["id"]), label: string(fields["label"]) }
     }),
+    // A daemon from before grant dates sends none.
+    grantedAt: json["grantedAt"] === undefined ? null : nullableNumber(json["grantedAt"]),
     expiresAt: nullableNumber(json["expiresAt"]),
     usableNow: boolean(json["usableNow"]),
     unavailableReason:

@@ -37,6 +37,7 @@ const reset = (
     { id: "five-hour", label: "5-hour" },
     { id: "weekly", label: "Weekly" },
   ],
+  grantedAt: null,
   expiresAt: days === null ? null : NOW + days * DAY,
   usableNow: true,
   unavailableReason: null,
@@ -169,14 +170,43 @@ describe("the account sheet", () => {
     show(daemon)
     const section = await resetsIn("Work")
     expect(itemsOf(section)).toEqual([
-      "Full reset Refills 5-hour and Weekly · expires Dec 10 (in 23d 0h) Redeem",
-      "New model launch: one Fable reset Refills 5-hour · expires Mar 9 (in 112d 0h) Redeem",
+      "Full reset Refills 5-hour and Weekly expires Dec 10 (in 23d 0h) Redeem",
+      "New model launch: one Fable reset Refills 5-hour expires Mar 9 (in 112d 0h) Redeem",
     ])
     expect(
       within(section)
         .getAllByRole("button", { name: /^Redeem/ })
         .map((button) => button.getAttribute("aria-label")),
     ).toEqual(["Redeem Full reset", "Redeem New model launch: one Fable reset"])
+  })
+
+  it("says when each limit reset was granted, which tells apart two of the same name", async () => {
+    const daemon = accounts()
+    daemon.limits = daemon.limits.map((limits) =>
+      limits.accountId === "a1"
+        ? {
+            ...limits,
+            limitResets: [
+              reset("bonus", "Full reset", 5, { grantedAt: NOW - 1 * DAY }),
+              reset("earlier", "Full reset", 23, { grantedAt: NOW - 5 * DAY }),
+            ],
+          }
+        : limits,
+    )
+    show(daemon)
+    const section = await resetsIn("Work")
+    expect(itemsOf(section)).toEqual([
+      "Full reset Refills 5-hour and Weekly granted Nov 16 · expires Nov 22 (in 5d 0h) Redeem",
+      "Full reset Refills 5-hour and Weekly granted Nov 12 · expires Dec 10 (in 23d 0h) Redeem",
+    ])
+    // Each Redeem button is told apart by its dates, and so is the dialog it opens.
+    const sooner = within(section).getByRole("button", {
+      name: "Redeem Full reset",
+      description: "granted Nov 16 · expires Nov 22 (in 5d 0h)",
+    })
+    fireEvent.click(sooner)
+    const dialog = await screen.findByRole("alertdialog", { name: "Redeem Full reset?" })
+    expect(textOf(dialog)).toContain("This one was granted Nov 16 and expires Nov 22.")
   })
 
   it("marks a limit reset that expires within 7 days in the warning tone", async () => {
@@ -205,8 +235,8 @@ describe("the account sheet", () => {
     show(daemon)
     const section = await resetsIn("Work")
     expect(itemsOf(section)).toEqual([
-      "Full reset Refills 5-hour and Weekly · expires Dec 10 (in 23d 0h) Available once a limit is reached.",
-      "Weekly reset Refills 5-hour and Weekly · expires Dec 17 (in 30d 0h) Not usable right now",
+      "Full reset Refills 5-hour and Weekly expires Dec 10 (in 23d 0h) Available once a limit is reached.",
+      "Weekly reset Refills 5-hour and Weekly expires Dec 17 (in 30d 0h) Not usable right now",
     ])
     expect(within(section).queryByRole("button", { name: /^Redeem/ })).toBeNull()
   })
@@ -230,7 +260,7 @@ describe("redeeming a limit reset", () => {
     show(daemon)
     const dialog = await askToRedeem(await resetsIn("Work"), "Full reset")
     expect(textOf(dialog)).toBe(
-      "Redeem Full reset? It refills Work's 5-hour and Weekly windows now. Claude keeps this account's weekly reset day. A redeem can't be undone. 5-hour 46% used Weekly 55% used Cancel Redeem",
+      "Redeem Full reset? It refills Work's 5-hour and Weekly windows now. Claude keeps this account's weekly reset day. This one expires Dec 10. A redeem can't be undone. 5-hour 46% used Weekly 55% used Cancel Redeem",
     )
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }))
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
@@ -243,7 +273,7 @@ describe("redeeming a limit reset", () => {
     show(accounts())
     const dialog = await askToRedeem(await resetsIn("carol"), "Full reset")
     expect(textOf(dialog)).toBe(
-      "Redeem Full reset? It refills carol's 5-hour and Weekly windows now. Codex moves this account's weekly refresh to a week from now. A redeem can't be undone. 5-hour 90% used Weekly not read yet Cancel Redeem",
+      "Redeem Full reset? It refills carol's 5-hour and Weekly windows now. Codex moves this account's weekly refresh to a week from now. This one expires Nov 22. A redeem can't be undone. 5-hour 90% used Weekly not read yet Cancel Redeem",
     )
   })
 
@@ -259,7 +289,7 @@ describe("redeeming a limit reset", () => {
       "Redeemed Full reset Redeemed. The account's limit windows are read again.",
     )
     expect(itemsOf(section)).toEqual([
-      "New model launch: one Fable reset Refills 5-hour · expires Mar 9 (in 112d 0h) Redeem",
+      "New model launch: one Fable reset Refills 5-hour expires Mar 9 (in 112d 0h) Redeem",
     ])
     expect(await accountCells("Claude accounts")).toContain(
       "Work Max 5x 1 limit reset New sessions work@example.com",

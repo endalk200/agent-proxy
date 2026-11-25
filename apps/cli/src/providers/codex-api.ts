@@ -219,6 +219,7 @@ const codexReset = (
       id,
       name: typeof title === "string" && title.trim() !== "" ? title.trim() : "Limit reset",
       refills,
+      grantedAt: isoInstant(credit["granted_at"]),
       expiresAt: isoInstant(credit["expires_at"]),
       usableNow: supported,
       unavailableReason: supported ? undefined : "Not available on this plan",

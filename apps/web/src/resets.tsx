@@ -23,8 +23,8 @@ import { asFailure } from "./useDaemon.ts"
 
 /**
  * Limit resets as the pages show them: a count on each account's row, and in
- * the account sheet each one, soonest expiry first, with a Redeem button
- * that asks first. A limit reset expiring within a week is in the warning
+ * the account sheet each one, soonest expiry first, with when it was granted,
+ * which tells apart two of the same name, and a Redeem button that asks first. A limit reset expiring within a week is in the warning
  * tone, so it gets spent. The daemon never redeems one on its own (ADR-0010).
  */
 
@@ -59,6 +59,21 @@ const expiryText = (reset: LimitReset, now: number) =>
   reset.expiresAt === null
     ? "never expires"
     : `expires ${dayText(reset.expiresAt)} (in ${until(reset.expiresAt, now)})`
+
+/** "granted Nov 24", or nothing when the provider does not say. */
+const grantedText = (reset: LimitReset) =>
+  reset.grantedAt === null ? undefined : `granted ${dayText(reset.grantedAt)}`
+
+/**
+ * When `reset` was granted and expires, as the redeem dialog says it, so the
+ * owner can tell which of two of the same name they are about to spend.
+ */
+const datesSentence = (reset: LimitReset) => {
+  const expiry = reset.expiresAt === null ? "never expires" : `expires ${dayText(reset.expiresAt)}`
+  return reset.grantedAt === null
+    ? `This one ${expiry}.`
+    : `This one was granted ${dayText(reset.grantedAt)} and ${expiry}.`
+}
 
 /** How many limit resets an account holds, beside its label; nothing when it holds none. */
 export function ResetsBadge(props: { resets: ReadonlyArray<LimitReset>; now: number }) {
@@ -183,8 +198,10 @@ export function LimitResetsPanel(props: { account: Account; readOnly: boolean; n
         </p>
       ) : (
         <ul className="flex flex-col rounded-lg border border-border">
-          {resets.map((reset) => {
+          {resets.map((reset, index) => {
             const soon = expiresSoon(reset, now)
+            // Describes its Redeem button, which may share its name with another's.
+            const datesId = `${headingId}-dates-${index}`
             return (
               <li
                 key={reset.id}
@@ -203,8 +220,14 @@ export function LimitResetsPanel(props: { account: Account; readOnly: boolean; n
                 </span>
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <b className="text-sm font-medium text-pretty">{reset.name}</b>
-                  <p className="text-xs text-muted-foreground tabular-nums">
-                    {reset.refills.length > 0 && `Refills ${refillsText(reset)} · `}
+                  {reset.refills.length > 0 && (
+                    <p className="text-xs text-muted-foreground">{`Refills ${refillsText(reset)}`}</p>
+                  )}
+                  <p
+                    id={datesId}
+                    className="text-xs text-muted-foreground tabular-nums first-letter:uppercase"
+                  >
+                    {grantedText(reset) !== undefined && `${grantedText(reset)} · `}
                     <span
                       data-tone={soon ? "warn" : undefined}
                       className={cn(soon && "font-medium text-warning")}
@@ -220,6 +243,7 @@ export function LimitResetsPanel(props: { account: Account; readOnly: boolean; n
                     size="sm"
                     className="shrink-0"
                     aria-label={`Redeem ${reset.name}`}
+                    aria-describedby={datesId}
                     disabled={props.readOnly || redeeming}
                     onClick={() => setAsking(reset)}
                   >
@@ -301,7 +325,7 @@ function RedeemDialog(props: {
                 {reset.refills.length > 0
                   ? `It refills ${account.label}'s ${refillsText(reset)} ${reset.refills.length === 1 ? "window" : "windows"} now.`
                   : `It refills ${account.label}'s limits now.`}{" "}
-                {sideEffects[account.provider]} A redeem can't be undone.
+                {sideEffects[account.provider]} {datesSentence(reset)} A redeem can't be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
             {reset.refills.length > 0 && (
