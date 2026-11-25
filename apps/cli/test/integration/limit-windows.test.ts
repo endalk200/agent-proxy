@@ -483,7 +483,7 @@ layer(services)("limit windows", (it) => {
         // `percent` is the share used only in a `limits` entry, so this is not
         // a 5-hour window it can read, and the weekly one is not left out.
         answer = {
-          five_hour: { percent: 72, resets_at: new Date(NOW + HOUR).toISOString() },
+          five_hour: { percent: 72, resets_at: "2026-11-30T15:00:00Z" },
           limits: [],
         }
         yield* TestClock.adjust("1 minute")
