@@ -11,7 +11,7 @@ The daemon serves Codex on its listen address: with a custom Codex provider name
 - `codex-sessions` requests with the same `session-id` header (Codex), or with no header and the same body `prompt_cache_key` (opencode), stay on one account until it stops being Active or the session idles for an hour; a Claude and a Codex session with the same id are kept apart.
 - `codex-failover` a 429 before any byte reaches the client cools the account and sends the request to the next Codex account: `usage_limit_reached` until its `resets_at` (or `resets_in_seconds`), for every model; any other 429 for `Retry-After` only. The client's `x-codex-turn-state` goes to the next account unchanged.
 - `codex-cooling-down` with every enabled Codex account cooling down, 429 `{"error":{"type":"usage_limit_reached","message":"agent-proxy: every Codex account is cooling down. The first is available again at <ISO time>.","resets_at":<epoch seconds>,"resets_in_seconds":<n>}}` with `retry-after`; when the account that just answered resets first, its own 429 reaches the client instead.
-- `codex-token-retry` when the backend answers 401, the account's tokens are refreshed once (the rejected answer's body is cancelled, not read) and the request is retried on the same account; a refresh that is refused flags the account Needs sign-in, and the request goes to the next Active Codex account or gets the `no Codex account available` error.
+- `codex-token-retry` when the backend answers 401, the account's tokens are refreshed once (the rejected answer's body is cancelled, not read) and the request is retried on the same account; a refresh that is refused flags the account Needs sign-in, and the request goes to the next Active Codex account or gets the `no Codex account available` error. A second 401, or a refresh that did not happen (the token endpoint unreachable or a gateway error), also moves the request to the next Active Codex account; the backend's 401 reaches the client only when none can take it.
 - `codex-no-account` with no Codex account, 400 ``agent-proxy: no Codex account. Add one with `agent-proxy accounts add codex`.``; with every Codex account needing sign-in or disabled, 400 ``agent-proxy: no Codex account available, every account needs sign-in or is disabled. Run `agent-proxy accounts`.``; both `invalid_request_error`, the status every client shows at once.
 - `codex-passthrough` the backend sees `Authorization: Bearer <account token>` and `chatgpt-account-id: <account id>` (replacing any the client sent), no `x-api-key`, and the client's other headers and body unchanged; the client sees the backend's status, headers and body unchanged, streamed.
 - `codex-unreachable` when the backend cannot be reached, 502 `server_error` `agent-proxy: could not reach Codex. Check this machine's network connection.`, logged as `"could not reach Codex"` in `daemon.log`.
@@ -45,7 +45,7 @@ Preconditions:
 Every drive below runs inside `verify shell -- -c '…'` and starts with these definitions; `r` sends a short Responses request with extra curl arguments:
 
 ```sh
-a=$(jq -r .address "$XDG_STATE_HOME/agent-proxy/daemon.json"); k=$(bun apps/cli/dist/bin.js key)
+a=$(jq -r .address "$XDG_STATE_HOME/agent-proxy/daemon.json"); k=$(apps/cli/dist/agent-proxy key)
 r() { curl -s -w " HTTP %{http_code}\n" -X POST "$a/backend-api/codex/responses" -H "content-type: application/json" "$@" -d '{"model":"gpt-6-luna","input":"hi","stream":true}'; }
 ```
 
@@ -53,7 +53,7 @@ r() { curl -s -w " HTTP %{http_code}\n" -X POST "$a/backend-api/codex/responses"
 - **Streamed, as the account.** `curl -s -N -D "$TMPDIR/h" -X POST "$a/backend-api/codex/responses" -H "authorization: Bearer $k" -H "session-id: sess-123" -H "originator: codex_exec" -H "content-type: application/json" -d '{}' | while IFS= read -r l; do [ -n "$l" ] && echo "$(date +%s) $l"; done` prints `response.created` lines 2 seconds before `response.completed`; `$TMPDIR/h` has `x-codex-turn-state` and `x-codex-primary-used-percent`. The fake logs the request with `Bearer at-<n>`, `chatgpt-account-id=acct-carol`, `session-id=sess-123`, `originator=codex_exec` and no `x-api-key`.
 - **Models and search.** `curl -s "$a/backend-api/codex/models?client_version=0.169.0" -H "authorization: Bearer $k"` and a `POST "$a/backend-api/codex/alpha/search"` with the key both print the fake's JSON with `HTTP 200`; the fake logs the path with its query.
 - **WebSocket.** `curl -s -w " HTTP %{http_code}\n" "$a/backend-api/codex/responses" -H "connection: Upgrade" -H "upgrade: websocket" -H "sec-websocket-version: 13" -H "sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ=="` prints the `WebSocket is not supported` error and `HTTP 426`; the fake logs nothing.
-- **Native routing.** With only a Codex account, `curl -s -X POST "$a/v1/messages" -H "x-api-key: $k" -d '{}'` prints Anthropic's ``no Claude account. Add one with `agent-proxy accounts add claude`.`` and `HTTP 400`.
+- **Native routing.** With only a Codex account, `curl -s -w " HTTP %{http_code}\n" -X POST "$a/v1/messages" -H "x-api-key: $k" -d '{}'` prints Anthropic's ``no Claude account. Add one with `agent-proxy accounts add claude`.`` and `HTTP 400`.
 - **Refresh and retry on a 401.** Tell the fake to reject the latest access token, then `r -H "authorization: Bearer $k"` prints `HTTP 200`. The fake logs the request with the old token, one JSON refresh of its `rt-<n>`, then the request with the new token.
 - **Failover and every account cooling down.** Run the [Claude proxy](./claude-proxy.md) "Sessions, failover and cooldowns" setup, then `r -D - -H "authorization: Bearer $k" -H "session-id: X1" -H "x-codex-turn-state: ts-stale"`: the fake logs `token-c1` then `token-c2`, both with `turn-state=ts-stale`, and the client gets the proxy's `every Codex account is cooling down` 429 with carol's `resets_at` (18 minutes ahead) and `retry-after`. `r` again gets the same answer and the fake logs nothing. `accounts` shows carol and dave `Cooling down until …` and `No Codex account can take new sessions until <carol's reset>, when the first cooldown ends.`
 - **No account.** `accounts disable <label>`, then `r -H "authorization: Bearer $k"` prints the `no Codex account available …` error and `HTTP 400`.
@@ -61,10 +61,10 @@ r() { curl -s -w " HTTP %{http_code}\n" -X POST "$a/backend-api/codex/responses"
 
 ## Gotchas
 
-- The real login and the owner-only drive contact `auth.openai.com` and `chatgpt.com`; every other drive reaches only the fake through `AGENT_PROXY_PROVIDER_ENDPOINTS`.
+- The real login and the owner-only drive contact `auth.openai.com` and `chatgpt.com`; every other drive reaches only the fake through `AGENT_PROXY_PROVIDER_ENDPOINTS` when it names a `usageUrl` on the fake too; without one the daemon reads each Active account's limits from the real `chatgpt.com/backend-api/wham/usage` with the seeded token.
 - Codex's provider must be named exactly `OpenAI` and its `base_url` must end in `/backend-api/codex`, or Codex uses other paths the proxy does not serve.
 - `x-codex-turn-state` is bound to the account that issued it; after a failover or a session moving accounts, the client's next request may carry a stale one, which the proxy passes through unchanged (ADR-0006 allows no change the provider has not been shown to need). The answer carries the new account's turn state.
-- Cooldowns and session bindings live in memory; a restart forgets them.
+- Session bindings live in memory, so a restart forgets them; cooldowns are kept in the usage store and survive a restart, as in the [Claude proxy](./claude-proxy.md) failover drive.
 - Codex sends `session-id` (equal to `prompt_cache_key`); opencode sends none, only `prompt_cache_key` and its own `x-session-id`.
 - The daemon's address changes on each start with the `listen = "127.0.0.1:0"` fixture; read it from the state file every time.
 - The live check cannot run unattended: it needs the owner's ChatGPT account and a browser.
