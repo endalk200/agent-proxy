@@ -27,6 +27,8 @@ export interface ClaudeUser {
   readonly email: string
   readonly organizationType: string
   readonly rateLimitTier: string | null
+  /** The profile's `seat_tier`, such as `enterprise_usage_based`; none for a personal plan. */
+  readonly seatTier?: string
 }
 
 export const alice: ClaudeUser = {
@@ -43,6 +45,16 @@ export const bob: ClaudeUser = {
   email: "bob@example.com",
   organizationType: "claude_pro",
   rateLimitTier: "default_claude_ai",
+}
+
+/** A seat in an Enterprise organization that pays for each request, as confirmed live on 2026-11-25. */
+export const carol: ClaudeUser = {
+  accountUuid: "0b5c1f7e-3333-4a1a-9a1a-000000000003",
+  organizationUuid: "7d3e2a90-cccc-4b2b-8b2b-000000000003",
+  email: "carol@example.com",
+  organizationType: "claude_enterprise",
+  rateLimitTier: "default_claude_zero",
+  seatTier: "enterprise_usage_based",
 }
 
 interface PendingCode {
@@ -152,11 +164,22 @@ export const streamedMessage = (usage: {
     .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
     .join("")
 
+/** The `spend` a personal plan's usage answer carries, as confirmed live on 2026-11-25: none allowed. */
+export const noSpend = {
+  used: { amount_minor: 0, currency: "USD", exponent: 2 },
+  limit: null,
+  percent: 0,
+  severity: "normal",
+  enabled: false,
+  disabled_reason: null,
+}
+
 /** What Claude's usage endpoint answers by default: the same windows as `limitHeaders`, in percent. */
 export const usageAnswer = {
   five_hour: { utilization: 12, resets_at: new Date(1_795_000_000_000).toISOString() },
   seven_day: { utilization: 34, resets_at: new Date(1_795_500_000_000).toISOString() },
   limits: [],
+  spend: noSpend,
 }
 
 /**
@@ -187,6 +210,36 @@ export const modelLimit = (model: string, percent: number, resetsAt: string) =>
     resets_at: resetsAt,
     scope: { model: { id: null, display_name: model }, surface: null },
   })
+
+/**
+ * What Claude's usage endpoint answers, without `skip_spend=1`, for a seat
+ * that pays for each request up to a monthly spend limit, as confirmed live
+ * on 2026-11-25: no 5-hour or weekly window, and the money spent this month
+ * and the limit in `spend`, in cents. `extra_usage` says the same in other
+ * words; the daemon reads `spend`.
+ */
+export const usageBasedAnswer = (usedCents: number, limitCents: number) => ({
+  five_hour: null,
+  seven_day: null,
+  limits: [],
+  extra_usage: {
+    is_enabled: true,
+    monthly_limit: limitCents,
+    used_credits: usedCents,
+    utilization: (usedCents / limitCents) * 100,
+    currency: "USD",
+    decimal_places: 2,
+    spend_limit_reached: usedCents >= limitCents,
+  },
+  spend: {
+    used: { amount_minor: usedCents, currency: "USD", exponent: 2 },
+    limit: { amount_minor: limitCents, currency: "USD", exponent: 2 },
+    percent: Math.round((usedCents / limitCents) * 100),
+    severity: "normal",
+    enabled: true,
+    disabled_reason: null,
+  },
+})
 
 const answerUsageDefault: ApiHandler = () => json(usageAnswer)
 
@@ -471,6 +524,7 @@ export const fakeClaude = Effect.gen(function* () {
         name: "Org",
         organization_type: owner.organizationType,
         rate_limit_tier: owner.rateLimitTier,
+        ...(owner.seatTier === undefined ? {} : { seat_tier: owner.seatTier }),
         billing_type: "stripe_subscription",
       },
     })

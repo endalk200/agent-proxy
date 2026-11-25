@@ -15,7 +15,7 @@ One login to one provider, with its credentials and identity (email, plan). The 
 _Avoid_: Subscription, sub, credential, auth file
 
 **Plan**:
-The tier an account pays for, such as Claude Max 20x or ChatGPT Pro.
+The tier an account pays for, such as Claude Max 20x or ChatGPT Pro. Most plans are flat; a **usage-based** plan, such as an Enterprise organization's usage-based seat, pays for each request instead, up to a spend limit.
 _Avoid_: Subscription, tier
 
 **Pool**:
@@ -40,6 +40,10 @@ _Avoid_: Weight, order, tier
 A provider's rolling allowance for one account, such as Claude's 5-hour, weekly, and per-model weekly (Fable) windows, or Codex's 5-hour and weekly windows. It has a share used and a time it resets; the provider owns both, and the proxy observes them, changing them only when the owner redeems a limit reset.
 _Avoid_: Quota, rate limit, usage limit, headroom (that is the router's view of the tightest window)
 
+**Spend limit**:
+The limit window of a usage-based plan: the most money its organization lets the account spend in a calendar month, with the money spent so far. Its share used is the money spent over the limit, and it resets on the 1st.
+_Avoid_: Budget, cap, credits, overage
+
 **Limit reset**:
 A single-use grant from the provider that refills some of an account's limit windows before they would reset on their own. The owner **redeems** it; an unredeemed one may expire.
 _Avoid_: Quota reset, reset credit, banked reset, grant, usage credits (those are pay-as-you-go billing past a limit)
@@ -57,7 +61,7 @@ The share of all input tokens (uncached input, cache read, and cache write) that
 _Avoid_: Cache rate, hit ratio
 
 **Equivalent cost**:
-What usage would have cost at the provider's API list prices. The owner pays flat subscriptions, so it measures what the subscriptions are worth, not what was billed. A write to Claude's 1-hour cache is priced at twice the input price, the 5-minute cache's at its own rate. A model with no known price is **unpriced** and left out of totals.
+What usage would have cost at the provider's API list prices. For a flat plan, it measures what the plan is worth, not what was billed; a usage-based plan's spend limit shows what was billed. A write to Claude's 1-hour cache is priced at twice the input price, the 5-minute cache's at its own rate. A model with no known price is **unpriced** and left out of totals.
 _Avoid_: Cost, spend, billing
 
 ### Clients

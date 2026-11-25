@@ -197,11 +197,53 @@ const scopedLimits = (
     return typeof model === "string" && model.trim() !== "" ? [{ model: model.trim(), limit }] : []
   })
 
+/** The start of the calendar month after `now`'s, UTC, epoch milliseconds. */
+const nextMonthStart = (now: number) => {
+  const date = new Date(now)
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 1)
+}
+
+/**
+ * The spend limit of a seat that pays for each request, from the usage
+ * answer's `spend` (asked for without `skip_spend=1`): the money spent this
+ * month and the most allowed, in minor units, as the `monthly` window.
+ * Claude gives no reset time; its spend month starts on the 1st, UTC, as the
+ * answers' `overage-reset` header says (confirmed live on 2026-11-25). None
+ * when spending is off or the answer is in a shape this does not read.
+ */
+const claudeSpendWindow = (body: Json, now: number): ObservedWindow | undefined => {
+  const spend = asObject(body["spend"])
+  if (spend?.["enabled"] !== true) return undefined
+  const used = asObject(spend["used"])
+  const limit = asObject(spend["limit"])
+  const usedMinor = finite(used?.["amount_minor"])
+  const limitMinor = finite(limit?.["amount_minor"])
+  const exponent = finite(limit?.["exponent"])
+  const currency = limit?.["currency"]
+  if (
+    usedMinor === undefined ||
+    limitMinor === undefined ||
+    limitMinor <= 0 ||
+    exponent === undefined ||
+    typeof currency !== "string" ||
+    currency === ""
+  ) {
+    return undefined
+  }
+  return {
+    id: "monthly",
+    usedShare: shareOf(usedMinor / limitMinor),
+    resetsAt: nextMonthStart(now),
+    spend: { usedMinor, limitMinor, currency, exponent },
+  }
+}
+
 /**
  * The windows Claude's usage endpoint reports: `five_hour`, `seven_day`, and
- * each per-model weekly limit, as a window named by its model. An answer
- * with neither base window, or with a window it cannot read, is not one
- * this reads, so the windows known before stay.
+ * each per-model weekly limit, as a window named by its model. A seat with
+ * neither base window that pays for each request has its spend limit as its
+ * only window. Any other answer with neither base window, or with a window
+ * it cannot read, is not one this reads, so the windows known before stay.
  */
 const claudeEndpointWindows = (
   body: Json,
@@ -209,7 +251,10 @@ const claudeEndpointWindows = (
 ): ReadonlyArray<ObservedWindow> | undefined => {
   const fiveHour = asObject(body["five_hour"])
   const sevenDay = asObject(body["seven_day"])
-  if (fiveHour === undefined && sevenDay === undefined) return undefined
+  if (fiveHour === undefined && sevenDay === undefined) {
+    const spend = claudeSpendWindow(body, now)
+    return spend === undefined ? undefined : [spend]
+  }
   const all = [
     endpointWindow("five-hour", fiveHour, "utilization", 5 * 60 * 60 * 1000, now),
     endpointWindow("weekly", sevenDay, "utilization", 7 * DAY_MS, now),
@@ -354,9 +399,9 @@ export class ClaudeApi extends Context.Service<ClaudeApi, UpstreamApi>()("agent-
         "anthropic-beta": OAUTH_BETA,
         "user-agent": `claude-cli/${version} (external, cli)`,
       })
+      // Without `skip_spend=1`, so a seat that pays for each request says what it spent.
       const usageUrl = new URL(endpoints.usageUrl)
       usageUrl.searchParams.set("cedar_ember", "1")
-      usageUrl.searchParams.set("skip_spend", "1")
 
       return ClaudeApi.of({
         send: Effect.fn("ClaudeApi.send")(function* (request, _account, accessToken) {

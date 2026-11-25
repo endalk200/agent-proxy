@@ -132,7 +132,7 @@ layer(services)("limit resets", (it) => {
         // One read, windows and resets together, as Claude Code makes it.
         const reads = home.claude.usageRequests()
         expect(reads).toHaveLength(1)
-        expect(reads[0]?.path).toBe("/api/oauth/usage?cedar_ember=1&skip_spend=1")
+        expect(reads[0]?.path).toBe("/api/oauth/usage?cedar_ember=1")
         expect(reads[0]?.headers["user-agent"]).toMatch(/^claude-cli\/\d[\w.]* \(external, cli\)$/)
         expect(limitsOf(limits, "work")).toMatchObject({
           windows: [{ id: "five-hour" }, { id: "weekly" }],

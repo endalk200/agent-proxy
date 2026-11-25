@@ -56,12 +56,23 @@ const Profile = Schema.Struct({
     uuid: Schema.String,
     organization_type: Schema.optionalKey(Schema.NullOr(Schema.String)),
     rate_limit_tier: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    seat_tier: Schema.optionalKey(Schema.NullOr(Schema.String)),
   }),
 })
 type Profile = typeof Profile.Type
 
-/** The plan as the owner knows it, such as "Max 20x", from the profile's organization. */
+/**
+ * The plan as the owner knows it, such as "Max 20x", from the profile's
+ * organization. A seat that pays for each request says so: its `seat_tier`
+ * ends in `_usage_based`, as `enterprise_usage_based` does (confirmed live
+ * on 2026-11-25).
+ */
 export const claudePlan = (organization: Profile["organization"]): string => {
+  const plan = basePlan(organization)
+  return organization.seat_tier?.endsWith("_usage_based") === true ? `${plan} · usage-based` : plan
+}
+
+const basePlan = (organization: Profile["organization"]): string => {
   const tier = organization.rate_limit_tier ?? ""
   switch (organization.organization_type) {
     case "claude_max":

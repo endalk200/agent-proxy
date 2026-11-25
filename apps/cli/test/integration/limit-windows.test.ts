@@ -7,6 +7,7 @@ import {
   limitHeaders,
   modelLimit,
   usageAnswer as claudeUsage,
+  usageBasedAnswer,
 } from "../support/fake-claude.ts"
 import { codexHeaders, usageAnswer as codexUsage } from "../support/fake-codex.ts"
 import { HOUR, makeHome, NOW, services } from "../support/usage-home.ts"
@@ -93,6 +94,98 @@ layer(services)("limit windows", (it) => {
         expect((yield* events.next("limits-changed"))["limits"]).toEqual(expected)
         expect(yield* home.limits).toEqual([expected])
       }),
+  )
+
+  it.effect(
+    "a seat that pays for each request has a monthly window of the money spent against its limit",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeHome({
+          accounts: [{ provider: "claude", id: "work" }],
+          prepare: ({ claude }) =>
+            claude.answerUsageWith(() => json(usageBasedAnswer(1_000, 4_000))),
+        })
+        const [read] = yield* eventually(
+          home.limits,
+          (all: Limits) => windowsOf(all, "work").length === 1,
+        )
+        expect(read).toMatchObject({
+          windows: [
+            {
+              id: "monthly",
+              label: "Monthly",
+              usedPct: 25,
+              // Claude gives no reset time; its spend month starts on the 1st, UTC.
+              resetsAt: Date.UTC(2026, 11, 1),
+              spend: { used: 10, limit: 40, currency: "USD" },
+            },
+          ],
+        })
+      }),
+  )
+
+  it.effect("a seat's spend stays as the usage endpoint read it after a proxied answer", () =>
+    Effect.gen(function* () {
+      const monthEnd = String(Date.UTC(2026, 11, 1) / 1000)
+      const home = yield* makeHome({
+        accounts: [{ provider: "claude", id: "work" }],
+        prepare: ({ claude }) => {
+          claude.answerUsageWith(() => json(usageBasedAnswer(126, 4_000)))
+          // A usage-based seat's answer gives its spend only as a share, in the overage headers.
+          claude.answerApiWith(() =>
+            json(
+              { id: "msg_fake", type: "message", usage: { input_tokens: 3, output_tokens: 5 } },
+              {
+                headers: {
+                  "anthropic-ratelimit-unified-status": "allowed",
+                  "anthropic-ratelimit-unified-representative-claim": "overage",
+                  "anthropic-ratelimit-unified-reset": monthEnd,
+                  "anthropic-ratelimit-unified-overage-status": "allowed",
+                  "anthropic-ratelimit-unified-overage-utilization": "0.03",
+                  "anthropic-ratelimit-unified-overage-reset": monthEnd,
+                },
+              },
+            ),
+          )
+        },
+      })
+      const before = yield* eventually(
+        home.limits,
+        (all: Limits) => windowsOf(all, "work").length === 1,
+      )
+      yield* home.claudeMessage()
+      yield* settle()
+      expect(yield* home.limits).toEqual(before)
+      expect(windowsOf(before, "work")[0]?.["spend"]).toEqual({
+        used: 1.26,
+        limit: 40,
+        currency: "USD",
+      })
+    }),
+  )
+
+  it.effect("a seat's spend survives a restart", () =>
+    Effect.gen(function* () {
+      let up = true
+      const home = yield* makeHome({
+        accounts: [{ provider: "claude", id: "work" }],
+        prepare: ({ claude }) =>
+          claude.answerUsageWith(() => (up ? json(usageBasedAnswer(126, 4_000)) : notFound())),
+      })
+      const before = yield* eventually(
+        home.limits,
+        (all: Limits) => windowsOf(all, "work").length === 1,
+      )
+      up = false
+      yield* home.restart
+      yield* settle()
+      expect(yield* home.limits).toEqual(before)
+      expect(windowsOf(before, "work")[0]?.["spend"]).toEqual({
+        used: 1.26,
+        limit: 40,
+        currency: "USD",
+      })
+    }),
   )
 
   it.effect("a Codex answer's windows are named by their length", () =>
