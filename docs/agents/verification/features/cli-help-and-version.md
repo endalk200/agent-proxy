@@ -23,7 +23,7 @@ Preconditions:
 
 - `verify doctor` is all `ok`.
 
-- **Root help.** Run `verify cli -- --help`. Exit `0`; stdout has `USAGE`, `GLOBAL FLAGS`, and a `SUBCOMMANDS` section listing `connect`, `daemon`, `disconnect`, `info` and `uninstall`.
+- **Root help.** Run `verify cli -- --help`. Exit `0`; stdout has `USAGE`, `GLOBAL FLAGS`, and a `SUBCOMMANDS` section listing `accounts`, `connect`, `daemon`, `disconnect`, `info`, `key` and `uninstall`.
 - **Short flag.** Run `verify cli -- -h`. Same output as root help.
 - **No subcommand.** Run `verify cli`. Exit `0`; same output as root help.
 - **Command help.** Run `verify cli -- info --help`. Exit `0`; stdout has `USAGE` with `agent-proxy info` and a `FLAGS` section listing `--json`.
