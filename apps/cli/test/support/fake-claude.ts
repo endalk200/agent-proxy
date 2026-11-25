@@ -159,6 +159,35 @@ export const usageAnswer = {
   limits: [],
 }
 
+/**
+ * One entry of the usage endpoint's `limits` list, as confirmed live on
+ * 2026-11-25: its share used is `percent`, not `utilization`, and
+ * `is_active` marks the limit Claude highlights, not one the account has.
+ * Only `weekly_scoped` entries, one per model with its own weekly limit,
+ * name a model.
+ */
+export const claudeLimit = (
+  fields: Readonly<{ kind: "session" | "weekly_all" | "weekly_scoped" } & Record<string, unknown>>,
+) => ({
+  group: "session",
+  percent: 0,
+  severity: "normal",
+  resets_at: null,
+  scope: null,
+  is_active: false,
+  ...fields,
+})
+
+/** A `weekly_scoped` entry of the usage endpoint's `limits` for `model`, `percent` used. */
+export const modelLimit = (model: string, percent: number, resetsAt: string) =>
+  claudeLimit({
+    kind: "weekly_scoped",
+    group: "weekly",
+    percent,
+    resets_at: resetsAt,
+    scope: { model: { id: null, display_name: model }, surface: null },
+  })
+
 const answerUsageDefault: ApiHandler = () => json(usageAnswer)
 
 /**

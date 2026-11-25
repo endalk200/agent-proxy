@@ -156,19 +156,21 @@ const instant = (value: unknown) => {
 }
 
 /**
- * One window from Claude's usage endpoint: `utilization` is a percentage,
- * `resets_at` when it resets. A window nothing has used yet has no reset
- * time; it would start with the next request, so it resets a window's
- * length from now.
+ * One window from Claude's usage endpoint: its share used is the percentage
+ * in field `used` (`utilization` in the top-level windows, `percent` in a
+ * `limits` entry), and `resets_at` is when it resets. A window nothing has
+ * used yet has no reset time; it would start with the next request, so it
+ * resets a window's length from now.
  */
 const endpointWindow = (
   id: string,
   entry: Json | undefined,
+  used: "utilization" | "percent",
   lengthMs: number,
   now: number,
 ): ReadonlyArray<ObservedWindow> | undefined => {
   if (entry === undefined) return []
-  const utilization = finite(entry["utilization"])
+  const utilization = finite(entry[used])
   if (utilization === undefined) return undefined
   const resetsAt = instant(entry["resets_at"]) ?? (utilization === 0 ? now + lengthMs : undefined)
   return resetsAt === undefined
@@ -177,10 +179,29 @@ const endpointWindow = (
 }
 
 /**
+ * The per-model weekly limits in a usage answer's `limits`: each
+ * `weekly_scoped` entry whose scope names a model, with that model. One
+ * that names none limits something other than a model, which the daemon
+ * does not show. `is_active` is not read: it marks the limit Claude
+ * highlights, so a model's limit nothing has spent from yet is inactive
+ * (confirmed live on 2026-11-25). Plans without a per-model limit list no
+ * such entry.
+ */
+const scopedLimits = (
+  body: Json,
+): ReadonlyArray<{ readonly model: string; readonly limit: Json }> =>
+  (Array.isArray(body["limits"]) ? body["limits"] : []).flatMap((value) => {
+    const limit = asObject(value)
+    if (limit?.["kind"] !== "weekly_scoped") return []
+    const model = asObject(asObject(limit["scope"])?.["model"])?.["display_name"]
+    return typeof model === "string" && model.trim() !== "" ? [{ model: model.trim(), limit }] : []
+  })
+
+/**
  * The windows Claude's usage endpoint reports: `five_hour`, `seven_day`, and
- * each active `weekly_scoped` limit, a per-model weekly window named by its
- * model. An answer with neither base window, or with a window it cannot
- * read, is not one this reads, so the windows known before stay.
+ * each per-model weekly limit, as a window named by its model. An answer
+ * with neither base window, or with a window it cannot read, is not one
+ * this reads, so the windows known before stay.
  */
 const claudeEndpointWindows = (
   body: Json,
@@ -189,35 +210,21 @@ const claudeEndpointWindows = (
   const fiveHour = asObject(body["five_hour"])
   const sevenDay = asObject(body["seven_day"])
   if (fiveHour === undefined && sevenDay === undefined) return undefined
-  const scoped = (Array.isArray(body["limits"]) ? body["limits"] : []).map((value) => {
-    const limit = asObject(value)
-    const model = asObject(asObject(limit?.["scope"])?.["model"])?.["display_name"]
-    if (limit?.["kind"] !== "weekly_scoped" || limit["is_active"] !== true) return []
-    if (typeof model !== "string" || model.trim() === "") return undefined
-    return endpointWindow(`weekly:${model.trim()}`, limit, 7 * DAY_MS, now)
-  })
   const all = [
-    endpointWindow("five-hour", fiveHour, 5 * 60 * 60 * 1000, now),
-    endpointWindow("weekly", sevenDay, 7 * DAY_MS, now),
-    ...scoped,
+    endpointWindow("five-hour", fiveHour, "utilization", 5 * 60 * 60 * 1000, now),
+    endpointWindow("weekly", sevenDay, "utilization", 7 * DAY_MS, now),
+    ...scopedLimits(body).map(({ model, limit }) =>
+      endpointWindow(`weekly:${model}`, limit, "percent", 7 * DAY_MS, now),
+    ),
   ]
   return all.some((windows) => windows === undefined)
     ? undefined
     : all.flatMap((windows) => windows ?? [])
 }
 
-/** The active per-model weekly windows' model names in a usage answer, such as "Fable". */
+/** The models with their own weekly limit in a usage answer, such as "Fable". */
 const scopedModels = (body: Json): ReadonlyArray<string> =>
-  (Array.isArray(body["limits"]) ? body["limits"] : []).flatMap((value) => {
-    const limit = asObject(value)
-    const model = asObject(asObject(limit?.["scope"])?.["model"])?.["display_name"]
-    return limit?.["kind"] === "weekly_scoped" &&
-      limit["is_active"] === true &&
-      typeof model === "string" &&
-      model.trim() !== ""
-      ? [model.trim()]
-      : []
-  })
+  scopedLimits(body).map(({ model }) => model)
 
 /** The windows a grant's `clears` names, in the daemon's ids; the others it clears are not windows the daemon shows. */
 const CLEARED_WINDOWS: Readonly<Record<string, string>> = {
