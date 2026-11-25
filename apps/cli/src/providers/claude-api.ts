@@ -220,13 +220,22 @@ const claudeSpendWindow = (body: Json, now: number): ObservedWindow | undefined 
   const limitMinor = finite(limit?.["amount_minor"])
   const exponent = finite(limit?.["exponent"])
   const currency = limit?.["currency"]
+  // Both amounts must be whole minor units of the same currency and scale.
   if (
     usedMinor === undefined ||
     limitMinor === undefined ||
+    !Number.isSafeInteger(usedMinor) ||
+    !Number.isSafeInteger(limitMinor) ||
+    usedMinor < 0 ||
     limitMinor <= 0 ||
     exponent === undefined ||
+    !Number.isInteger(exponent) ||
+    exponent < 0 ||
+    exponent > 6 ||
     typeof currency !== "string" ||
-    currency === ""
+    currency === "" ||
+    used?.["currency"] !== currency ||
+    used["exponent"] !== exponent
   ) {
     return undefined
   }
