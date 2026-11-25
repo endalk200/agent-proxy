@@ -2,7 +2,12 @@ import { expect, layer } from "@effect/vitest"
 import { Effect } from "effect"
 import { TestClock } from "effect/testing"
 
-import { limitHeaders, usageAnswer as claudeUsage } from "../support/fake-claude.ts"
+import {
+  claudeLimit,
+  limitHeaders,
+  modelLimit,
+  usageAnswer as claudeUsage,
+} from "../support/fake-claude.ts"
 import { codexHeaders, usageAnswer as codexUsage } from "../support/fake-codex.ts"
 import { HOUR, makeHome, NOW, services } from "../support/usage-home.ts"
 
@@ -164,21 +169,15 @@ layer(services)("limit windows", (it) => {
             claude.answerUsageWith(() =>
               json({
                 ...claudeUsage,
+                // As a Max plan answers: `is_active` marks the limit Claude
+                // highlights, not one the account has, so a Fable window
+                // nothing has spent from yet is inactive.
                 limits: [
-                  {
-                    kind: "weekly_scoped",
-                    is_active: true,
-                    scope: { model: { display_name: "Fable" } },
-                    utilization: 80,
-                    resets_at: new Date(fableResets).toISOString(),
-                  },
-                  {
-                    kind: "weekly_scoped",
-                    is_active: false,
-                    scope: { model: { display_name: "Astra" } },
-                    utilization: 5,
-                    resets_at: new Date(fableResets).toISOString(),
-                  },
+                  claudeLimit({ kind: "session", percent: 12, is_active: true }),
+                  claudeLimit({ kind: "weekly_all", group: "weekly", percent: 34 }),
+                  modelLimit("Fable", 80, new Date(fableResets).toISOString()),
+                  // A scoped limit that names no model is no window, and the rest still read.
+                  claudeLimit({ kind: "weekly_scoped", group: "weekly", percent: 50 }),
                 ],
               }),
             ),
@@ -266,15 +265,7 @@ layer(services)("limit windows", (it) => {
           claude.answerUsageWith(() =>
             json({
               ...claudeUsage,
-              limits: [
-                {
-                  kind: "weekly_scoped",
-                  is_active: true,
-                  scope: { model: { display_name: "Fable" } },
-                  utilization: 80,
-                  resets_at: new Date(NOW + 24 * HOUR).toISOString(),
-                },
-              ],
+              limits: [modelLimit("Fable", 80, new Date(NOW + 24 * HOUR).toISOString())],
             }),
           ),
       })
@@ -480,6 +471,33 @@ layer(services)("limit windows", (it) => {
   )
 
   it.effect(
+    "a Claude answer whose 5-hour or weekly window has no utilization leaves the last-known windows in place",
+    () =>
+      Effect.gen(function* () {
+        let answer: unknown = claudeUsage
+        const home = yield* makeHome({
+          accounts: [{ provider: "claude", id: "work" }],
+          prepare: ({ claude }) => claude.answerUsageWith(() => json(answer)),
+        })
+        yield* eventually(home.limits, (all: Limits) => windowsOf(all, "work").length === 2)
+        // `percent` is the share used only in a `limits` entry, so this is not
+        // a 5-hour window it can read, and the weekly one is not left out.
+        answer = {
+          five_hour: { percent: 72, resets_at: new Date(NOW + HOUR).toISOString() },
+          limits: [],
+        }
+        yield* TestClock.adjust("1 minute")
+        const refreshed = yield* home.api("POST", "/api/limits/refresh", { accountId: "work" })
+        expect(
+          windowsOf(refreshed.json, "work").map((window) => [window["id"], window["asOf"]]),
+        ).toEqual([
+          ["five-hour", NOW],
+          ["weekly", NOW],
+        ])
+      }),
+  )
+
+  it.effect(
     "a refresh reads one account when asked to, and refuses an account the daemon does not hold",
     () =>
       Effect.gen(function* () {
@@ -543,15 +561,7 @@ layer(services)("limit windows", (it) => {
                 : // A used-up per-model window limits only that model, so it takes no room from the account.
                   json({
                     ...claudeFiveHour(20, NOW + HOUR),
-                    limits: [
-                      {
-                        kind: "weekly_scoped",
-                        is_active: true,
-                        scope: { model: { display_name: "Fable" } },
-                        utilization: 100,
-                        resets_at: new Date(NOW + 24 * HOUR).toISOString(),
-                      },
-                    ],
+                    limits: [modelLimit("Fable", 100, new Date(NOW + 24 * HOUR).toISOString())],
                   }),
             ),
         })

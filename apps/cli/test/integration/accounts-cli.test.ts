@@ -30,6 +30,7 @@ import {
   fakeClaude,
   resetGrant,
   limitResetStatus,
+  modelLimit,
   usageAnswer,
 } from "../support/fake-claude.ts"
 import { carol, dave, fakeCodex } from "../support/fake-codex.ts"
@@ -803,13 +804,8 @@ layer(
           return Response.json({
             ...usageAnswer,
             limits: [
-              {
-                kind: "weekly_scoped",
-                is_active: true,
-                scope: { model: { display_name: "Fable" } },
-                utilization: 80,
-                resets_at: "2099-05-30T00:00:00Z",
-              },
+              // Nothing spent from it yet, so Claude marks it inactive.
+              modelLimit("Fable", 0, "2099-05-30T00:00:00Z"),
             ],
             cedar_ember: limitResetStatus(
               request,

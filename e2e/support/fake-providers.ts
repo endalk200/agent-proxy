@@ -161,12 +161,25 @@ const claudeUsage = (
     five_hour: { utilization: used.fiveHour, resets_at: new Date(now + 2 * HOUR_MS).toISOString() },
     seven_day: { utilization: used.weekly, resets_at: new Date(now + 80 * HOUR_MS).toISOString() },
     limits: [
+      // As Claude answers (confirmed live on 2026-11-25): `percent`, not
+      // `utilization`, and `is_active` marks the limit Claude highlights.
+      {
+        kind: "weekly_all",
+        group: "weekly",
+        percent: used.weekly,
+        severity: "normal",
+        resets_at: new Date(now + 80 * HOUR_MS).toISOString(),
+        scope: null,
+        is_active: true,
+      },
       {
         kind: "weekly_scoped",
-        is_active: true,
-        scope: { model: { display_name: "Fable" } },
-        utilization: Math.min(100, used.weekly + 15),
+        group: "weekly",
+        percent: Math.min(100, used.weekly + 15),
+        severity: "normal",
         resets_at: new Date(now + 80 * HOUR_MS).toISOString(),
+        scope: { model: { id: null, display_name: "Fable" }, surface: null },
+        is_active: false,
       },
     ],
   }
