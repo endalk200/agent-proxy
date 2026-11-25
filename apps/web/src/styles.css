@@ -62,8 +62,9 @@
   --shadow-2xl: 0px 2px 5px 0px hsl(0 0% 0% / 1);
   --tracking-normal: 0em;
 
-  /* The account sheet's width; the page makes room for it on wide screens. */
-  --sheet-w: 30rem;
+  /* The account sheet's width, growing with the window; the page makes room
+     for it on wide screens. */
+  --sheet-w: clamp(32rem, 40vw, 44rem);
 
   /* What a limit window's meter says about the share left: green with room,
      amber at half, red near the end. Red is also the primary colour; the

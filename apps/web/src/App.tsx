@@ -145,7 +145,6 @@ function Dashboard(props: DashboardProps) {
         <SidebarProvider
           defaultOpen={sidebarOpenAtStart()}
           data-sheet-open={sheetOpen ? "" : undefined}
-          className="[--sheet-w:30rem]"
         >
           <Sidebar
             list={view.accounts}
