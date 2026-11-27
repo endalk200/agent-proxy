@@ -189,6 +189,13 @@ const codexAnswer = () =>
     { headers: { ...codexHeaders, "content-type": "text/event-stream" } },
   )
 
+const modelNotSupportedDetail =
+  "The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."
+
+/** The Codex backend's answer for a model the account's plan does not offer, as codex-rs's tests have it. */
+const modelNotSupported = () =>
+  Response.json({ detail: modelNotSupportedDetail }, { status: 400, headers: codexHeaders })
+
 /** Account `id`'s status and cooldown end in a `GET /api/accounts` answer. */
 const statusOf = (list: unknown, id: string) => {
   const accounts: ReadonlyArray<{
@@ -649,6 +656,114 @@ layer(services)("routing a pool's accounts", (it) => {
       yield* home.codexResponse()
 
       expect(home.servedBy("codex")).toEqual(["second", "second", "second", "second", "first"])
+    }),
+  )
+
+  it.effect("an error answer never moves a session to the account that gave it", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome
+      yield* home.seed("codex", "first", 1)
+      yield* home.seed("codex", "second", 2)
+      const session = { "session-id": "codex-session" }
+
+      expect((yield* home.codexResponse({ headers: session })).status).toBe(200)
+      // "first" runs out for 10 minutes; "second" turns the request down.
+      home.codex.answerApiWith((request) =>
+        accountOf(request) === "first"
+          ? Response.json(
+              { error: { type: "usage_limit_reached", resets_at: 600 } },
+              { status: 429, headers: codexHeaders },
+            )
+          : Response.json({ detail: "Invalid input." }, { status: 400, headers: codexHeaders }),
+      )
+      const refused = yield* home.codexResponse({ headers: session })
+      expect(refused.status).toBe(400)
+      expect(JSON.parse(refused.text)).toEqual({ detail: "Invalid input." })
+
+      home.codex.answerApiWith(() => codexAnswer())
+      yield* TestClock.adjust("11 minutes")
+      expect((yield* home.codexResponse({ headers: session })).status).toBe(200)
+
+      expect(home.servedBy("codex")).toEqual(["first", "first", "second", "first"])
+    }),
+  )
+
+  it.effect("a Codex account whose plan lacks the model sends the request on", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome
+      yield* home.seed("codex", "free", 1)
+      yield* home.seed("codex", "team", 2)
+      home.codex.answerApiWith((request) =>
+        accountOf(request) === "free" ? modelNotSupported() : codexAnswer(),
+      )
+      const session = { "session-id": "codex-session" }
+
+      const answer = yield* home.codexResponse({ headers: session })
+      expect(answer.status).toBe(200)
+      expect(answer.text).toContain("response.completed")
+      // The session stays on the account that served it; the other is not cooling down.
+      yield* home.codexResponse({ headers: session })
+      expect(statusOf(yield* home.accounts, "free").status).toBe("active")
+      expect(home.servedBy("codex")).toEqual(["free", "team", "team"])
+    }),
+  )
+
+  it.effect("a limited Codex account's own answer wins over another's plan lacking the model", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome
+      yield* home.seed("codex", "team", 1)
+      yield* home.seed("codex", "free", 2)
+      const limit = JSON.stringify({
+        error: { type: "usage_limit_reached", message: "Team ran out.", resets_at: 3600 },
+      })
+      home.codex.answerApiWith((request) =>
+        accountOf(request) === "team"
+          ? new Response(limit, {
+              status: 429,
+              headers: { ...codexHeaders, "content-type": "application/json" },
+            })
+          : modelNotSupported(),
+      )
+
+      const answer = yield* home.codexResponse({ headers: { "session-id": "codex-session" } })
+      expect(answer.status).toBe(429)
+      expect(answer.text).toBe(limit)
+      expect(home.servedBy("codex")).toEqual(["team", "free"])
+    }),
+  )
+
+  it.effect("when no Codex account's plan has the model, Codex gets the backend's answer", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome
+      yield* home.seed("codex", "first", 1)
+      yield* home.seed("codex", "second", 2)
+      home.codex.answerApiWith(() => modelNotSupported())
+
+      const answer = yield* home.codexResponse()
+      expect(answer.status).toBe(400)
+      expect(JSON.parse(answer.text)).toEqual({ detail: modelNotSupportedDetail })
+      expect(home.servedBy("codex")).toEqual(["first", "second"])
+      expect(statusOf(yield* home.accounts, "first").status).toBe("active")
+    }),
+  )
+
+  it.effect("a cooldown that has ended never stands in for a later refusal", () =>
+    Effect.gen(function* () {
+      const home = yield* makeHome
+      yield* home.seed("codex", "only", 1)
+      home.codex.answerApiWith(() =>
+        Response.json(
+          { error: { type: "usage_limit_reached", resets_at: 600 } },
+          { status: 429, headers: codexHeaders },
+        ),
+      )
+      expect((yield* home.codexResponse()).status).toBe(429)
+
+      yield* TestClock.adjust("11 minutes")
+      home.codex.answerApiWith(() => modelNotSupported())
+      const answer = yield* home.codexResponse()
+      expect(answer.status).toBe(400)
+      expect(JSON.parse(answer.text)).toEqual({ detail: modelNotSupportedDetail })
     }),
   )
 

@@ -423,6 +423,9 @@ export class ClaudeApi extends Context.Service<ClaudeApi, UpstreamApi>()("agent-
         }),
         sessionOf: (request) => request.headers[SESSION_HEADER]?.trim() || undefined,
         limitsOf: (answer, now) => claudeLimits(answer.status, answer.headers, now),
+        // No Claude answer is known to turn down one account but not another.
+        mayRefuse: () => false,
+        cannotServe: () => false,
         windowsOf: claudeWindows,
         usageOf: claudeUsage,
         readWindows: (_account, accessToken, now) =>
