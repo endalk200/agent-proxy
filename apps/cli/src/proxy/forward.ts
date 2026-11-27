@@ -33,9 +33,12 @@ import { ProxyKey } from "./proxy-key.ts"
  * the router chooses from that provider's pool. When the provider rejects the
  * account's token (401), the token is refreshed once and the request retried
  * on the same account. When it answers that the account hit a limit, the
- * account cools down and the request goes to the next account; nothing has
+ * account cools down and the request goes to the next account; when it turns
+ * the request down for something only this account lacks, such as a plan
+ * without the model, the request goes to the next account too. Nothing has
  * reached the client yet, so it never notices. Any other answer streams back
- * as it arrives, and is never retried once it has started.
+ * as it arrives, and is never retried once it has started. Only an answer
+ * that succeeds moves a session to the account that gave it.
  *
  * Every answer's limit-window headers update the account's limit windows.
  * A generation request is also recorded as usage once its response ends:
@@ -200,16 +203,25 @@ const usageTap = (encoding: string | undefined) => {
   }
 }
 
-/** How long a 429's body may take to arrive before it is judged by its headers alone. */
+/** How long a limit's body may take to arrive before it is judged by its headers alone. */
 const LIMIT_BODY_TIMEOUT = "5 seconds"
 
-/** A 429's body, read in full, or none when it cannot be read in time. */
-const readLimitBody = (response: HttpClientResponse.HttpClientResponse) =>
+/** An answer's body, read in full, or none when it cannot be read. */
+const readBody = (response: HttpClientResponse.HttpClientResponse) =>
   response.arrayBuffer.pipe(
     Effect.map((buffer) => new Uint8Array(buffer)),
+    Effect.orElseSucceed(() => undefined),
+  )
+
+/**
+ * A rejection's body, read in full, or none when it cannot be read in time:
+ * the account is moved past either way, so a body that never finishes must
+ * not hold up the next one.
+ */
+const readLimitBody = (response: HttpClientResponse.HttpClientResponse) =>
+  readBody(response).pipe(
     Effect.timeoutOption(LIMIT_BODY_TIMEOUT),
     Effect.map(Option.getOrUndefined),
-    Effect.orElseSucceed(() => undefined),
   )
 
 /** A provider's answer read in full, sent to the client as it came. */
@@ -440,9 +452,10 @@ export const forward = <I>(
       // The last limit answer, read in full: when its account is the first to
       // be free again, the client gets the provider's own answer.
       let limited: { readonly accountId: string; readonly answer: BufferedAnswer } | undefined
-      // The last account's rejection of its token even after a refresh: the
-      // client gets it only when no other account can take the request.
-      let rejected: { readonly accountId: string; readonly answer: BufferedAnswer } | undefined
+      // The last account's refusal: its token rejected even after a refresh, or
+      // the request turned down as something it cannot serve. The client gets
+      // it only when no other account can take the request.
+      let refused: { readonly accountId: string; readonly answer: BufferedAnswer } | undefined
       for (;;) {
         const choice = yield* router.choose(provider, session, tried)
         if (choice._tag === "CoolingDown") {
@@ -452,13 +465,18 @@ export const forward = <I>(
             : coolingDown(choice.cooldown, yield* Clock.currentTimeMillis)
         }
         if (choice._tag === "Unavailable") {
-          if (rejected?.answer.body === undefined) {
+          // A limit this request met whose cooldown has already run out.
+          if (limited?.answer.body !== undefined) {
+            yield* record(limited.accountId, "limited")
+            return replay(limited.answer)
+          }
+          if (refused?.answer.body === undefined) {
             yield* recordFailure
             return noAccount(choice.accounts)
           }
-          // The client is shown this account's rejection, so it is the one recorded.
-          yield* record(rejected.accountId, "failed")
-          return replay(rejected.answer)
+          // The client is shown this account's refusal, so it is the one recorded.
+          yield* record(refused.accountId, "failed")
+          return replay(refused.answer)
         }
         const account = choice.account
         tried.add(account.id)
@@ -469,7 +487,7 @@ export const forward = <I>(
         const response = answer.value
         yield* observeWindows(account, response.headers)
         if (response.status === 401) {
-          rejected = {
+          refused = {
             accountId: account.id,
             answer: {
               status: 401,
@@ -479,26 +497,47 @@ export const forward = <I>(
           }
           continue
         }
-        // Only a 429 is read before the client gets it: it may say the account hit a limit.
-        const buffered: BufferedAnswer =
-          response.status === 429
-            ? { status: 429, headers: response.headers, body: yield* readLimitBody(response) }
-            : { status: response.status, headers: response.headers, body: undefined }
-        const signal = api.limitsOf(
-          {
-            ...buffered,
-            body:
-              buffered.body === undefined
-                ? undefined
-                : bodyText(buffered.body, buffered.headers["content-encoding"]),
-          },
-          yield* Clock.currentTimeMillis,
-        )
-        yield* router.record(account, session, signal, choice.seen)
+        // A 429 is read before the client gets it, as it may say the account
+        // hit a limit; so is an answer that may say the account cannot serve
+        // the request. That one is waited for in full, as the client would.
+        const limit = response.status === 429
+        const read = limit || api.mayRefuse(response.status)
+        const body = limit
+          ? yield* readLimitBody(response)
+          : read
+            ? yield* readBody(response)
+            : undefined
+        const buffered: BufferedAnswer = {
+          status: response.status,
+          headers: response.headers,
+          body,
+        }
+        const judged = {
+          ...buffered,
+          body:
+            buffered.body === undefined
+              ? undefined
+              : bodyText(buffered.body, buffered.headers["content-encoding"]),
+        }
+        if (api.cannotServe(judged)) {
+          refused = { accountId: account.id, answer: buffered }
+          continue
+        }
+        const signal = api.limitsOf(judged, yield* Clock.currentTimeMillis)
+        // An answer that did not succeed leaves the session where it was: a
+        // request that failed over to an account unable to serve it must not
+        // keep the session there once its own account is back.
+        const bound = isSuccess(response.status) ? session : undefined
+        yield* router.record(account, bound, signal, choice.seen)
         if (signal._tag === "Within") {
           yield* markUsed(account)
+          // An answer read first is an error the client gets as it came.
+          if (read) {
+            yield* record(account.id, "failed")
+            settled = true
+            return replay(buffered)
+          }
           settled = true
-          if (buffered.body !== undefined) return replay(buffered)
           const relayed = relay(response, spent(account, response), leave)
           // An answer the server sends without a body (204, 205, 304, or one
           // to a HEAD) never runs its stream, so the handler ends it instead.

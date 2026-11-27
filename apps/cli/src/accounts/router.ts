@@ -115,7 +115,8 @@ export class Router extends Context.Service<
     ) => Effect.Effect<Choice, AccountStoreError>
     /**
      * Records what `account`'s answer said: a limit cools the account down;
-     * any other answer binds `session` to it.
+     * any other answer binds `session` to it. Give `session` only for an
+     * answer that served the request, so an error never moves a session.
      */
     readonly record: (
       account: Account,
@@ -209,8 +210,10 @@ export class Router extends Context.Service<
           if (candidate.provider !== provider || !candidate.enabled || candidate.needsSignIn) {
             return []
           }
+          // Only a cooldown still running: one that ended, even for an account
+          // this request tried, says nothing of when to come back.
           const cooldown = cooldowns.get(candidate.id)
-          return cooldown !== undefined && (cooldown.until > now || tried.has(candidate.id))
+          return cooldown !== undefined && cooldown.until > now
             ? [{ cooldown, accountId: candidate.id }]
             : []
         })

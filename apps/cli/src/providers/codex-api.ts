@@ -14,6 +14,7 @@ import {
   numberHeader,
   parseObject,
   postRedeem,
+  type ProviderAnswer,
   type ProxiedRequest,
   readUsageEndpoint,
   type RedeemAnswer,
@@ -69,7 +70,20 @@ const codexLimits = (
 }
 
 /**
- * The windows the Codex backend's headers report: `x-codex-primary-*` and
+ * Whether the Codex backend turned the request down because the account's
+ * plan does not offer the model: a 400 whose `detail` says "The '<model>'
+ * model is not supported when using Codex with a ChatGPT account.", as a Free
+ * plan answers for a model only paid plans get. Another account's plan may
+ * offer it.
+ */
+const codexCannotServe = (answer: ProviderAnswer): boolean => {
+  if (answer.status !== 400) return false
+  const detail = parseObject(answer.body ?? "")?.["detail"]
+  return typeof detail === "string" && /model is not supported when using Codex/i.test(detail)
+}
+
+/**
+ * The windows the Codex backend's headers report:`x-codex-primary-*` and
  * `x-codex-secondary-*`, each with its `-used-percent`, its length in
  * `-window-minutes`, which names it, and `-reset-at` (epoch seconds) or
  * `-reset-after-seconds`.
@@ -323,6 +337,8 @@ export class CodexApi extends Context.Service<CodexApi, UpstreamApi>()("agent-pr
         }),
         sessionOf: codexSession,
         limitsOf: (answer, now) => codexLimits(answer.status, answer.headers, answer.body, now),
+        mayRefuse: (status) => status === 400,
+        cannotServe: codexCannotServe,
         windowsOf: codexWindows,
         usageOf: codexUsage,
         readWindows: (account, accessToken, now) =>

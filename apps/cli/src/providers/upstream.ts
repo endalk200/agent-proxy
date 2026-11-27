@@ -53,10 +53,21 @@ export interface UpstreamApi {
   readonly sessionOf: (request: ProxiedRequest) => string | undefined
   /**
    * What the provider's answer says about the account's limits, `now` being
-   * the time in epoch milliseconds. `body` is given for a 429 only, when it
-   * could be read.
+   * the time in epoch milliseconds. `body` is given for a 429, and for an
+   * answer `mayRefuse` names, when it could be read.
    */
   readonly limitsOf: (answer: ProviderAnswer, now: number) => LimitSignal
+  /**
+   * Whether an answer with `status` may be one `cannotServe` recognizes, so
+   * its body is read in full before the client gets it.
+   */
+  readonly mayRefuse: (status: number) => boolean
+  /**
+   * Whether the answer turns the request down for something about this
+   * account that another account may not share, such as a plan without the
+   * model asked for. `body` is given as for `limitsOf`.
+   */
+  readonly cannotServe: (answer: ProviderAnswer) => boolean
   /** The limit windows the answer's headers report, `now` being the time in epoch milliseconds. */
   readonly windowsOf: (headers: Headers.Headers, now: number) => ReadonlyArray<ObservedWindow>
   /**
